@@ -38,7 +38,8 @@ def find_lyrics_file(audio_file, directory):
 def parse_time_to_seconds(time_str):
     minutes, seconds = time_str.split(':')
     seconds, milliseconds = seconds.split('.')
-    return max(0, int(minutes) * 60 + int(seconds) + float(f"0.{milliseconds}") - 1)
+    return max(0, int(minutes) * 60 + int(seconds) + float(f"0.{milliseconds}"))
+    #return max(0, int(minutes) * 60 + int(seconds) + float(f"0.{milliseconds}") - 1)
 
 
 def load_lyrics(file_path):
@@ -167,4 +168,7 @@ def main(stdscr):
 
 
 if __name__ == "__main__":
-    curses.wrapper(main)
+	try:
+		curses.wrapper(main)
+	except KeyboardInterrupt:
+		exit()
