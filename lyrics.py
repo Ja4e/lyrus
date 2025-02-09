@@ -4,6 +4,7 @@ import re
 import os
 import bisect
 import time
+import textwrap
 
 
 def get_cmus_info():
@@ -84,12 +85,17 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset):
 
     # Display lyrics, handling both synced and non-synced
     for idx, (time, lyric) in enumerate(lyrics[start_line: start_line + max_scroll_lines]):
+        # Wrapping the lyric to fit within the terminal width
+        wrapped_lyric = textwrap.fill(lyric, width - 1)  # Wrapping based on the terminal width (minus 1 to account for the cursor)
+        
         if time is not None and idx + start_line == current_idx:
             stdscr.attron(curses.color_pair(2))
         else:
             stdscr.attron(curses.color_pair(3))
 
-        stdscr.addstr(idx + 2, 0, lyric[:width - 1])
+        # Display each wrapped line of the lyric
+        for line_idx, line in enumerate(wrapped_lyric.split('\n')):
+            stdscr.addstr(idx + 2 + line_idx, 0, line)
 
         stdscr.attroff(curses.color_pair(2))
         stdscr.attroff(curses.color_pair(3))
