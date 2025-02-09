@@ -3,18 +3,24 @@ import subprocess
 import time
 import re
 import os
+import bisect
 
-def get_cmus_position():
+def get_cmus_info():
     result = subprocess.run(['cmus-remote', '-Q'], stdout=subprocess.PIPE)
     output = result.stdout.decode('utf-8')
-    match = re.search(r'position (\d+)', output)
-    return int(match.group(1)) if match else 0
 
-def get_cmus_track_file():
-    result = subprocess.run(['cmus-remote', '-Q'], stdout=subprocess.PIPE)
-    output = result.stdout.decode('utf-8')
-    match = re.search(r'file (.+)', output)
-    return match.group(1) if match else None
+    track_file = None
+    position = 0
+
+    track_match = re.search(r'file (.+)', output)
+    position_match = re.search(r'position (\d+)', output)
+
+    if track_match:
+        track_file = track_match.group(1)
+    if position_match:
+        position = int(position_match.group(1))
+
+    return track_file, position
 
 def find_lyrics_file(audio_file, directory):
     base_name, _ = os.path.splitext(os.path.basename(audio_file))
@@ -24,28 +30,32 @@ def find_lyrics_file(audio_file, directory):
 def parse_time_to_seconds(time_str):
     minutes, seconds = time_str.split(':')
     seconds, milliseconds = seconds.split('.')
-    return int(minutes) * 60 + int(seconds) + float(f"0.{milliseconds}")
+    return max(0, int(minutes) * 60 + int(seconds) + float(f"0.{milliseconds}") - 1)
 
 def load_lyrics(file_path):
     with open(file_path, 'r', encoding="utf-8") as f:
-        lyrics = f.readlines()
+        lines = f.readlines()
 
-    parsed_lyrics = []
-    for line in lyrics:
+    lyrics = []
+    for line in lines:
         match = re.match(r'\[(\d+:\d+\.\d+)\](.*)', line)
         if match:
             timestamp = parse_time_to_seconds(match.group(1))
             lyric = match.group(2).strip()
-            parsed_lyrics.append((timestamp, lyric)) 
+            lyrics.append((timestamp, lyric))
 
-    return parsed_lyrics
+    return lyrics
 
-def display_lyrics(stdscr, lyrics, position, track_info):
+def display_lyrics(stdscr, lyrics, position, track_info, last_index):
     stdscr.clear()
     stdscr.addstr(0, 0, f"Now Playing: {track_info}")
+
     height, width = stdscr.getmaxyx()
 
-    current_idx = next((i for i, (t, _) in enumerate(lyrics) if t > position), len(lyrics)) - 1
+
+    current_idx = bisect.bisect_right([t for t, _ in lyrics], position) - 1
+    if current_idx == last_index:
+        return current_idx 
 
     max_scroll_lines = height - 3
     start_line = max(0, current_idx - (height // 2))
@@ -68,6 +78,7 @@ def display_lyrics(stdscr, lyrics, position, track_info):
         stdscr.addstr(height - 1, 0, "End of lyrics.")
 
     stdscr.refresh()
+    return current_idx
 
 def main(stdscr):
     curses.start_color()
@@ -77,35 +88,38 @@ def main(stdscr):
     curses.curs_set(0)
     
     current_audio_file = None 
-    
+    lyrics = []
+    last_index = -1
+
     while True:
-        audio_file = get_cmus_track_file()
+        audio_file, position = get_cmus_info()
         
         if audio_file != current_audio_file:
             current_audio_file = audio_file
+            stdscr.clear()
+            
             if not audio_file:
-                stdscr.clear()
                 stdscr.addstr(2, 0, "No track is currently playing.")
                 stdscr.refresh()
                 time.sleep(2)
                 continue
 
             directory = os.path.dirname(audio_file)
-
             lyrics_file = find_lyrics_file(audio_file, directory)
-            if not lyrics_file:
-                stdscr.clear()
+            
+            if lyrics_file:
+                lyrics = load_lyrics(lyrics_file)
+            else:
+                lyrics = []
                 stdscr.addstr(2, 0, "No lyrics file found.")
                 stdscr.refresh()
                 time.sleep(2)
                 continue
 
-            lyrics = load_lyrics(lyrics_file)
-
-        position = get_cmus_position()
         title = os.path.basename(audio_file)
-        display_lyrics(stdscr, lyrics, position, title) 
+        last_index = display_lyrics(stdscr, lyrics, position, title, last_index)
         time.sleep(1)
+
 
 if __name__ == "__main__":
     curses.wrapper(main)
