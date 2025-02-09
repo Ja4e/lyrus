@@ -58,28 +58,30 @@ def load_lyrics(file_path):
             except Exception:
                 errors.append(line.strip())
         else:
+            # For non-synced lyrics, just add them without a timestamp
+            lyrics.append((None, line.strip()))  # None as timestamp for non-synced lyrics
             errors.append(line.strip())
 
     return lyrics, errors
 
 
+
 def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset):
     height, width = stdscr.getmaxyx()
 
-    current_idx = bisect.bisect_right([t for t, _ in lyrics], position) - 1
+    current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
 
     max_scroll_lines = height - 3
-
     start_line = max(0, current_idx - (height // 2)) + scroll_offset
-
     start_line = max(0, min(start_line, len(lyrics) - max_scroll_lines))
     scroll_offset = max(0, min(scroll_offset, len(lyrics) - start_line - max_scroll_lines))
 
     stdscr.clear()
     stdscr.addstr(0, 0, f"Now Playing: {track_info}")
 
+    # Display lyrics, handling both synced and non-synced
     for idx, (time, lyric) in enumerate(lyrics[start_line: start_line + max_scroll_lines]):
-        if idx + start_line == current_idx:
+        if time is not None and idx + start_line == current_idx:
             stdscr.attron(curses.color_pair(2))
         else:
             stdscr.attron(curses.color_pair(3))
@@ -89,6 +91,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset):
         stdscr.attroff(curses.color_pair(2))
         stdscr.attroff(curses.color_pair(3))
 
+    # Error handling and scrolling
     for idx, error_line in enumerate(errors):
         stdscr.attron(curses.color_pair(4))  # Light red for error lines
         stdscr.addstr(height - 2 + idx, 0, f"Error: {error_line[:width - 1]}")
@@ -98,6 +101,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset):
         stdscr.addstr(height - 1, 0, "End of lyrics.")
 
     stdscr.refresh()
+
 
 
 def main(stdscr):
