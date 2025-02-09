@@ -105,7 +105,7 @@ def main(stdscr):
         position = get_cmus_position()
         title = os.path.basename(audio_file)
         display_lyrics(stdscr, lyrics, position, title) 
-        time.sleep(0.5)
+        time.sleep(1)
 
 if __name__ == "__main__":
     curses.wrapper(main)
