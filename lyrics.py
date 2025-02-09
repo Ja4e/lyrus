@@ -99,7 +99,7 @@ def main(stdscr):
             stdscr.clear()
             
             if not audio_file:
-                stdscr.addstr(2, 0, "No track is currently playing.")
+                stdscr.addstr(2, 0, "No track is currently playing or cmus is not opened.")
                 stdscr.refresh()
                 time.sleep(2)
                 continue
@@ -116,8 +116,14 @@ def main(stdscr):
                 time.sleep(2)
                 continue
 
-        title = os.path.basename(audio_file)
-        last_index = display_lyrics(stdscr, lyrics, position, title, last_index)
+        if audio_file:
+            title = os.path.basename(audio_file)
+            last_index = display_lyrics(stdscr, lyrics, position, title, last_index)
+        else:
+            stdscr.clear()
+            stdscr.addstr(2, 0, "cmus is not opened.")
+            stdscr.refresh()
+
         time.sleep(1)
 
 
