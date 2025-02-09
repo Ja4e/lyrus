@@ -54,13 +54,15 @@ def load_lyrics(file_path):
         if match:
             try:
                 timestamp = parse_time_to_seconds(match.group(1))
-                lyric = match.group(2).strip()
+                lyric = " " + match.group(2).strip()
+                #lyric = match.group(2).strip()
                 lyrics.append((timestamp, lyric))
             except Exception:
                 errors.append(line.strip())
         else:
             # For non-synced lyrics, just add them without a timestamp
-            lyrics.append((None, line.strip()))  # None as timestamp for non-synced lyrics
+            lyrics.append((None, " " + line.strip()))  # None as timestamp for non-synced lyrics
+            #lyrics.append((None, line.strip()))  # None as timestamp for non-synced lyrics
             errors.append(line.strip())
 
     return lyrics, errors
