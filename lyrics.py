@@ -106,7 +106,6 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset, 
     stdscr.refresh()
 
 
-
 def main(stdscr):
     curses.start_color()
     curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
@@ -120,6 +119,7 @@ def main(stdscr):
     scroll_offset = 0
     is_txt_format = False
 
+    # Initial timeout of 50 ms
     stdscr.timeout(50)
 
     while True:
@@ -132,7 +132,7 @@ def main(stdscr):
             if not audio_file:
                 stdscr.addstr(2, 0, "No track is currently playing or cmus is not opened.")
                 stdscr.refresh()
-                time.sleep(2)
+                time.sleep(2)  # Add a short delay here if necessary
                 continue
 
             directory = os.path.dirname(audio_file)
@@ -146,18 +146,14 @@ def main(stdscr):
                 errors = []
                 stdscr.addstr(2, 0, "No lyrics file found.")
                 stdscr.refresh()
-                time.sleep(2)
+                time.sleep(2)  # Add a short delay here if necessary
                 continue
 
         if audio_file:
             title = os.path.basename(audio_file)
             display_lyrics(stdscr, lyrics, errors, position, title, scroll_offset, is_txt_format)
-            time.sleep(0.5)
-        else:
-            stdscr.clear()
-            stdscr.addstr(2, 0, "cmus is not opened.")
-            stdscr.refresh()
 
+        # Handle user input and scrolling
         key = stdscr.getch()
 
         if key == curses.KEY_UP:
@@ -170,6 +166,12 @@ def main(stdscr):
 
         elif key == ord('q'):
             break
+
+        # Adjust timeout dynamically if there's no key input
+        if key == -1:  # -1 means no key was pressed
+            stdscr.timeout(500)  # Wait for 100 ms when idle (adjust this value)
+        else:
+            stdscr.timeout(50)  # Shorter timeout when there's input activity
 
 
 
