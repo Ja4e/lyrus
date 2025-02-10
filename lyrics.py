@@ -6,7 +6,6 @@ import bisect
 import time
 import textwrap
 
-
 def get_cmus_info():
     try:
         result = subprocess.run(['cmus-remote', '-Q'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -29,19 +28,16 @@ def get_cmus_info():
 
     return track_file, position
 
-
 def find_lyrics_file(audio_file, directory):
     base_name, _ = os.path.splitext(os.path.basename(audio_file))
     lrc_file = os.path.join(directory, f"{base_name}.lrc")
     txt_file = os.path.join(directory, f"{base_name}.txt")
     return lrc_file if os.path.exists(lrc_file) else (txt_file if os.path.exists(txt_file) else None)
 
-
 def parse_time_to_seconds(time_str):
     minutes, seconds = time_str.split(':')
     seconds, milliseconds = seconds.split('.')
     return max(0, int(minutes) * 60 + int(seconds) + float(f"0.{milliseconds}"))
-
 
 def load_lyrics(file_path):
     with open(file_path, 'r', encoding="utf-8") as f:
@@ -65,7 +61,6 @@ def load_lyrics(file_path):
 
     return lyrics, errors
 
-
 def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset, is_txt_format):
     height, width = stdscr.getmaxyx()
 
@@ -80,15 +75,27 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset, 
     stdscr.clear()
     stdscr.addstr(0, 0, f"Now Playing: {track_info}")
 
+    current_line_y = 2
+    wrapped_lyrics = []
+
     for idx, (time, lyric) in enumerate(lyrics[start_line: start_line + max_scroll_lines]):
-        wrapped_lyric = textwrap.fill(lyric, width - 1)
         if time is not None and idx + start_line == current_idx:
             stdscr.attron(curses.color_pair(2))
         else:
             stdscr.attron(curses.color_pair(3))
 
-        for line_idx, line in enumerate(wrapped_lyric.split('\n')):
-            stdscr.addstr(idx + 2 + line_idx, 0, line)
+        # Check if the lyric fits the width, else split into new lines
+        wrapped_lines = textwrap.wrap(lyric, width - 1)  # Wrap lyrics to fit within screen width
+        
+        for line_idx, line in enumerate(wrapped_lines):
+            # Indent only the overflowed part with extra space
+            if line_idx > 0:
+                line = " " + line  # Add extra space at the beginning for overflowed lines
+
+            # Ensure current_line_y doesn't go out of bounds
+            if current_line_y < height - 1:
+                stdscr.addstr(current_line_y, 0, line)
+                current_line_y += 1
 
         stdscr.attroff(curses.color_pair(2))
         stdscr.attroff(curses.color_pair(3))
@@ -104,7 +111,6 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset, 
     if current_idx == len(lyrics) - 1:
         stdscr.addstr(height - 1, 0, "End of lyrics.")
     stdscr.refresh()
-
 
 def main(stdscr):
     curses.start_color()
@@ -172,7 +178,6 @@ def main(stdscr):
             stdscr.timeout(500)  # Wait for 100 ms when idle (adjust this value)
         else:
             stdscr.timeout(50)  # Shorter timeout when there's input activity
-
 
 
 if __name__ == "__main__":
