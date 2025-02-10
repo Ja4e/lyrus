@@ -80,35 +80,35 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset, 
 
     current_line_y = 2  # Starting from line 2 to display lyrics
     wrapped_lyrics = []
+    total_wrapped_lines = 0
 
-    # Calculate the total number of lines that will be wrapped and ensure we handle wrapped overflow
-    wrapped_lines_count = 0  # To track how many wrapped lines fit on the screen
+    # Wrap the lyrics and count total lines, including the current line and subsequent lines
     for idx, (time, lyric) in enumerate(lyrics[start_line: start_line + max_scroll_lines]):
+        wrapped_lines = textwrap.wrap(lyric, width - 1)  # Wrap lyrics to fit within screen width
+        total_wrapped_lines += len(wrapped_lines)  # Increment wrapped line count
+
+        # Highlight the current line
         if time is not None and idx + start_line == current_idx:
-            stdscr.attron(curses.color_pair(2))
+            stdscr.attron(curses.color_pair(2))  # Highlight current line
         else:
             stdscr.attron(curses.color_pair(3))
 
-        # Wrap the lyrics text to fit within screen width
-        wrapped_lines = textwrap.wrap(lyric, width - 1)  # Wrap lyrics to fit within screen width
-        wrapped_lines_count += len(wrapped_lines)  # Count how many lines are needed for this lyric
-
+        # Display each wrapped line
         for line_idx, line in enumerate(wrapped_lines):
-            # Indent only the overflowed part with extra space
+            # Indent overflowed lines with extra space
             if line_idx > 0:
                 line = " " + line  # Add extra space at the beginning for overflowed lines
 
-            # Ensure current_line_y doesn't go out of bounds and handle wrapped lines properly
             if current_line_y < height - 1:
                 stdscr.addstr(current_line_y, 0, line)
-                current_line_y += 1  # Move to the next line for each wrapped line
+                current_line_y += 1  # Move to the next line
 
         stdscr.attroff(curses.color_pair(2))
         stdscr.attroff(curses.color_pair(3))
 
-    # Dynamically adjust the maximum number of error lines if any
+    # Handle errors if not txt format
     if not is_txt_format:
-        max_error_lines = height - 2 - (start_line + max_scroll_lines)
+        max_error_lines = height - 2 - total_wrapped_lines  # Adjust error line count
         for idx, error_line in enumerate(errors[:max_error_lines]):
             error_line = error_line[:width - 1]
             stdscr.attron(curses.color_pair(4))
@@ -119,6 +119,9 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset, 
     if current_idx == len(lyrics) - 1:
         stdscr.addstr(height - 1, 0, "End of lyrics.")
     stdscr.refresh()
+
+    return total_wrapped_lines
+
 
 def main(stdscr):
     curses.start_color()
@@ -138,6 +141,10 @@ def main(stdscr):
 
     while True:
         audio_file, position = get_cmus_info()
+
+        # Check if the window size has changed
+        height, width = stdscr.getmaxyx()
+        total_wrapped_lines = display_lyrics(stdscr, lyrics, errors, position, "Now Playing", scroll_offset, is_txt_format)
 
         if audio_file != current_audio_file:
             current_audio_file = audio_file
@@ -174,16 +181,15 @@ def main(stdscr):
             scroll_offset = max(0, scroll_offset - 1)
 
         elif key == curses.KEY_DOWN:
-            max_scroll_lines = stdscr.getmaxyx()[0] - 3
-            if len(lyrics) > max_scroll_lines:
-                scroll_offset = min(scroll_offset + 1, len(lyrics) - max_scroll_lines)
+            if len(lyrics) > total_wrapped_lines:
+                scroll_offset = min(scroll_offset + 1, len(lyrics) - total_wrapped_lines)
 
         elif key == ord('q'):
             break
 
         # Adjust timeout dynamically if there's no key input
         if key == -1:  # -1 means no key was pressed
-            stdscr.timeout(500)  # Wait for 100 ms when idle (adjust this value)
+            stdscr.timeout(500)  # Wait for 500 ms when idle (adjust this value)
         else:
             stdscr.timeout(50)  # Shorter timeout when there's input activity
 
