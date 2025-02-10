@@ -67,7 +67,10 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset, 
     # Adjust to handle non-timestamped lyrics by checking for None and still displaying
     current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
 
-    max_scroll_lines = height - 3
+    # Dynamically calculate max_scroll_lines based on current window height
+    max_scroll_lines = height - 3  # Reserve 3 lines for the header and possible error messages
+
+    # Ensure start_line and scroll_offset are adjusted dynamically
     start_line = max(0, current_idx - (height // 2)) + scroll_offset
     start_line = max(0, min(start_line, len(lyrics) - max_scroll_lines))
     scroll_offset = max(0, min(scroll_offset, len(lyrics) - start_line - max_scroll_lines))
@@ -75,31 +78,35 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset, 
     stdscr.clear()
     stdscr.addstr(0, 0, f"Now Playing: {track_info}")
 
-    current_line_y = 2
+    current_line_y = 2  # Starting from line 2 to display lyrics
     wrapped_lyrics = []
 
+    # Calculate the total number of lines that will be wrapped and ensure we handle wrapped overflow
+    wrapped_lines_count = 0  # To track how many wrapped lines fit on the screen
     for idx, (time, lyric) in enumerate(lyrics[start_line: start_line + max_scroll_lines]):
         if time is not None and idx + start_line == current_idx:
             stdscr.attron(curses.color_pair(2))
         else:
             stdscr.attron(curses.color_pair(3))
 
-        # Check if the lyric fits the width, else split into new lines
+        # Wrap the lyrics text to fit within screen width
         wrapped_lines = textwrap.wrap(lyric, width - 1)  # Wrap lyrics to fit within screen width
-        
+        wrapped_lines_count += len(wrapped_lines)  # Count how many lines are needed for this lyric
+
         for line_idx, line in enumerate(wrapped_lines):
             # Indent only the overflowed part with extra space
             if line_idx > 0:
                 line = " " + line  # Add extra space at the beginning for overflowed lines
 
-            # Ensure current_line_y doesn't go out of bounds
+            # Ensure current_line_y doesn't go out of bounds and handle wrapped lines properly
             if current_line_y < height - 1:
                 stdscr.addstr(current_line_y, 0, line)
-                current_line_y += 1
+                current_line_y += 1  # Move to the next line for each wrapped line
 
         stdscr.attroff(curses.color_pair(2))
         stdscr.attroff(curses.color_pair(3))
 
+    # Dynamically adjust the maximum number of error lines if any
     if not is_txt_format:
         max_error_lines = height - 2 - (start_line + max_scroll_lines)
         for idx, error_line in enumerate(errors[:max_error_lines]):
@@ -108,6 +115,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset, 
             stdscr.addstr(height - 2 + idx, 0, f"Error: {error_line}")
             stdscr.attroff(curses.color_pair(4))
 
+    # Handle the last line when reaching the end of the lyrics
     if current_idx == len(lyrics) - 1:
         stdscr.addstr(height - 1, 0, "End of lyrics.")
     stdscr.refresh()
