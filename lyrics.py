@@ -61,138 +61,95 @@ def load_lyrics(file_path):
 
     return lyrics, errors
 
-def display_lyrics(stdscr, lyrics, errors, position, track_info, scroll_offset, is_txt_format):
+def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format):
     height, width = stdscr.getmaxyx()
+    max_scroll_lines = height - 3
 
-    # Adjust to handle non-timestamped lyrics by checking for None and still displaying
-    current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+    if not is_txt_format:
+        current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+        natural_start = max(0, current_idx - (height // 2))
+    else:
+        current_idx = -1
+        natural_start = 0
 
-    # Dynamically calculate max_scroll_lines based on current window height
-    max_scroll_lines = height - 3  # Reserve 3 lines for the header and possible error messages
-
-    # Ensure start_line and scroll_offset are adjusted dynamically
-    start_line = max(0, current_idx - (height // 2)) + scroll_offset
-    start_line = max(0, min(start_line, len(lyrics) - max_scroll_lines))
-    scroll_offset = max(0, min(scroll_offset, len(lyrics) - start_line - max_scroll_lines))
+    start_line = max(0, min(natural_start + manual_offset, len(lyrics) - max_scroll_lines))
 
     stdscr.clear()
     stdscr.addstr(0, 0, f"Now Playing: {track_info}")
+    current_line_y = 2
 
-    current_line_y = 2  # Starting from line 2 to display lyrics
-    wrapped_lyrics = []
-    total_wrapped_lines = 0
-
-    # Wrap the lyrics and count total lines, including the current line and subsequent lines
     for idx, (time, lyric) in enumerate(lyrics[start_line: start_line + max_scroll_lines]):
-        wrapped_lines = textwrap.wrap(lyric, width - 1)  # Wrap lyrics to fit within screen width
-        total_wrapped_lines += len(wrapped_lines)  # Increment wrapped line count
-
-        # Highlight the current line
-        if time is not None and idx + start_line == current_idx:
-            stdscr.attron(curses.color_pair(2))  # Highlight current line
-        else:
-            stdscr.attron(curses.color_pair(3))
-
-        # Display each wrapped line
-        for line_idx, line in enumerate(wrapped_lines):
-            # Indent overflowed lines with extra space
-            if line_idx > 0:
-                line = " " + line  # Add extra space at the beginning for overflowed lines
-
+        wrapped_lines = textwrap.wrap(lyric, width - 1)
+        for line in wrapped_lines:
             if current_line_y < height - 1:
+                if not is_txt_format and time is not None and (start_line + idx) == current_idx:
+                    stdscr.attron(curses.color_pair(2))
+                else:
+                    stdscr.attron(curses.color_pair(3))
                 stdscr.addstr(current_line_y, 0, line)
-                current_line_y += 1  # Move to the next line
+                stdscr.attroff(curses.color_pair(2))
+                stdscr.attroff(curses.color_pair(3))
+                current_line_y += 1
 
-        stdscr.attroff(curses.color_pair(2))
-        stdscr.attroff(curses.color_pair(3))
-
-    # Handle errors if not txt format
-    if not is_txt_format:
-        max_error_lines = height - 2 - total_wrapped_lines  # Adjust error line count
-        for idx, error_line in enumerate(errors[:max_error_lines]):
-            error_line = error_line[:width - 1]
-            stdscr.attron(curses.color_pair(4))
-            stdscr.addstr(height - 2 + idx, 0, f"Error: {error_line}")
-            stdscr.attroff(curses.color_pair(4))
-
-    # Handle the last line when reaching the end of the lyrics
-    if current_idx == len(lyrics) - 1:
+    if current_idx == len(lyrics) - 1 and not is_txt_format:
         stdscr.addstr(height - 1, 0, "End of lyrics.")
     stdscr.refresh()
-
-    return total_wrapped_lines
-
 
 def main(stdscr):
     curses.start_color()
     curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
     curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
-    curses.init_pair(4, curses.COLOR_RED, curses.COLOR_BLACK)
     curses.curs_set(0)
+    stdscr.nodelay(True)  # Enable non-blocking input
 
     current_audio_file = None
     lyrics = []
     errors = []
-    scroll_offset = 0
     is_txt_format = False
-
-    # Initial timeout of 50 ms
-    stdscr.timeout(50)
+    last_input_time = None
+    manual_offset = 0
 
     while True:
-        audio_file, position = get_cmus_info()
+        current_time = time.time()
 
-        # Check if the window size has changed
-        height, width = stdscr.getmaxyx()
-        total_wrapped_lines = display_lyrics(stdscr, lyrics, errors, position, "Now Playing", scroll_offset, is_txt_format)
+        if last_input_time is not None and (current_time - last_input_time >= 2.0):
+            manual_offset = 0
+            last_input_time = None  # Reset scrolling after 2s
+
+        audio_file, position = get_cmus_info()
 
         if audio_file != current_audio_file:
             current_audio_file = audio_file
-            stdscr.clear()
+            manual_offset = 0
+            last_input_time = None
+            lyrics = []
+            errors = []
 
-            if not audio_file:
-                stdscr.addstr(2, 0, "No track is currently playing or cmus is not opened.")
-                stdscr.refresh()
-                time.sleep(2)  # Add a short delay here if necessary
-                continue
-
-            directory = os.path.dirname(audio_file)
-            lyrics_file = find_lyrics_file(audio_file, directory)
-
-            if lyrics_file:
-                is_txt_format = lyrics_file.endswith('.txt')
-                lyrics, errors = load_lyrics(lyrics_file)
-            else:
-                lyrics = []
-                errors = []
-                stdscr.addstr(2, 0, "No lyrics file found.")
-                stdscr.refresh()
-                time.sleep(2)  # Add a short delay here if necessary
-                continue
+            if audio_file:
+                directory = os.path.dirname(audio_file)
+                lyrics_file = find_lyrics_file(audio_file, directory)
+                
+                if lyrics_file:
+                    is_txt_format = lyrics_file.endswith('.txt')
+                    lyrics, errors = load_lyrics(lyrics_file)
+                else:
+                    is_txt_format = False
 
         if audio_file:
             title = os.path.basename(audio_file)
-            display_lyrics(stdscr, lyrics, errors, position, title, scroll_offset, is_txt_format)
+            display_lyrics(stdscr, lyrics, errors, position, title, manual_offset, is_txt_format)
 
-        # Handle user input and scrolling
         key = stdscr.getch()
+        if key != -1:
+            last_input_time = time.time()
+            if key == curses.KEY_UP:
+                manual_offset -= 1
+            elif key == curses.KEY_DOWN:
+                manual_offset += 1
+            elif key == ord('q'):
+                break
 
-        if key == curses.KEY_UP:
-            scroll_offset = max(0, scroll_offset - 1)
-
-        elif key == curses.KEY_DOWN:
-            if len(lyrics) > total_wrapped_lines:
-                scroll_offset = min(scroll_offset + 1, len(lyrics) - total_wrapped_lines)
-
-        elif key == ord('q'):
-            break
-
-        # Adjust timeout dynamically if there's no key input
-        if key == -1:  # -1 means no key was pressed
-            stdscr.timeout(500)  # Wait for 500 ms when idle (adjust this value)
-        else:
-            stdscr.timeout(50)  # Shorter timeout when there's input activity
-
+        time.sleep(0.05)
 
 if __name__ == "__main__":
     try:
