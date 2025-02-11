@@ -105,9 +105,9 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
     end_screen_line = start_screen_line + available_lines
 
     stdscr.clear()
-    stdscr.addstr(0, 0, f"Now Playing: {track_info}")
-    
-    current_line_y = 2
+    #stdscr.addstr(0, 0, f"Now Playing: {track_info}")
+    current_line_y = 1
+    #current_line_y = 2
     for idx, (orig_idx, line) in enumerate(wrapped_lines[start_screen_line:end_screen_line]):
         if current_line_y >= height - 1:
             break
