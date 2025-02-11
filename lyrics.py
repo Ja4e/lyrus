@@ -83,7 +83,8 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
         current_idx = -1
         natural_start = 0
 
-    start_line = max(0, min(natural_start + manual_offset, len(lyrics) - max_scroll_lines))
+    start_line = max(0, min(natural_start + manual_offset, len(lyrics) - 1))
+    start_line = min(start_line, len(lyrics) - 1)
 
     stdscr.clear()
     stdscr.addstr(0, 0, f"Now Playing: {track_info}")
@@ -91,39 +92,40 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 
     wrapped_lyrics = []
 
-    # Wrap lyrics based on current width and add space only for subsequent wrapped lines
-    for time, lyric in lyrics[start_line: start_line + max_scroll_lines]:
-        if lyric.strip():  # Only wrap non-empty lines
+    # Process lyrics starting from start_line, track original indices
+    j = 0
+    while j < max_scroll_lines and (start_line + j) < len(lyrics):
+        original_index = start_line + j
+        time, lyric = lyrics[original_index]
+        
+        if lyric.strip():
             wrapped_lines = textwrap.wrap(lyric, wrap_width)
             for i, line in enumerate(wrapped_lines):
                 if i == 0:
-                    wrapped_lyrics.append(line)  # No space for the first wrapped line
+                    wrapped_line = line
                 else:
-                    wrapped_lyrics.append(' ' + line)  # Add one space for subsequent wrapped lines
+                    wrapped_line = ' ' + line
+                wrapped_lyrics.append((original_index, wrapped_line))
         else:
-            wrapped_lyrics.append("")  # Preserve empty line
+            wrapped_lyrics.append((original_index, ""))
+        j += 1
 
-    # Apply scrolling across wrapped lines
-    for i, line in enumerate(wrapped_lyrics):
-        if current_line_y < height - 1:
-            if not is_txt_format and time is not None and (start_line + i) == current_idx:
-                stdscr.attron(curses.color_pair(2))
-            else:
-                stdscr.attron(curses.color_pair(3))
+    # Apply scrolling across wrapped lines and highlight current line
+    for original_idx, line in wrapped_lyrics:
+        if current_line_y >= height - 1:
+            break
 
-            # The line already has the correct spaces applied based on wrapping
-            formatted_line = line  # This line has the correct space if wrapped
+        if not is_txt_format and original_idx == current_idx:
+            stdscr.attron(curses.color_pair(2))  # Highlight current lyric
+        else:
+            stdscr.attron(curses.color_pair(3))  # Normal color for other lyrics
 
-            stdscr.addstr(current_line_y, 0, formatted_line)
+        stdscr.addstr(current_line_y, 0, line)
+        stdscr.attroff(curses.color_pair(2))  # Remove highlight
+        stdscr.attroff(curses.color_pair(3))  # Remove normal color
 
-            stdscr.attroff(curses.color_pair(2))
-            stdscr.attroff(curses.color_pair(3))
-            current_line_y += 1
-
-    if current_idx == len(lyrics) - 1 and not is_txt_format:
-        stdscr.addstr(height - 1, 0, "End of lyrics.")
+        current_line_y += 1
     stdscr.refresh()
-
 
 
 
