@@ -73,7 +73,7 @@ def load_lyrics(file_path):
 
 def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format):
     height, width = stdscr.getmaxyx()
-    max_scroll_lines = height - 3
+    max_scroll_lines = height - 3  # Leaving space for the title and potential padding
     wrap_width = width - 2  # Subtracting 2 for padding/margin
 
     if not is_txt_format:
@@ -126,8 +126,6 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 
         current_line_y += 1
     stdscr.refresh()
-
-
 
 
 def main(stdscr):
