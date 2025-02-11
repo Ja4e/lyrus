@@ -39,6 +39,60 @@ def parse_time_to_seconds(time_str):
     seconds, milliseconds = seconds.split('.')
     return max(0, int(minutes) * 60 + int(seconds) + float(f"0.{milliseconds}"))
 
+# def load_lyrics(file_path):
+    # with open(file_path, 'r', encoding="utf-8") as f:
+        # lines = f.readlines()
+
+    # lyrics = []
+    # errors = []
+
+    # for line in lines:
+        # match = re.match(r'\[(\d+:\d+\.\d+)\](.*)', line)
+        # if match:
+            # try:
+                # timestamp = parse_time_to_seconds(match.group(1))
+                # lyric = match.group(2).strip()
+                # lyrics.append((timestamp, lyric))
+            # except Exception:
+                # errors.append(line.strip())
+        # else:
+            # lyrics.append((None, line.strip()))
+            # errors.append(line.strip())
+
+    # return lyrics, errors
+
+# def load_lyrics(file_path):
+    # with open(file_path, 'r', encoding="utf-8") as f:
+        # lines = f.readlines()
+
+    # lyrics = []
+    # errors = []
+
+    # for line in lines:
+        # raw_line = line.rstrip('\n')  # Preserve original whitespace
+        # is_blank = not raw_line.strip()  # Check if line is empty/whitespace
+
+        # if is_blank:
+            # # Preserve empty line exactly
+            # lyrics.append((None, ""))
+            # continue  # Skip error reporting for blank lines
+
+        # match = re.match(r'\[(\d+:\d+\.\d+)\](.*)', raw_line)
+        # if match:
+            # try:
+                # timestamp = parse_time_to_seconds(match.group(1))
+                # lyric = match.group(2)  # Don't strip() - preserve original
+                # lyrics.append((timestamp, lyric))
+            # except Exception:
+                # errors.append(raw_line)
+                # lyrics.append((None, raw_line))  # Keep malformed line
+        # else:
+            # # Preserve non-blank lines exactly
+            # lyrics.append((None, raw_line))
+            # errors.append(raw_line)  # Report as error
+
+    # return lyrics, errors
+
 def load_lyrics(file_path):
     with open(file_path, 'r', encoding="utf-8") as f:
         lines = f.readlines()
@@ -47,19 +101,30 @@ def load_lyrics(file_path):
     errors = []
 
     for line in lines:
-        match = re.match(r'\[(\d+:\d+\.\d+)\](.*)', line)
+        raw_line = line.rstrip('\n')  # Preserve original whitespace
+        is_blank = not raw_line.strip()  # Check if line is empty/whitespace
+
+        if is_blank:
+            # Preserve empty line exactly
+            lyrics.append((None, ""))
+            continue  # Skip error reporting for blank lines
+
+        match = re.match(r'\[(\d+:\d+\.\d+)\](.*)', raw_line)
         if match:
             try:
                 timestamp = parse_time_to_seconds(match.group(1))
-                lyric = match.group(2).strip()
+                lyric = match.group(2)  # Don't strip() - preserve original
                 lyrics.append((timestamp, lyric))
             except Exception:
-                errors.append(line.strip())
+                errors.append(raw_line)
+                lyrics.append((None, raw_line))  # Keep malformed line
         else:
-            lyrics.append((None, line.strip()))
-            errors.append(line.strip())
+            # Preserve non-blank lines exactly
+            lyrics.append((None, raw_line))
+            errors.append(raw_line)  # Report as error
 
     return lyrics, errors
+
 
 def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format):
     height, width = stdscr.getmaxyx()
@@ -79,7 +144,10 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
     current_line_y = 2
 
     for idx, (time, lyric) in enumerate(lyrics[start_line: start_line + max_scroll_lines]):
-        wrapped_lines = textwrap.wrap(lyric, width - 2)  # Adjust width for space indentation
+        #wrapped_lines = textwrap.wrap(lyric, width - 2)  # Adjust width for space indentation
+        #wrapped_lines = textwrap.wrap(lyric, width - 2) if lyric else [""]
+        wrapped_lines = textwrap.wrap(lyric, width - 2) if lyric.strip() else [""]
+
 
         for i, line in enumerate(wrapped_lines):
             if current_line_y < height - 1:
