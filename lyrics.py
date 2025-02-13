@@ -47,7 +47,6 @@ def load_lyrics(file_path):
     errors = []
 
     if file_path.endswith('.txt'):
-        # For .txt files, we don't expect timestamps, just the lines
         for line in lines:
             raw_line = line.rstrip('\n')
             is_blank = not raw_line.strip()
@@ -56,10 +55,8 @@ def load_lyrics(file_path):
                 lyrics.append((None, ""))
                 continue
 
-            # Add a leading space for every line in the txt file
             lyrics.append((None, " " + raw_line))
     else:
-        # For .lrc files, we process timestamps
         for line in lines:
             raw_line = line.rstrip('\n')
             is_blank = not raw_line.strip()
@@ -83,112 +80,50 @@ def load_lyrics(file_path):
 
     return lyrics, errors
 
-
-# def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format, current_idx):
-    # height, width = stdscr.getmaxyx()
-    # available_lines = height - 3  # Space for header and status
-    # wrap_width = width - 2  # Leaving space for borders
-
-    # # Generate all wrapped lines with original indices, adding a leading space only to wrapped lines
-    # wrapped_lines = []
-    # for orig_idx, (_, lyric) in enumerate(lyrics):
-        # if lyric.strip():  # Only wrap non-empty lyrics
-            # # Wrap the line to the specified width
-            # lines = textwrap.wrap(lyric, wrap_width)
-            # wrapped_lines.append((orig_idx, lines[0]))  # First line without space
-
-            # # For subsequent lines, add a leading space for alignment
-            # for line in lines[1:]:
-                # wrapped_lines.append((orig_idx, " " + line))
-        # else:
-            # wrapped_lines.append((orig_idx, ""))
-
-    # # Find current lyric's screen positions
-    # current_screen_lines = [i for i, (idx, _) in enumerate(wrapped_lines) if idx == current_idx]
-
-    # # Calculate initial scroll position
-    # if is_txt_format or not current_screen_lines:
-        # start_screen_line = manual_offset
-    # else:
-        # # Center the first occurrence of current lyric
-        # ideal_start = current_screen_lines[0] - available_lines // 2
-        # start_screen_line = ideal_start + manual_offset
-
-    # # Clamp scroll position to valid range
-    # max_start = max(0, len(wrapped_lines) - available_lines)
-    # start_screen_line = max(0, min(start_screen_line, max_start))
-    # end_screen_line = start_screen_line + available_lines
-
-    # stdscr.clear()
-    # current_line_y = 1
-    # for idx, (orig_idx, line) in enumerate(wrapped_lines[start_screen_line:end_screen_line]):
-        # if current_line_y >= height - 1:
-            # break
-
-        # # Highlight current lyric lines
-        # if orig_idx == current_idx:
-            # stdscr.attron(curses.color_pair(2))
-        # else:
-            # stdscr.attron(curses.color_pair(3))
-
-        # try:
-            # stdscr.addstr(current_line_y, 0, line)
-        # except curses.error:
-            # pass  # Handle edge cases near screen bottom
-
-        # stdscr.attroff(curses.color_pair(2))
-        # stdscr.attroff(curses.color_pair(3))
-        # current_line_y += 1
-
-    # # Show end status
-    # if current_idx == len(lyrics) - 1 and not is_txt_format:
-        # stdscr.addstr(height-1, 0, "End of lyrics", curses.A_BOLD)
-    # stdscr.refresh()
-
 def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format, current_idx):
     height, width = stdscr.getmaxyx()
-    available_lines = height - 3  # Space for header and status
-    wrap_width = width - 2  # Leaving space for borders
+    available_lines = height - 3  # Adjust for space at the bottom (e.g., "End of lyrics")
+    wrap_width = width - 2  # Adjust for margins
 
-    # Generate all wrapped lines with original indices, adding a leading space only to wrapped lines
+    # Wrap lyrics based on the current width of the terminal
     wrapped_lines = []
     for orig_idx, (_, lyric) in enumerate(lyrics):
-        if lyric.strip():  # Only wrap non-empty lyrics
-            # Wrap the line to the specified width
+        if lyric.strip():
             lines = textwrap.wrap(lyric, wrap_width)
-            # For the first line, don't add space, just add the line as is
             wrapped_lines.append((orig_idx, lines[0]))
-            # For subsequent lines, add a leading space for alignment
             for line in lines[1:]:
                 wrapped_lines.append((orig_idx, " " + line))
         else:
             wrapped_lines.append((orig_idx, ""))
 
-    # Find current lyric's screen positions
-    current_screen_lines = [i for i, (idx, _) in enumerate(wrapped_lines) if idx == current_idx]
-
-    # Calculate initial scroll position
-    if is_txt_format or not current_screen_lines:
-        start_screen_line = manual_offset
-    else:
-        # Center the first occurrence of current lyric
-        ideal_start = current_screen_lines[0] - available_lines // 2
-        start_screen_line = ideal_start + manual_offset
-
-    # Clamp scroll position to valid range
+    # Calculate maximum starting point for scrolling
     max_start = max(0, len(wrapped_lines) - available_lines)
-    start_screen_line = max(0, min(start_screen_line, max_start))
+
+    if is_txt_format:
+        # For .txt format, scroll manually
+        start_screen_line = max(0, min(manual_offset, max_start))
+        manual_offset = start_screen_line  # Ensure it's within bounds
+    else:
+        # Center current lyric line in the screen for other formats
+        current_screen_lines = [i for i, (idx, _) in enumerate(wrapped_lines) if idx == current_idx]
+        if current_screen_lines:
+            ideal_start = current_screen_lines[0] - available_lines // 2
+            start_screen_line = max(0, min(ideal_start + manual_offset, max_start))
+            manual_offset = start_screen_line - ideal_start  # Adjust to remain within bounds
+        else:
+            start_screen_line = 0
+            manual_offset = 0
+
     end_screen_line = start_screen_line + available_lines
 
+    # Redraw the screen with new positions
     stdscr.clear()
-    #stdscr.addstr(0, 0, f"Now Playing: {track_info}")
     current_line_y = 1
-    #current_line_y = 2
     for idx, (orig_idx, line) in enumerate(wrapped_lines[start_screen_line:end_screen_line]):
         if current_line_y >= height - 1:
             break
 
-        # Highlight current lyric lines
+        # Highlight the current lyric
         if orig_idx == current_idx:
             stdscr.attron(curses.color_pair(2))
         else:
@@ -197,18 +132,19 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
         try:
             stdscr.addstr(current_line_y, 0, line)
         except curses.error:
-            pass  # Handle edge cases near screen bottom
+            pass
 
         stdscr.attroff(curses.color_pair(2))
         stdscr.attroff(curses.color_pair(3))
         current_line_y += 1
 
-    # Show end status
+    # Show a message when we reach the end of the lyrics
     if current_idx == len(lyrics) - 1 and not is_txt_format:
         stdscr.addstr(height-1, 0, "End of lyrics", curses.A_BOLD)
+
     stdscr.refresh()
 
-
+    return manual_offset  # Return the adjusted offset
 
 
 def main(stdscr):
@@ -226,41 +162,17 @@ def main(stdscr):
     manual_offset = 0
     last_redraw = 0
 
-    wrapped_lines = []  # Global list for lyrics wrapping
-    height, width = stdscr.getmaxyx()
-
-    def recalculate_wrapped_lines():
-        nonlocal wrapped_lines
-        wrap_width = width - 2  # Account for padding
-
-        # Recalculate wrapped lines only when lyrics change or on resize
-        wrapped_lines = []
-        for orig_idx, (_, lyric) in enumerate(lyrics):
-            if lyric.strip():
-                lines = textwrap.wrap(lyric, wrap_width)
-                wrapped_lines.append((orig_idx, lines[0]))
-                for line in lines[1:]:
-                    wrapped_lines.append((orig_idx, " " + line))
-            else:
-                wrapped_lines.append((orig_idx, ""))
-
-    # Initial wrapped lines calculation
-    recalculate_wrapped_lines()
-
     while True:
         current_time = time.time()
         needs_redraw = False
 
-        # Auto-reset manual offset after 2 seconds (only for non-txt files)
         if not is_txt_format and last_input_time and (current_time - last_input_time >= 2):
             manual_offset = 0
             last_input_time = None
             needs_redraw = True
 
-        # Get player status
         audio_file, position = get_cmus_info()
 
-        # Handle track changes
         if audio_file != current_audio_file:
             current_audio_file = audio_file
             manual_offset = 0
@@ -276,50 +188,40 @@ def main(stdscr):
                     is_txt_format = lyrics_file.endswith('.txt')
                     lyrics, errors = load_lyrics(lyrics_file)
 
-            # Recalculate wrapped lines for the new lyrics
-            recalculate_wrapped_lines()
-
-        # Calculate max_start once for the new lyrics
-        available_lines = height - 3  # Space for header and status
-        max_start = max(0, len(wrapped_lines) - available_lines)
-
-        # Calculate current_idx based on the audio position
-        current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-
-        # Redraw logic (only when required, not on every loop)
         if audio_file and (needs_redraw or (current_time - last_redraw >= 0.5)):
-            display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, current_idx)
+            height, width = stdscr.getmaxyx()
+            available_lines = height - 3
+
+            current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+            manual_offset = display_lyrics(stdscr, lyrics, errors, position, 
+                                         os.path.basename(audio_file), manual_offset, 
+                                         is_txt_format, current_idx)
             last_redraw = current_time
 
-        # Input handling
         key = stdscr.getch()
 
-        # Handle immediate key press responses
-        if key != -1:
-            last_input_time = time.time()
-            if key == curses.KEY_UP:
-                manual_offset -= 1
-                # Prevent scrolling above content
-                if is_txt_format:
-                    manual_offset = max(0, manual_offset)
-                display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, current_idx)
-                needs_redraw = True
-            elif key == curses.KEY_DOWN:
-                manual_offset += 1
-                # Prevent scrolling below content
-                if is_txt_format:
-                    manual_offset = min(manual_offset, max_start)
-                display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, current_idx)
-                needs_redraw = True
-            elif key == curses.KEY_RESIZE:
-                # Recalculate wrapped lines when terminal is resized
-                height, width = stdscr.getmaxyx()
-                recalculate_wrapped_lines()
-                needs_redraw = True
-            elif key == ord('q'):
-                break
+        if key == curses.KEY_UP:
+            manual_offset -= 1
+            last_input_time = current_time
+            needs_redraw = True
+        elif key == curses.KEY_DOWN:
+            manual_offset += 1
+            last_input_time = current_time
+            needs_redraw = True
+        elif key == curses.KEY_RESIZE:
+            needs_redraw = True
+        elif key == ord('q'):
+            break
 
+        if needs_redraw and audio_file:
+            height, width = stdscr.getmaxyx()
+            available_lines = height - 3
 
+            current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+            manual_offset = display_lyrics(stdscr, lyrics, errors, position, 
+                                         os.path.basename(audio_file), manual_offset, 
+                                         is_txt_format, current_idx)
+            last_redraw = current_time
 
 if __name__ == "__main__":
     try:
