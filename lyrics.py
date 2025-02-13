@@ -226,11 +226,31 @@ def main(stdscr):
     manual_offset = 0
     last_redraw = 0
 
+    wrapped_lines = []  # Global list for lyrics wrapping
+    height, width = stdscr.getmaxyx()
+
+    def recalculate_wrapped_lines():
+        nonlocal wrapped_lines
+        wrap_width = width - 2  # Account for padding
+
+        # Recalculate wrapped lines only when lyrics change or on resize
+        wrapped_lines = []
+        for orig_idx, (_, lyric) in enumerate(lyrics):
+            if lyric.strip():
+                lines = textwrap.wrap(lyric, wrap_width)
+                wrapped_lines.append((orig_idx, lines[0]))
+                for line in lines[1:]:
+                    wrapped_lines.append((orig_idx, " " + line))
+            else:
+                wrapped_lines.append((orig_idx, ""))
+
+    # Initial wrapped lines calculation
+    recalculate_wrapped_lines()
+
     while True:
         current_time = time.time()
         needs_redraw = False
 
-        # Auto-reset manual offset after 2 seconds
         # Auto-reset manual offset after 2 seconds (only for non-txt files)
         if not is_txt_format and last_input_time and (current_time - last_input_time >= 2):
             manual_offset = 0
@@ -256,15 +276,25 @@ def main(stdscr):
                     is_txt_format = lyrics_file.endswith('.txt')
                     lyrics, errors = load_lyrics(lyrics_file)
 
-        # Redraw logic
+            # Recalculate wrapped lines for the new lyrics
+            recalculate_wrapped_lines()
+
+        # Calculate max_start once for the new lyrics
+        available_lines = height - 3  # Space for header and status
+        max_start = max(0, len(wrapped_lines) - available_lines)
+
+        # Calculate current_idx based on the audio position
+        current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+
+        # Redraw logic (only when required, not on every loop)
         if audio_file and (needs_redraw or (current_time - last_redraw >= 0.5)):
-            title = os.path.basename(audio_file)
-            current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-            display_lyrics(stdscr, lyrics, errors, position, title, manual_offset, is_txt_format, current_idx)
+            display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, current_idx)
             last_redraw = current_time
 
         # Input handling
         key = stdscr.getch()
+
+        # Handle immediate key press responses
         if key != -1:
             last_input_time = time.time()
             if key == curses.KEY_UP:
@@ -272,40 +302,24 @@ def main(stdscr):
                 # Prevent scrolling above content
                 if is_txt_format:
                     manual_offset = max(0, manual_offset)
+                display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, current_idx)
                 needs_redraw = True
             elif key == curses.KEY_DOWN:
                 manual_offset += 1
                 # Prevent scrolling below content
                 if is_txt_format:
-                    # Calculate maximum allowed scroll position
-                    height, width = stdscr.getmaxyx()
-                    available_lines = height - 3
-                    wrap_width = width - 2
-                    
-                    # Generate wrapped lines to determine content height
-                    wrapped_lines = []
-                    for orig_idx, (_, lyric) in enumerate(lyrics):
-                        if lyric.strip():
-                            lines = textwrap.wrap(lyric, wrap_width)
-                            wrapped_lines.append((orig_idx, lines[0]))
-                            for line in lines[1:]:
-                                wrapped_lines.append((orig_idx, " " + line))
-                        else:
-                            wrapped_lines.append((orig_idx, ""))
-                    
-                    max_start = max(0, len(wrapped_lines) - available_lines)
                     manual_offset = min(manual_offset, max_start)
+                display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, current_idx)
                 needs_redraw = True
             elif key == curses.KEY_RESIZE:
+                # Recalculate wrapped lines when terminal is resized
+                height, width = stdscr.getmaxyx()
+                recalculate_wrapped_lines()
                 needs_redraw = True
             elif key == ord('q'):
                 break
 
-            if needs_redraw and audio_file:
-                title = os.path.basename(audio_file)
-                current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-                display_lyrics(stdscr, lyrics, errors, position, title, manual_offset, is_txt_format, current_idx)
-                last_redraw = current_time
+
 
 if __name__ == "__main__":
     try:
