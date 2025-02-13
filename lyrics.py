@@ -265,7 +265,6 @@ def main(stdscr):
 
         # Input handling
         key = stdscr.getch()
-        key = stdscr.getch()
         if key != -1:
             last_input_time = time.time()
             if key == curses.KEY_UP:
