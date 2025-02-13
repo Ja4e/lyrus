@@ -153,7 +153,8 @@ def main(stdscr):
         needs_redraw = False
 
         # Auto-reset manual offset after 2 seconds
-        if last_input_time and (current_time - last_input_time >= 2):
+        # Auto-reset manual offset after 2 seconds (only for non-txt files)
+        if not is_txt_format and last_input_time and (current_time - last_input_time >= 2):
             manual_offset = 0
             last_input_time = None
             needs_redraw = True
@@ -186,13 +187,37 @@ def main(stdscr):
 
         # Input handling
         key = stdscr.getch()
+        key = stdscr.getch()
         if key != -1:
             last_input_time = time.time()
             if key == curses.KEY_UP:
                 manual_offset -= 1
+                # Prevent scrolling above content
+                if is_txt_format:
+                    manual_offset = max(0, manual_offset)
                 needs_redraw = True
             elif key == curses.KEY_DOWN:
                 manual_offset += 1
+                # Prevent scrolling below content
+                if is_txt_format:
+                    # Calculate maximum allowed scroll position
+                    height, width = stdscr.getmaxyx()
+                    available_lines = height - 3
+                    wrap_width = width - 2
+                    
+                    # Generate wrapped lines to determine content height
+                    wrapped_lines = []
+                    for orig_idx, (_, lyric) in enumerate(lyrics):
+                        if lyric.strip():
+                            lines = textwrap.wrap(lyric, wrap_width)
+                            wrapped_lines.append((orig_idx, lines[0]))
+                            for line in lines[1:]:
+                                wrapped_lines.append((orig_idx, " " + line))
+                        else:
+                            wrapped_lines.append((orig_idx, ""))
+                    
+                    max_start = max(0, len(wrapped_lines) - available_lines)
+                    manual_offset = min(manual_offset, max_start)
                 needs_redraw = True
             elif key == curses.KEY_RESIZE:
                 needs_redraw = True
