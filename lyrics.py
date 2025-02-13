@@ -46,28 +46,104 @@ def load_lyrics(file_path):
     lyrics = []
     errors = []
 
-    for line in lines:
-        raw_line = line.rstrip('\n')  # Preserve original whitespace
-        is_blank = not raw_line.strip()  # Check if line is empty/whitespace
+    if file_path.endswith('.txt'):
+        # For .txt files, we don't expect timestamps, just the lines
+        for line in lines:
+            raw_line = line.rstrip('\n')
+            is_blank = not raw_line.strip()
 
-        if is_blank:
-            lyrics.append((None, ""))
-            continue
+            if is_blank:
+                lyrics.append((None, ""))
+                continue
 
-        match = re.match(r'\[(\d+:\d+\.\d+)\](.*)', raw_line)
-        if match:
-            try:
-                timestamp = parse_time_to_seconds(match.group(1))
-                lyric = match.group(2)  # Preserve original spacing
-                lyrics.append((timestamp, lyric))
-            except Exception:
-                errors.append(raw_line)
+            # Add a leading space for every line in the txt file
+            lyrics.append((None, " " + raw_line))
+    else:
+        # For .lrc files, we process timestamps
+        for line in lines:
+            raw_line = line.rstrip('\n')
+            is_blank = not raw_line.strip()
+
+            if is_blank:
+                lyrics.append((None, ""))
+                continue
+
+            match = re.match(r'\[(\d+:\d+\.\d+)\](.*)', raw_line)
+            if match:
+                try:
+                    timestamp = parse_time_to_seconds(match.group(1))
+                    lyric = match.group(2)
+                    lyrics.append((timestamp, lyric))
+                except Exception:
+                    errors.append(raw_line)
+                    lyrics.append((None, raw_line))
+            else:
                 lyrics.append((None, raw_line))
-        else:
-            lyrics.append((None, raw_line))
-            errors.append(raw_line)
+                errors.append(raw_line)
 
     return lyrics, errors
+
+
+# def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format, current_idx):
+    # height, width = stdscr.getmaxyx()
+    # available_lines = height - 3  # Space for header and status
+    # wrap_width = width - 2  # Leaving space for borders
+
+    # # Generate all wrapped lines with original indices, adding a leading space only to wrapped lines
+    # wrapped_lines = []
+    # for orig_idx, (_, lyric) in enumerate(lyrics):
+        # if lyric.strip():  # Only wrap non-empty lyrics
+            # # Wrap the line to the specified width
+            # lines = textwrap.wrap(lyric, wrap_width)
+            # wrapped_lines.append((orig_idx, lines[0]))  # First line without space
+
+            # # For subsequent lines, add a leading space for alignment
+            # for line in lines[1:]:
+                # wrapped_lines.append((orig_idx, " " + line))
+        # else:
+            # wrapped_lines.append((orig_idx, ""))
+
+    # # Find current lyric's screen positions
+    # current_screen_lines = [i for i, (idx, _) in enumerate(wrapped_lines) if idx == current_idx]
+
+    # # Calculate initial scroll position
+    # if is_txt_format or not current_screen_lines:
+        # start_screen_line = manual_offset
+    # else:
+        # # Center the first occurrence of current lyric
+        # ideal_start = current_screen_lines[0] - available_lines // 2
+        # start_screen_line = ideal_start + manual_offset
+
+    # # Clamp scroll position to valid range
+    # max_start = max(0, len(wrapped_lines) - available_lines)
+    # start_screen_line = max(0, min(start_screen_line, max_start))
+    # end_screen_line = start_screen_line + available_lines
+
+    # stdscr.clear()
+    # current_line_y = 1
+    # for idx, (orig_idx, line) in enumerate(wrapped_lines[start_screen_line:end_screen_line]):
+        # if current_line_y >= height - 1:
+            # break
+
+        # # Highlight current lyric lines
+        # if orig_idx == current_idx:
+            # stdscr.attron(curses.color_pair(2))
+        # else:
+            # stdscr.attron(curses.color_pair(3))
+
+        # try:
+            # stdscr.addstr(current_line_y, 0, line)
+        # except curses.error:
+            # pass  # Handle edge cases near screen bottom
+
+        # stdscr.attroff(curses.color_pair(2))
+        # stdscr.attroff(curses.color_pair(3))
+        # current_line_y += 1
+
+    # # Show end status
+    # if current_idx == len(lyrics) - 1 and not is_txt_format:
+        # stdscr.addstr(height-1, 0, "End of lyrics", curses.A_BOLD)
+    # stdscr.refresh()
 
 def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format, current_idx):
     height, width = stdscr.getmaxyx()
@@ -131,6 +207,8 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
     if current_idx == len(lyrics) - 1 and not is_txt_format:
         stdscr.addstr(height-1, 0, "End of lyrics", curses.A_BOLD)
     stdscr.refresh()
+
+
 
 
 def main(stdscr):
