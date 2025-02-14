@@ -102,7 +102,6 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
     if use_manual_offset:
         start_screen_line = max(0, min(manual_offset, max_start))
     else:
-        # Find all wrapped lines belonging to current original line
         indices = [i for i, (orig, _) in enumerate(wrapped_lines) if orig == current_idx]
         if indices:
             first = indices[0]
@@ -136,8 +135,12 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
         stdscr.attroff(curses.color_pair(3))
         current_line_y += 1
 
+    # Display current position and lyric info
+    if current_idx is not None and current_idx < len(lyrics):
+        stdscr.addstr(height-1, 0, f"Pos: {position}s - Line {current_idx+1}/{len(lyrics)}", curses.A_BOLD)
     if current_idx is not None and current_idx == len(lyrics) - 1 and not is_txt_format:
-        stdscr.addstr(height-1, 0, "End of lyrics", curses.A_BOLD)
+        stdscr.addstr(height-2, 0, "End of lyrics", curses.A_BOLD)
+    
     stdscr.refresh()
 
     return start_screen_line
