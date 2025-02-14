@@ -7,47 +7,73 @@ import time
 import textwrap
 import requests
 import urllib.parse
-import syncedlyrics  # Added import for syncedlyrics
+import syncedlyrics 
 
 def sanitize_filename(name):
     """Replace special characters with underscores to avoid filesystem issues."""
     return re.sub(r'[<>:"/\\|?*]', '_', name)
 
-def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
-    """
-    Fetch lyrics using LRCLIB API by artist name and track name.
-    Returns a tuple (lyrics_content, is_synced) or (None, None) on error.
-    """
-    base_url = "https://lrclib.net/api/get"
-    params = {
-        'artist_name': artist_name,
-        'track_name': track_name,
-    }
-    if duration is not None:
-        params['duration'] = duration
-    try:
-        response = requests.get(base_url, params=params)
-        if response.status_code == 200:
-            data = response.json()
-            if data.get('instrumental', False):
-                return None, None  # Instrumental track
-            synced_lyrics = data.get('syncedLyrics', '')
-            plain_lyrics = data.get('plainLyrics', '')
-            if synced_lyrics.strip():
-                return synced_lyrics, True
-            elif plain_lyrics.strip():
-                return plain_lyrics, False
-            else:
-                return None, None  # No lyrics available
-        elif response.status_code == 404:
-            print("Lyrics not found on LRCLIB.")
-            return None, None
-        else:
-            print(f"Error fetching lyrics: HTTP {response.status_code}")
-            return None, None
-    except Exception as e:
-        print(f"Error fetching lyrics from LRCLIB: {e}")
-        return None, None
+# def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
+    # """
+    # Fetch lyrics using LRCLIB API by artist name and track name.
+    # Returns a tuple (lyrics_content, is_synced) or (None, None) on error.
+    # """
+    # base_url = "https://lrclib.net/api/get"
+    # params = {
+        # 'artist_name': artist_name,
+        # 'track_name': track_name,
+    # }
+    # if duration is not None:
+        # params['duration'] = duration
+    # try:
+        # response = requests.get(base_url, params=params)
+        # if response.status_code == 200:
+            # data = response.json()
+            # if data.get('instrumental', False):
+                # return None, None  # Instrumental track
+            # synced_lyrics = data.get('syncedLyrics', '')
+            # plain_lyrics = data.get('plainLyrics', '')
+            # if synced_lyrics.strip():
+                # return synced_lyrics, True
+            # elif plain_lyrics.strip():
+                # return plain_lyrics, False
+            # else:
+                # return None, None  # No lyrics available
+        # elif response.status_code == 404:
+            # print("Lyrics not found on LRCLIB.")
+            # return None, None
+        # else:
+            # print(f"Error fetching lyrics: HTTP {response.status_code}")
+            # return None, None
+    # except Exception as e:
+        # print(f"Error fetching lyrics from LRCLIB: {e}")
+        # return None, None
+
+# def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None):
+    # """
+    # Fetch lyrics using the syncedlyrics library, prioritizing Enhanced LRC.
+    # Returns a tuple (lyrics_content, is_synced) or (None, None) on error.
+    # """
+    # search_term = f"{track_name} {artist_name}".strip()
+    # if not search_term:
+        # return None, None
+    # try:
+        # # Attempt to fetch Enhanced LRC first
+        # lyrics = syncedlyrics.search(search_term, enhanced=True)
+        # if lyrics:
+            # is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in lyrics.split('\n'))
+            # is_synced = is_enhanced or any(re.search(r'\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
+            # return lyrics, is_synced
+        # # Fallback to regular synced or plain
+        # lyrics = syncedlyrics.search(search_term)
+        # if lyrics:
+            # is_synced = any(re.search(r'\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
+            # return lyrics, is_synced
+        # return None, None
+    # except Exception as e:
+        # print(f"Error fetching lyrics via syncedlyrics: {e}")
+        # return None, None
+        
 
 def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None):
     """
@@ -68,24 +94,9 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None):
     except Exception as e:
         print(f"Error fetching lyrics via syncedlyrics: {e}")
         return None, None
-
-# def save_lyrics(lyrics, track_name, artist_name, extension='lrc'):
-    # """
-    # Save fetched lyrics into a file inside a folder 'synced_lyrics'
-    # in the current working directory.
-    # """
-    # folder = os.path.join(os.getcwd(), "synced_lyrics")
-    # os.makedirs(folder, exist_ok=True)
-    # # Sanitize filename (replace spaces with underscores)
-    # filename = f"{track_name}_{artist_name}.{extension}".replace(" ", "_")
-    # file_path = os.path.join(folder, filename)
-    # with open(file_path, 'w', encoding="utf-8") as f:
-        # f.write(lyrics)
-    # print(f"Saved lyrics to {file_path}")
-    # return file_path
     
 def save_lyrics(lyrics, track_name, artist_name, extension):
-    """Save lyrics to a sanitized filename."""
+    """Save lyrics to a sanitized filename with appropriate extension."""
     folder = os.path.join(os.getcwd(), "synced_lyrics")
     os.makedirs(folder, exist_ok=True)
     sanitized_track = sanitize_filename(track_name)
@@ -133,48 +144,18 @@ def get_cmus_info():
 
     return track_file, position, artist, title, duration
 
-# def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
-    # base_name, _ = os.path.splitext(os.path.basename(audio_file))
-    # synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
-
-    # for dir_path in [directory, synced_dir]:
-        # lrc_file = os.path.join(dir_path, f"{base_name}.lrc")
-        # txt_file = os.path.join(dir_path, f"{base_name}.txt")
-
-        # if os.path.exists(lrc_file):
-            # print(f"[DEBUG] Using cached .lrc file: {lrc_file}")
-            # return lrc_file
-        # elif os.path.exists(txt_file):
-            # print(f"[DEBUG] Using cached .txt file: {txt_file}")
-            # return txt_file
-
-    # print("[DEBUG] No local file found, fetching from LRCLIB...")
-
-    # # Fetch from LRCLIB only if no local file exists
-    # fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
-    # if fetched_lyrics:
-        # extension = 'lrc' if is_synced else 'txt'
-        # return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-
-    # print("[DEBUG] LRCLIB failed, trying syncedlyrics...")
-
-    # # Fallback to syncedlyrics
-    # fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
-    # if fetched_lyrics:
-        # extension = 'lrc' if is_synced else 'txt'
-        # return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-
-    # print("[ERROR] No lyrics found from any source.")
-    # return None
-    
 def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
     base_name, _ = os.path.splitext(os.path.basename(audio_file))
 
+    a2_file = os.path.join(directory, f"{base_name}.a2")
     lrc_file = os.path.join(directory, f"{base_name}.lrc")
     txt_file = os.path.join(directory, f"{base_name}.txt")
 
     # Check local files
-    if os.path.exists(lrc_file):
+    if os.path.exists(a2_file):
+        print("Using local .a2 file")
+        return a2_file
+    elif os.path.exists(lrc_file):
         print("Using local .lrc file")
         return lrc_file
     elif os.path.exists(txt_file):
@@ -186,8 +167,10 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 
     # Construct expected filenames
     possible_filenames = [
+        f"{sanitized_track}.a2",
         f"{sanitized_track}.lrc",
         f"{sanitized_track}.txt",
+        f"{sanitized_track}_{sanitized_artist}.a2",
         f"{sanitized_track}_{sanitized_artist}.lrc",
         f"{sanitized_track}_{sanitized_artist}.txt"
     ]
@@ -202,59 +185,25 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
                 print(f"[DEBUG] Found lyrics: {file_path}")
                 return file_path
 
-    print("[DEBUG] No local nor cached file found, fetching from LRCLIB...")
+    print("[DEBUG] No local nor cached file found, fetching from snycedlyrics...")
     
-    # Fetch from LRCLIB only if no local file exists
-    fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
-    if fetched_lyrics:
-        extension = 'lrc' if is_synced else 'txt'
-        return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+    # # Fetch from LRCLIB only if no local file exists
+    # fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
+    # if fetched_lyrics:
+        # extension = 'lrc' if is_synced else 'txt'
+        # return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
 
-    print("[DEBUG] LRCLIB failed, trying syncedlyrics...")
+    # print("[DEBUG] LRCLIB failed, trying syncedlyrics...")
 
     # Fallback to syncedlyrics
     fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
     if fetched_lyrics:
-        extension = 'lrc' if is_synced else 'txt'
+        is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
+        extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
         return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
 
     print("[ERROR] No lyrics found from any source.")
     return None
-
-
-
-
-# def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
-    # """
-    # Look for a local lyrics file (.lrc or .txt) based on the audio file's base name.
-    # If not found, attempt to fetch lyrics via LRCLIB API and syncedlyrics as fallback.
-    # """
-    # base_name, _ = os.path.splitext(os.path.basename(audio_file))
-    # lrc_file = os.path.join(directory, f"{base_name}.lrc")
-    # txt_file = os.path.join(directory, f"{base_name}.txt")
-
-    # # Check local files
-    # if os.path.exists(lrc_file):
-        # print("Using local .lrc file")
-        # return lrc_file
-    # elif os.path.exists(txt_file):
-        # print("Using local .txt file")
-        # return txt_file
-    # else:
-        # # Fetch from LRCLIB first
-        # fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
-        # if fetched_lyrics:
-            # extension = 'lrc' if is_synced else 'txt'
-            # return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-        # else:
-            # # Fallback to syncedlyrics
-            # fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
-            # if fetched_lyrics:
-                # extension = 'lrc' if is_synced else 'txt'
-                # return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-    # return None
-
-# The rest of the functions (parse_time_to_seconds, load_lyrics, display_lyrics, main) remain unchanged.
 
 def parse_time_to_seconds(time_str):
     minutes, seconds = time_str.split(':')
@@ -279,19 +228,29 @@ def load_lyrics(file_path):
             if not raw_line.strip():
                 lyrics.append((None, ""))
                 continue
-            match = re.match(r'\[(\d+:\d+\.\d+)\](.*)', raw_line)
-            if match:
-                try:
-                    timestamp = parse_time_to_seconds(match.group(1))
-                    lyric = match.group(2)
-                    lyrics.append((timestamp, lyric))
-                except Exception:
-                    errors.append(raw_line)
-                    lyrics.append((None, raw_line))
+            # Match line timestamp (square brackets) and Enhanced word timestamps (angle brackets)
+            line_match = re.match(r'\[(\d+:\d+\.\d+)\](.*)', raw_line)
+            if line_match:
+                line_time = parse_time_to_seconds(line_match.group(1))
+                lyric_content = line_match.group(2)
+                # Split into word timestamps if Enhanced LRC
+                words = re.findall(r'<(\d+:\d+\.\d+)>(.*?)(?=(<\d+:\d+\.\d+>)|$)', lyric_content)
+                if words:
+                    for word_time_str, word_text, _ in words:
+                        try:
+                            word_time = parse_time_to_seconds(word_time_str)
+                            lyrics.append((word_time, word_text.strip()))
+                        except:
+                            errors.append(f"Invalid word timestamp: {word_time_str}")
+                    # Also add the line time for fallback
+                    lyrics.append((line_time, lyric_content.strip()))
+                else:
+                    lyrics.append((line_time, lyric_content.strip()))
             else:
                 lyrics.append((None, raw_line))
                 errors.append(raw_line)
     return lyrics, errors
+
 
 def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format, current_idx, use_manual_offset):
     height, width = stdscr.getmaxyx()
@@ -338,7 +297,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
         stdscr.attroff(curses.color_pair(3))
         current_line_y += 1
     if current_idx is not None and current_idx < len(lyrics):
-        status = f"Pos: {position}s - Line {current_idx+1}/{len(lyrics)}"
+        status = f"Pos: {position}s - Line {current_idx+1}/{len(lyrics)} "
         stdscr.addstr(height-1, 0, status, curses.A_BOLD)
     if current_idx is not None and current_idx == len(lyrics) - 1 and not is_txt_format:
         stdscr.addstr(height-2, 0, "End of lyrics", curses.A_BOLD)
