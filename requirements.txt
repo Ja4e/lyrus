@@ -1,0 +1,10 @@
+curses
+subprocess
+re
+os
+bisect
+time
+textwrap
+requests
+urllib3
+syncedlyrics
