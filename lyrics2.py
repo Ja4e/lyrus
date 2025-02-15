@@ -265,6 +265,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
                 wrapped_lines.append((orig_idx, " " + line))
         else:
             wrapped_lines.append((orig_idx, ""))
+    
     total_wrapped = len(wrapped_lines)
     max_start = max(0, total_wrapped - available_lines)
     
@@ -287,9 +288,12 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
         if current_line_y >= height - 1:
             break
         
+        # Add a space to the start or end of the line (without wrapping)
+        line_with_space = " " + line  # Adding a space before the line text
+        
         # Center the line in the screen width
-        padding = (width - len(line) - 2) // 2  # Calculate padding
-        centered_line = " " * padding + line
+        padding = (width - len(line_with_space) - 2) // 2  # Calculate padding
+        centered_line = " " * padding + line_with_space
 
         if orig_idx == current_idx:
             stdscr.attron(curses.color_pair(2))
@@ -320,6 +324,8 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 
     stdscr.refresh()
     return start_screen_line
+
+
 
 
 # def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format, current_idx, use_manual_offset):
