@@ -251,7 +251,6 @@ def load_lyrics(file_path):
                 errors.append(raw_line)
     return lyrics, errors
 
-
 def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format, current_idx, use_manual_offset):
     height, width = stdscr.getmaxyx()
     available_lines = height - 3
@@ -268,6 +267,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
             wrapped_lines.append((orig_idx, ""))
     total_wrapped = len(wrapped_lines)
     max_start = max(0, total_wrapped - available_lines)
+    
     if use_manual_offset:
         start_screen_line = max(0, min(manual_offset, max_start))
     else:
@@ -279,30 +279,100 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
         else:
             ideal_start = current_idx - (available_lines // 2)
             start_screen_line = max(0, min(ideal_start, max_start))
+
     end_screen_line = start_screen_line + available_lines
     stdscr.clear()
     current_line_y = 1
     for idx, (orig_idx, line) in enumerate(wrapped_lines[start_screen_line:end_screen_line]):
         if current_line_y >= height - 1:
             break
+        
+        # Center the line in the screen width
+        padding = (width - len(line) - 2) // 2  # Calculate padding
+        centered_line = " " * padding + line
+
         if orig_idx == current_idx:
             stdscr.attron(curses.color_pair(2))
         else:
             stdscr.attron(curses.color_pair(3))
+
         try:
-            stdscr.addstr(current_line_y, 0, line)
+            stdscr.addstr(current_line_y, 0, centered_line)
         except curses.error:
             pass
         stdscr.attroff(curses.color_pair(2))
         stdscr.attroff(curses.color_pair(3))
         current_line_y += 1
+    
     if current_idx is not None and current_idx < len(lyrics):
-        status = f"Pos: {position}s - Line {current_idx+1}/{len(lyrics)} "
-        stdscr.addstr(height-1, 0, status, curses.A_BOLD)
+        status = f"Playing: {track_info} - Line {current_idx+1}/{len(lyrics)}"
+        
+        # Ensure status fits within screen width
+        if len(status) > width - 2:
+            status = status[:width - 2]
+        
+        if height > 1:  # Ensure there's space at the bottom
+            stdscr.addstr(height-1, 0, status, curses.A_BOLD)
+
     if current_idx is not None and current_idx == len(lyrics) - 1 and not is_txt_format:
-        stdscr.addstr(height-2, 0, "End of lyrics", curses.A_BOLD)
+        if height > 2:  # Ensure there's space for the 'End of lyrics' message
+            stdscr.addstr(height-2, 0, "End of lyrics", curses.A_BOLD)
+
     stdscr.refresh()
     return start_screen_line
+
+
+# def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format, current_idx, use_manual_offset):
+    # height, width = stdscr.getmaxyx()
+    # available_lines = height - 3
+    # wrap_width = width - 2
+
+    # wrapped_lines = []
+    # for orig_idx, (_, lyric) in enumerate(lyrics):
+        # if lyric.strip():
+            # lines = textwrap.wrap(lyric, wrap_width)
+            # wrapped_lines.append((orig_idx, lines[0]))
+            # for line in lines[1:]:
+                # wrapped_lines.append((orig_idx, " " + line))
+        # else:
+            # wrapped_lines.append((orig_idx, ""))
+    # total_wrapped = len(wrapped_lines)
+    # max_start = max(0, total_wrapped - available_lines)
+    # if use_manual_offset:
+        # start_screen_line = max(0, min(manual_offset, max_start))
+    # else:
+        # indices = [i for i, (orig, _) in enumerate(wrapped_lines) if orig == current_idx]
+        # if indices:
+            # center = (indices[0] + indices[-1]) // 2
+            # ideal_start = center - (available_lines // 2)
+            # start_screen_line = max(0, min(ideal_start, max_start))
+        # else:
+            # ideal_start = current_idx - (available_lines // 2)
+            # start_screen_line = max(0, min(ideal_start, max_start))
+    # end_screen_line = start_screen_line + available_lines
+    # stdscr.clear()
+    # current_line_y = 1
+    # for idx, (orig_idx, line) in enumerate(wrapped_lines[start_screen_line:end_screen_line]):
+        # if current_line_y >= height - 1:
+            # break
+        # if orig_idx == current_idx:
+            # stdscr.attron(curses.color_pair(2))
+        # else:
+            # stdscr.attron(curses.color_pair(3))
+        # try:
+            # stdscr.addstr(current_line_y, 0, line)
+        # except curses.error:
+            # pass
+        # stdscr.attroff(curses.color_pair(2))
+        # stdscr.attroff(curses.color_pair(3))
+        # current_line_y += 1
+    # if current_idx is not None and current_idx < len(lyrics):
+        # status = f"Pos: {position}s - Line {current_idx+1}/{len(lyrics)} "
+        # stdscr.addstr(height-1, 0, status, curses.A_BOLD)
+    # if current_idx is not None and current_idx == len(lyrics) - 1 and not is_txt_format:
+        # stdscr.addstr(height-2, 0, "End of lyrics", curses.A_BOLD)
+    # stdscr.refresh()
+    # return start_screen_line
 
 def main(stdscr):
     curses.start_color()
@@ -390,6 +460,115 @@ def main(stdscr):
             )
             manual_offset = new_manual_offset
             last_redraw = current_time
+# def main(stdscr):
+    # curses.start_color()
+    # curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)  # Highlighted text color
+    # curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)  # Regular text color
+    # curses.curs_set(0)
+    # stdscr.timeout(500)
+    # current_audio_file = None
+    # lyrics = []
+    # errors = []
+    # is_txt_format = False
+    # last_input_time = None
+    # manual_offset = 0
+    # last_redraw = 0
+    # last_position = -1
+    # last_lyrics = []  # Track the last set of lyrics shown
+    # last_highlighted_idx = -1  # Track the last highlighted line index
+
+    # while True:
+        # current_time = time.time()
+        # needs_redraw = False
+        # if not is_txt_format and last_input_time and (current_time - last_input_time >= 2):
+            # last_input_time = None
+            # needs_redraw = True
+        # audio_file, position, artist, title, duration = get_cmus_info()
+
+        # if audio_file != current_audio_file:
+            # current_audio_file = audio_file
+            # manual_offset = 0
+            # last_input_time = None
+            # lyrics = []
+            # errors = []
+            # needs_redraw = True
+            # if audio_file:
+                # directory = os.path.dirname(audio_file)
+                # artist_name = artist if artist else "UnknownArtist"
+                # track_name = title if title else os.path.splitext(os.path.basename(audio_file))[0]
+                # lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
+                # if lyrics_file:
+                    # is_txt_format = lyrics_file.endswith('.txt')
+                    # lyrics, errors = load_lyrics(lyrics_file)
+
+        # # Track the current index for the highlighted line
+        # current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+
+        # # Check if lyrics or position have changed
+        # if current_idx != last_highlighted_idx or lyrics != last_lyrics:
+            # needs_redraw = True
+            # last_highlighted_idx = current_idx  # Update the last highlighted index
+            # last_lyrics = lyrics  # Update the last lyrics
+
+        # if audio_file and (needs_redraw or (current_time - last_redraw >= 0.5) or position != last_position):
+            # height, width = stdscr.getmaxyx()
+            # available_lines = height - 3
+            # manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
+
+            # # Display lyrics with highlight
+            # new_manual_offset = display_lyrics(
+                # stdscr,
+                # lyrics,
+                # errors,
+                # position,
+                # os.path.basename(audio_file),
+                # manual_offset,
+                # is_txt_format,
+                # current_idx,
+                # use_manual_offset=manual_scroll_active
+            # )
+
+            # manual_offset = new_manual_offset
+            # last_redraw = current_time
+
+        # # Handle user input and disable timeout during selection
+        # stdscr.timeout(-1)  # Disable timeout temporarily for user input
+        # key = stdscr.getch()
+        # if key == ord('q'):
+            # break
+        # elif key == curses.KEY_UP:
+            # manual_offset = max(0, manual_offset - 1)
+            # last_input_time = current_time
+            # needs_redraw = True
+        # elif key == curses.KEY_DOWN:
+            # manual_offset += 1
+            # last_input_time = current_time
+            # needs_redraw = True
+        # elif key == curses.KEY_RESIZE:
+            # needs_redraw = True
+
+        # # Re-enable timeout after user input
+        # stdscr.timeout(500)  # Re-enable timeout
+
+        # if needs_redraw and audio_file:
+            # height, width = stdscr.getmaxyx()
+            # available_lines = height - 3
+            # manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
+
+            # # Display lyrics with highlight
+            # new_manual_offset = display_lyrics(
+                # stdscr,
+                # lyrics,
+                # errors,
+                # position,
+                # os.path.basename(audio_file),
+                # manual_offset,
+                # is_txt_format,
+                # current_idx,
+                # use_manual_offset=manual_scroll_active
+            # )
+            # manual_offset = new_manual_offset
+            # last_redraw = current_time
 
 if __name__ == "__main__":
     try:
