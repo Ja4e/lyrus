@@ -13,6 +13,10 @@ def sanitize_filename(name):
 	"""Replace special characters with underscores to avoid filesystem issues."""
 	return re.sub(r'[<>:"/\\|?*]', '_', name)
 
+def sanitize_string(s):
+    """Normalize strings for comparison by removing non-alphanumeric chars and lowercasing"""
+    return re.sub(r'[^a-zA-Z0-9]', '', str(s)).lower()
+
 # def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
 	# """
 	# Fetch lyrics using LRCLIB API by artist name and track name.
@@ -75,25 +79,83 @@ def sanitize_filename(name):
 		# return None, None
 		
 
+# def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None):
+	# """
+	# Fetch lyrics using the syncedlyrics library.
+	# Returns a tuple (lyrics_content, is_synced) or (None, None) on error.
+	# """
+	# search_term = f"{track_name} {artist_name}".strip()
+	# if not search_term:
+		# return None, None
+	# try:
+		# # Attempt to fetch lyrics using syncedlyrics, preferring synced but allowing plain
+		# lyrics = syncedlyrics.search(search_term)
+		# if not lyrics:
+			# return None, None
+		# # Determine if the lyrics are synced by checking for timestamp lines
+		# is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
+		# return lyrics, is_synced
+	# except Exception as e:
+		# print(f"Error fetching lyrics via syncedlyrics: {e}")
+		# return None, None
+
+def parse_lrc_tags(lyrics):
+    """Extract LRC metadata tags from lyrics content"""
+    tags = {}
+    for line in lyrics.split('\n'):
+        match = re.match(r'^\[(ti|ar|al):(.+)\]$', line, re.IGNORECASE)
+        if match:
+            key = match.group(1).lower()
+            value = match.group(2).strip()
+            tags[key] = value
+    return tags
+
+
+def validate_lyrics(content, artist, title):
+    """More lenient validation that allows approximate matches"""
+    # Always allow files with timestamps through
+    if re.search(r'\[\d+:\d+\.\d+\]', content):
+        return True
+        
+    # Check for instrumental marker
+    if re.search(r'\b(instrumental)\b', content, re.IGNORECASE):
+        return True
+
+    # Normalize without being too aggressive
+    def normalize(s):
+        return re.sub(r'[^\w]', '', str(s)).lower().replace(' ', '')[:15]
+
+    # Check for partial matches
+    norm_title = normalize(title)[:15]
+    norm_artist = normalize(artist)[:15] if artist else ''
+    norm_content = normalize(content)
+
+    title_match = norm_title in norm_content if norm_title else True
+    artist_match = norm_artist in norm_content if norm_artist else True
+
+    return title_match or artist_match
+
 def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None):
-	"""
-	Fetch lyrics using the syncedlyrics library.
-	Returns a tuple (lyrics_content, is_synced) or (None, None) on error.
-	"""
-	search_term = f"{track_name} {artist_name}".strip()
-	if not search_term:
-		return None, None
-	try:
-		# Attempt to fetch lyrics using syncedlyrics, preferring synced but allowing plain
-		lyrics = syncedlyrics.search(search_term)
-		if not lyrics:
-			return None, None
-		# Determine if the lyrics are synced by checking for timestamp lines
-		is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
-		return lyrics, is_synced
-	except Exception as e:
-		print(f"Error fetching lyrics via syncedlyrics: {e}")
-		return None, None
+    """Fetch lyrics with strict validation against track metadata"""
+    search_term = f"{track_name} {artist_name}".strip()
+    if not search_term:
+        return None, None
+    
+    try:
+        lyrics = syncedlyrics.search(search_term)
+        if not lyrics:
+            return None, None
+            
+        if not validate_lyrics(lyrics, artist_name, track_name):
+            print("Lyrics validation failed - metadata mismatch")
+            return None, None
+            
+        is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) 
+                          for line in lyrics.split('\n'))
+        return lyrics, is_synced
+    except Exception as e:
+        print(f"Error fetching lyrics: {e}")
+        return None, None
 	
 def save_lyrics(lyrics, track_name, artist_name, extension):
 	"""Save lyrics to a sanitized filename with appropriate extension."""
@@ -262,80 +324,174 @@ def get_cmus_info():
 
 	# print("[ERROR] No lyrics found from any source.")
 	# return None
+	
 def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
-	base_name, _ = os.path.splitext(os.path.basename(audio_file))
+    base_name, _ = os.path.splitext(os.path.basename(audio_file))
 
-	a2_file = os.path.join(directory, f"{base_name}.a2")
-	lrc_file = os.path.join(directory, f"{base_name}.lrc")
-	txt_file = os.path.join(directory, f"{base_name}.txt")
+    # Check local files first (original structure)
+    a2_file = os.path.join(directory, f"{base_name}.a2")
+    lrc_file = os.path.join(directory, f"{base_name}.lrc")
+    txt_file = os.path.join(directory, f"{base_name}.txt")
 
-	# Check local files first
-	local_files = {
-		'a2': os.path.exists(a2_file),
-		'lrc': os.path.exists(lrc_file),
-		'txt': os.path.exists(txt_file)
-	}
+    local_files = [
+        (a2_file, 'a2'),
+        (lrc_file, 'lrc'), 
+        (txt_file, 'txt')
+    ]
+
+    # Modified validation check with fallback
+    for file_path, ext in local_files:
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, 'r', encoding='utf-8') as f:
+                    content = f.read()
+                
+                # Give priority to unvalidated local files over fetched ones
+                if validate_lyrics(content, artist_name, track_name):
+                    print(f"Using validated local .{ext} file")
+                    return file_path
+                else:
+                    # Still use local file but warn about validation
+                    print(f"Using unvalidated local .{ext} file (fallback)")
+                    return file_path
+                    
+            except Exception as e:
+                print(f"Error reading {file_path}: {e}")
+
+    # Check if metadata indicates instrumental
+    is_instrumental_metadata = (
+        "instrumental" in track_name.lower() or 
+        (artist_name and "instrumental" in artist_name.lower())
+    )
+
+    sanitized_track = sanitize_filename(track_name)
+    sanitized_artist = sanitize_filename(artist_name)
+    possible_filenames = [
+        f"{sanitized_track}.a2",
+        f"{sanitized_track}.lrc",
+        f"{sanitized_track}.txt",
+        f"{sanitized_track}_{sanitized_artist}.a2",
+        f"{sanitized_track}_{sanitized_artist}.lrc",
+        f"{sanitized_track}_{sanitized_artist}.txt"
+    ]
+
+    synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
+
+    # Search in both directories with validation
+    for dir_path in [directory, synced_dir]:
+        for filename in possible_filenames:
+            file_path = os.path.join(dir_path, filename)
+            if os.path.exists(file_path):
+                try:
+                    with open(file_path, 'r', encoding='utf-8') as f:
+                        content = f.read()
+                    if validate_lyrics(content, artist_name, track_name):
+                        print(f"Using validated file: {file_path}")
+                        return file_path
+                    else:
+                        print(f"Skipping invalid file: {file_path}")
+                except Exception as e:
+                    print(f"Error reading {file_path}: {e}")
+
+    # Instrumental handling (keep your existing logic)
+    if is_instrumental_metadata:
+        print("[INFO] Instrumental track detected via metadata")
+        return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
+
+    print("[DEBUG] Fetching from syncedlyrics...")
+    
+    # Modified fetched lyrics handling
+    fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
+    
+    if fetched_lyrics:
+        # Add tolerant validation
+        if not validate_lyrics(fetched_lyrics, artist_name, track_name):
+            # Instead of discarding, add warning and use anyway
+            print("Validation warning - using lyrics with caution")
+            fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
+
+        # Keep your existing saving logic
+        is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
+        extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
+        return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+
+    print("[ERROR] No lyrics found")
+    return None
+
+# def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
+	# base_name, _ = os.path.splitext(os.path.basename(audio_file))
+
+	# a2_file = os.path.join(directory, f"{base_name}.a2")
+	# lrc_file = os.path.join(directory, f"{base_name}.lrc")
+	# txt_file = os.path.join(directory, f"{base_name}.txt")
+
+	# # Check local files first
+	# local_files = {
+		# 'a2': os.path.exists(a2_file),
+		# 'lrc': os.path.exists(lrc_file),
+		# 'txt': os.path.exists(txt_file)
+	# }
 	
-	if local_files['a2']:
-		print("Using local .a2 file")
-		return a2_file
-	elif local_files['lrc']:
-		print("Using local .lrc file")
-		return lrc_file
-	elif local_files['txt']:
-		print("Using local .txt file")
-		return txt_file
+	# if local_files['a2']:
+		# print("Using local .a2 file")
+		# return a2_file
+	# elif local_files['lrc']:
+		# print("Using local .lrc file")
+		# return lrc_file
+	# elif local_files['txt']:
+		# print("Using local .txt file")
+		# return txt_file
 
-	# Check if metadata indicates instrumental
-	is_instrumental_metadata = (
-		"instrumental" in track_name.lower() or 
-		(artist_name and "instrumental" in artist_name.lower())
-	)
+	# # Check if metadata indicates instrumental
+	# is_instrumental_metadata = (
+		# "instrumental" in track_name.lower() or 
+		# (artist_name and "instrumental" in artist_name.lower())
+	# )
 	
-	sanitized_track = sanitize_filename(track_name)
-	sanitized_artist = sanitize_filename(artist_name)
-	possible_filenames = [
-		f"{sanitized_track}.a2",
-		f"{sanitized_track}.lrc",
-		f"{sanitized_track}.txt",
-		f"{sanitized_track}_{sanitized_artist}.a2",
-		f"{sanitized_track}_{sanitized_artist}.lrc",
-		f"{sanitized_track}_{sanitized_artist}.txt"
-	]
+	# sanitized_track = sanitize_filename(track_name)
+	# sanitized_artist = sanitize_filename(artist_name)
+	# possible_filenames = [
+		# f"{sanitized_track}.a2",
+		# f"{sanitized_track}.lrc",
+		# f"{sanitized_track}.txt",
+		# f"{sanitized_track}_{sanitized_artist}.a2",
+		# f"{sanitized_track}_{sanitized_artist}.lrc",
+		# f"{sanitized_track}_{sanitized_artist}.txt"
+	# ]
 
-	synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
+	# synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
 	
-	# Search in both directories
-	for dir_path in [directory, synced_dir]:
-		for filename in possible_filenames:
-			file_path = os.path.join(dir_path, filename)
-			if os.path.exists(file_path):
-				print(f"[DEBUG] Found lyrics: {file_path}")
-				return file_path
+	# # Search in both directories
+	# for dir_path in [directory, synced_dir]:
+		# for filename in possible_filenames:
+			# file_path = os.path.join(dir_path, filename)
+			# if os.path.exists(file_path):
+				# print(f"[DEBUG] Found lyrics: {file_path}")
+				# return file_path
 
-	# If metadata indicates instrumental, save and return instrumental marker
-	if is_instrumental_metadata:
-		print("[INFO] Instrumental track detected via metadata")
-		return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
+	# # If metadata indicates instrumental, save and return instrumental marker
+	# if is_instrumental_metadata:
+		# print("[INFO] Instrumental track detected via metadata")
+		# return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
 
-	print("[DEBUG] No local nor cached file found, fetching from syncedlyrics...")
+	# print("[DEBUG] No local nor cached file found, fetching from syncedlyrics...")
 	
-	# Fetch lyrics
-	fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
+	# # Fetch lyrics
+	# fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
 	
-	if fetched_lyrics:
-		# Check if lyrics contain instrumental marker
-		if re.search(r'\[Instrumental\]', fetched_lyrics, re.IGNORECASE):
-			print("[INFO] Instrumental track detected via lyrics content")
-			return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
-		else:
-			# Determine extension and save normally
-			is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
-			extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
-			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+	# if fetched_lyrics:
+		# # Check if lyrics contain instrumental marker
+		# if re.search(r'\[Instrumental\]', fetched_lyrics, re.IGNORECASE):
+			# print("[INFO] Instrumental track detected via lyrics content")
+			# return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
+		# else:
+			# # Determine extension and save normally
+			# is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
+			# extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
+			# return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
 
-	print("[ERROR] No lyrics found from any source.")
-	return None
+	# print("[ERROR] No lyrics found from any source.")
+	# return None
 
 def parse_time_to_seconds(time_str):
 	minutes, seconds = time_str.split(':')
