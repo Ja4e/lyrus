@@ -319,8 +319,9 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 		current_line_y += 1
 	
 	if current_idx is not None and current_idx < len(lyrics):
-		status = f"Playing: {track_info} - Line {current_idx+1}/{len(lyrics)} "
+		# status = f"Playing: {track_info} - Line {current_idx+1}/{len(lyrics)} "
 		
+		status = f"Line {current_idx+1}/{len(lyrics)} "
 		# Ensure status fits within screen width
 		if len(status) > width - 2:
 			status = status[:width - 2]
@@ -357,48 +358,8 @@ def main(stdscr):
 	while True:
 		current_time = time.time()
 		needs_redraw = False
-		# if not is_txt_format and last_input_time and (current_time - last_input_time >= 0.1):
-			# last_line_index = -1  # Reset the last displayed line index
-			# last_input_time = None
-			# needs_redraw = True
 		
 		audio_file, position, artist, title, duration = get_cmus_info()
-		
-		# if audio_file != current_audio_file:
-			# last_line_index = -1
-			# current_audio_file = audio_file
-			# manual_offset = 0
-			# last_input_time = None
-			# lyrics = []
-			# errors = []
-			# needs_redraw = True
-			# if audio_file:
-				# directory = os.path.dirname(audio_file)
-				# artist_name = artist if artist else "UnknownArtist"
-				# track_name = title if title else os.path.splitext(os.path.basename(audio_file))[0]
-				# lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
-				# if lyrics_file:
-					# is_txt_format = lyrics_file.endswith('.txt')
-					# lyrics, errors = load_lyrics(lyrics_file)
-					
-		# if audio_file != current_audio_file:
-			# last_line_index = -1
-			# current_audio_file = audio_file
-			# manual_offset = 0
-			# last_input_time = None
-			# lyrics = []  # Only reset if it's necessary
-			# errors = []  # Same for errors
-			# needs_redraw = True  # Immediately force redraw when the audio file changes
-			# if audio_file:
-				# directory = os.path.dirname(audio_file)
-				# artist_name = artist if artist else "UnknownArtist"
-				# track_name = title if title else os.path.splitext(os.path.basename(audio_file))[0]
-				# # If lyrics already cached, avoid reloading
-				# if not lyrics:  
-					# lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
-					# if lyrics_file:
-						# is_txt_format = lyrics_file.endswith('.txt')
-						# lyrics, errors = load_lyrics(lyrics_file)
 
 		if (audio_file != current_audio_file or 
 			artist != current_artist or 
