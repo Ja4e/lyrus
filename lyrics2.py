@@ -331,7 +331,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 
 	if current_idx is not None and current_idx == len(lyrics) - 1 and not is_txt_format:
 		if height > 2:  # Ensure there's space for the 'End of lyrics' message
-			stdscr.addstr(height-2, 0, "End of lyrics", curses.A_BOLD)
+			stdscr.addstr(height-2, 0, "End of lyrics ", curses.A_BOLD)
 
 	stdscr.refresh()
 	return start_screen_line
