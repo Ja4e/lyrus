@@ -454,6 +454,9 @@ def main(stdscr):
 					use_manual_offset=True  # Allow manual scrolling
 				)
 				manual_offset = new_manual_offset
+			last_position = position
+			last_redraw = current_time
+			
 
 
 		# Prevent auto-scroll for txt files, but allow manual scroll
