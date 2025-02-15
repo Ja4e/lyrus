@@ -144,6 +144,124 @@ def get_cmus_info():
 
 	return track_file, position, artist, title, duration
 
+# def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
+	# base_name, _ = os.path.splitext(os.path.basename(audio_file))
+
+	# a2_file = os.path.join(directory, f"{base_name}.a2")
+	# lrc_file = os.path.join(directory, f"{base_name}.lrc")
+	# txt_file = os.path.join(directory, f"{base_name}.txt")
+
+	# # Check local files
+	# if os.path.exists(a2_file):
+		# print("Using local .a2 file")
+		# return a2_file
+	# elif os.path.exists(lrc_file):
+		# print("Using local .lrc file")
+		# return lrc_file
+	# elif os.path.exists(txt_file):
+		# print("Using local .txt file")
+		# return txt_file
+	
+	# sanitized_track = sanitize_filename(track_name)
+	# sanitized_artist = sanitize_filename(artist_name)
+
+	# # Construct expected filenames
+	# possible_filenames = [
+		# f"{sanitized_track}.a2",
+		# f"{sanitized_track}.lrc",
+		# f"{sanitized_track}.txt",
+		# f"{sanitized_track}_{sanitized_artist}.a2",
+		# f"{sanitized_track}_{sanitized_artist}.lrc",
+		# f"{sanitized_track}_{sanitized_artist}.txt"
+	# ]
+
+	# synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
+
+	# # Search in both directories
+	# for dir_path in [directory, synced_dir]:
+		# for filename in possible_filenames:
+			# file_path = os.path.join(dir_path, filename)
+			# if os.path.exists(file_path):
+				# print(f"[DEBUG] Found lyrics: {file_path}")
+				# return file_path
+
+	# print("[DEBUG] No local nor cached file found, fetching from snycedlyrics...")
+	
+	# # # Fetch from LRCLIB only if no local file exists
+	# # fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
+	# # if fetched_lyrics:
+		# # extension = 'lrc' if is_synced else 'txt'
+		# # return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+
+	# # print("[DEBUG] LRCLIB failed, trying syncedlyrics...")
+
+	# # Fallback to syncedlyrics
+	# fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
+	# if fetched_lyrics:
+		# is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
+		# extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
+		# return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+
+	# print("[ERROR] No lyrics found from any source.")
+	# return None
+	
+# def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
+	# base_name, _ = os.path.splitext(os.path.basename(audio_file))
+
+	# a2_file = os.path.join(directory, f"{base_name}.a2")
+	# lrc_file = os.path.join(directory, f"{base_name}.lrc")
+	# txt_file = os.path.join(directory, f"{base_name}.txt")
+
+	# # Check local files
+	# if os.path.exists(a2_file):
+		# print("Using local .a2 file")
+		# return a2_file
+	# elif os.path.exists(lrc_file):
+		# print("Using local .lrc file")
+		# return lrc_file
+	# elif os.path.exists(txt_file):
+		# print("Using local .txt file")
+		# return txt_file
+
+	# sanitized_track = sanitize_filename(track_name)
+	# sanitized_artist = sanitize_filename(artist_name)
+
+	# # Construct expected filenames
+	# possible_filenames = [
+		# f"{sanitized_track}.a2",
+		# f"{sanitized_track}.lrc",
+		# f"{sanitized_track}.txt",
+		# f"{sanitized_track}_{sanitized_artist}.a2",
+		# f"{sanitized_track}_{sanitized_artist}.lrc",
+		# f"{sanitized_track}_{sanitized_artist}.txt"
+	# ]
+
+	# synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
+
+	# # Search in both directories
+	# for dir_path in [directory, synced_dir]:
+		# for filename in possible_filenames:
+			# file_path = os.path.join(dir_path, filename)
+			# if os.path.exists(file_path):
+				# print(f"[DEBUG] Found lyrics: {file_path}")
+				# return file_path
+
+	# print("[DEBUG] No local nor cached file found, fetching from syncedlyrics...")
+	
+	# # Fallback to syncedlyrics
+	# fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
+	# if fetched_lyrics:
+		# is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
+		# extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
+
+		# # Save the lyrics and ensure they're valid
+		# saved_lyrics_path = save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+
+		# # Return the saved path, so it can be loaded
+		# return saved_lyrics_path
+
+	# print("[ERROR] No lyrics found from any source.")
+	# return None
 def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
 	base_name, _ = os.path.splitext(os.path.basename(audio_file))
 
@@ -151,21 +269,31 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 	lrc_file = os.path.join(directory, f"{base_name}.lrc")
 	txt_file = os.path.join(directory, f"{base_name}.txt")
 
-	# Check local files
-	if os.path.exists(a2_file):
+	# Check local files first
+	local_files = {
+		'a2': os.path.exists(a2_file),
+		'lrc': os.path.exists(lrc_file),
+		'txt': os.path.exists(txt_file)
+	}
+	
+	if local_files['a2']:
 		print("Using local .a2 file")
 		return a2_file
-	elif os.path.exists(lrc_file):
+	elif local_files['lrc']:
 		print("Using local .lrc file")
 		return lrc_file
-	elif os.path.exists(txt_file):
+	elif local_files['txt']:
 		print("Using local .txt file")
 		return txt_file
+
+	# Check if metadata indicates instrumental
+	is_instrumental_metadata = (
+		"instrumental" in track_name.lower() or 
+		(artist_name and "instrumental" in artist_name.lower())
+	)
 	
 	sanitized_track = sanitize_filename(track_name)
 	sanitized_artist = sanitize_filename(artist_name)
-
-	# Construct expected filenames
 	possible_filenames = [
 		f"{sanitized_track}.a2",
 		f"{sanitized_track}.lrc",
@@ -176,7 +304,7 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 	]
 
 	synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
-
+	
 	# Search in both directories
 	for dir_path in [directory, synced_dir]:
 		for filename in possible_filenames:
@@ -185,22 +313,26 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 				print(f"[DEBUG] Found lyrics: {file_path}")
 				return file_path
 
-	print("[DEBUG] No local nor cached file found, fetching from snycedlyrics...")
+	# If metadata indicates instrumental, save and return instrumental marker
+	if is_instrumental_metadata:
+		print("[INFO] Instrumental track detected via metadata")
+		return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
+
+	print("[DEBUG] No local nor cached file found, fetching from syncedlyrics...")
 	
-	# # Fetch from LRCLIB only if no local file exists
-	# fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
-	# if fetched_lyrics:
-		# extension = 'lrc' if is_synced else 'txt'
-		# return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-
-	# print("[DEBUG] LRCLIB failed, trying syncedlyrics...")
-
-	# Fallback to syncedlyrics
+	# Fetch lyrics
 	fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
+	
 	if fetched_lyrics:
-		is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
-		extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
-		return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+		# Check if lyrics contain instrumental marker
+		if re.search(r'\[Instrumental\]', fetched_lyrics, re.IGNORECASE):
+			print("[INFO] Instrumental track detected via lyrics content")
+			return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
+		else:
+			# Determine extension and save normally
+			is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
+			extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
+			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
 
 	print("[ERROR] No lyrics found from any source.")
 	return None
@@ -211,10 +343,16 @@ def parse_time_to_seconds(time_str):
 	return max(0, int(minutes) * 60 + int(seconds) + float(f"0.{milliseconds}"))
 
 def load_lyrics(file_path):
-	with open(file_path, 'r', encoding="utf-8") as f:
-		lines = f.readlines()
 	lyrics = []
 	errors = []
+	
+	# Try to open the file
+	try:
+		with open(file_path, 'r', encoding="utf-8") as f:
+			lines = f.readlines()
+	except Exception as e:
+		errors.append(f"Error opening file {file_path}: {str(e)}")
+		return lyrics, errors
 	if file_path.endswith('.txt'):
 		for line in lines:
 			raw_line = line.rstrip('\n')
@@ -259,10 +397,12 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 	wrapped_lines = []
 	for orig_idx, (_, lyric) in enumerate(lyrics):
 		if lyric.strip():
-			lines = textwrap.wrap(lyric, wrap_width)
-			wrapped_lines.append((orig_idx, lines[0]))
-			for line in lines[1:]:
-				wrapped_lines.append((orig_idx, " " + line))
+			# Wrap with current width and preserve leading space
+			lines = textwrap.wrap(lyric, wrap_width, drop_whitespace=False)
+			if lines:
+				wrapped_lines.append((orig_idx, lines[0]))
+				for line in lines[1:]:
+					wrapped_lines.append((orig_idx, " " + line))  # Indent wrapped lines
 		else:
 			wrapped_lines.append((orig_idx, ""))
 	
@@ -491,6 +631,13 @@ def main(stdscr):
 		elif key == curses.KEY_RESIZE:
 			last_line_index = -1  
 			needs_redraw = True
+		# elif key == curses.KEY_RESIZE:
+			# # Force complete redraw with new dimensions
+			# curses.resizeterm(*stdscr.getmaxyx())
+			# last_line_index = -1  # Force re-render
+			# manual_offset = 0  # Reset scroll position for txt files
+			# needs_redraw = True
+			# last_redraw = 0  # Force a full refresh
 
 		# Redraw lyrics if necessary
 		if needs_redraw or audio_file or position != last_position:
@@ -525,7 +672,22 @@ def main(stdscr):
 
 				last_line_index = current_idx  # Update last displayed line index
 			last_redraw = current_time
-
+		
+		if is_txt_format and needs_redraw:
+			new_manual_offset = display_lyrics(
+				stdscr,
+				lyrics,
+				errors,
+				position,
+				os.path.basename(audio_file),
+				manual_offset,
+				is_txt_format,
+				current_idx,
+				use_manual_offset=True  # Always allow manual scrolling for .txt files
+			)
+			manual_offset = new_manual_offset
+			last_line_index = current_idx  # Update last displayed line index
+			last_redraw = current_time
 
 if __name__ == "__main__":
 	try:
