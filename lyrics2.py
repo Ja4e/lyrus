@@ -379,6 +379,142 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
         # stdscr.addstr(height-2, 0, "End of lyrics", curses.A_BOLD)
     # stdscr.refresh()
     # return start_screen_line
+
+# def main(stdscr):
+    # curses.start_color()
+    # curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
+    # curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
+    # curses.curs_set(0)
+    # stdscr.timeout(500)
+    # current_audio_file = None
+    # lyrics = []
+    # errors = []
+    # is_txt_format = False
+    # last_input_time = None
+    # manual_offset = 0
+    # last_redraw = 0
+    # last_position = -1
+    # last_line_index = -1  # Track the last displayed line index
+
+    # while True:
+        # current_time = time.time()
+        # needs_redraw = False
+        # if not is_txt_format and last_input_time and (current_time - last_input_time >= 2):
+            # last_input_time = None
+            # needs_redraw = True
+        
+        # audio_file, position, artist, title, duration = get_cmus_info()
+        
+        # if audio_file != current_audio_file:
+            # current_audio_file = audio_file
+            # manual_offset = 0
+            # last_input_time = None
+            # lyrics = []
+            # errors = []
+            # needs_redraw = True
+            # if audio_file:
+                # directory = os.path.dirname(audio_file)
+                # artist_name = artist if artist else "UnknownArtist"
+                # track_name = title if title else os.path.splitext(os.path.basename(audio_file))[0]
+                # lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
+                # if lyrics_file:
+                    # is_txt_format = lyrics_file.endswith('.txt')
+                    # lyrics, errors = load_lyrics(lyrics_file)
+
+        # # Prevent auto-scroll for txt files, but allow manual scroll
+        # if audio_file and (needs_redraw or (current_time - last_redraw >= 0.5) or position != last_position):
+            # height, width = stdscr.getmaxyx()
+            # available_lines = height - 3
+            # current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+            # manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
+
+            # if current_idx != last_line_index:  # Only redraw if the line has changed
+                # if not is_txt_format:
+                    # new_manual_offset = display_lyrics(
+                        # stdscr,
+                        # lyrics,
+                        # errors,
+                        # position,
+                        # os.path.basename(audio_file),
+                        # manual_offset,
+                        # is_txt_format,
+                        # current_idx,
+                        # use_manual_offset=manual_scroll_active
+                    # )
+                    # manual_offset = new_manual_offset
+                # else:
+                    # # For txt files, allow manual scrolling but prevent auto-scroll based on position
+                    # new_manual_offset = display_lyrics(
+                        # stdscr,
+                        # lyrics,
+                        # errors,
+                        # position,
+                        # os.path.basename(audio_file),
+                        # manual_offset,
+                        # is_txt_format,
+                        # current_idx,
+                        # use_manual_offset=True  # Allow manual scrolling
+                    # )
+                    # manual_offset = new_manual_offset
+                
+                # last_line_index = current_idx  # Update last displayed line index
+
+            # last_position = position
+            # last_redraw = current_time
+
+        # key = stdscr.getch()
+        # if key == ord('q'):
+            # break
+        # elif key == curses.KEY_UP:
+            # manual_offset = max(0, manual_offset - 1)
+            # last_input_time = current_time
+            # needs_redraw = True
+        # elif key == curses.KEY_DOWN:
+            # manual_offset += 1
+            # last_input_time = current_time
+            # needs_redraw = True
+        # elif key == curses.KEY_RESIZE:
+            # needs_redraw = True
+
+        # # Redraw lyrics if necessary
+        # if needs_redraw and audio_file:
+            # height, width = stdscr.getmaxyx()
+            # available_lines = height - 3
+            # current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+            # manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
+
+            # if current_idx != last_line_index:  # Only redraw if the line has changed
+                # if not is_txt_format:
+                    # new_manual_offset = display_lyrics(
+                        # stdscr,
+                        # lyrics,
+                        # errors,
+                        # position,
+                        # os.path.basename(audio_file),
+                        # manual_offset,
+                        # is_txt_format,
+                        # current_idx,
+                        # use_manual_offset=manual_scroll_active
+                    # )
+                    # manual_offset = new_manual_offset
+                # else:
+                    # # For txt files, allow manual scrolling but prevent auto-scroll based on position
+                    # new_manual_offset = display_lyrics(
+                        # stdscr,
+                        # lyrics,
+                        # errors,
+                        # position,
+                        # os.path.basename(audio_file),
+                        # manual_offset,
+                        # is_txt_format,
+                        # current_idx,
+                        # use_manual_offset=True  # Allow manual scrolling
+                    # )
+                    # manual_offset = new_manual_offset
+
+                # last_line_index = current_idx  # Update last displayed line index
+            # last_redraw = current_time
+
 def main(stdscr):
     curses.start_color()
     curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
@@ -393,13 +529,17 @@ def main(stdscr):
     manual_offset = 0
     last_redraw = 0
     last_position = -1
+    last_line_index = -1  # Track the last displayed line index
+
     while True:
         current_time = time.time()
         needs_redraw = False
         if not is_txt_format and last_input_time and (current_time - last_input_time >= 2):
             last_input_time = None
             needs_redraw = True
+        
         audio_file, position, artist, title, duration = get_cmus_info()
+        
         if audio_file != current_audio_file:
             current_audio_file = audio_file
             manual_offset = 0
@@ -417,42 +557,53 @@ def main(stdscr):
                     lyrics, errors = load_lyrics(lyrics_file)
 
         # Prevent auto-scroll for txt files, but allow manual scroll
+        height, width = stdscr.getmaxyx()
+        available_lines = height - 3
+        current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+        manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
+
+        # If manual scroll is active, override the last_line_index to -1 to force redraw
+        if manual_scroll_active:
+            last_line_index = -1
+
         if audio_file and (needs_redraw or (current_time - last_redraw >= 0.5) or position != last_position):
-            height, width = stdscr.getmaxyx()
-            available_lines = height - 3
-            current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-            manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
+            if current_idx != last_line_index:  # Only redraw if the line has changed (or manual scroll)
+                if not is_txt_format:
+                    new_manual_offset = display_lyrics(
+                        stdscr,
+                        lyrics,
+                        errors,
+                        position,
+                        os.path.basename(audio_file),
+                        manual_offset,
+                        is_txt_format,
+                        current_idx,
+                        use_manual_offset=manual_scroll_active
+                    )
+                    manual_offset = new_manual_offset
+                else:
+                    # For txt files, allow manual scrolling but prevent auto-scroll based on position
+                    new_manual_offset = display_lyrics(
+                        stdscr,
+                        lyrics,
+                        errors,
+                        position,
+                        os.path.basename(audio_file),
+                        manual_offset,
+                        is_txt_format,
+                        current_idx,
+                        use_manual_offset=True  # Allow manual scrolling
+                    )
+                    manual_offset = new_manual_offset
 
-            if not is_txt_format:
-                new_manual_offset = display_lyrics(
-                    stdscr,
-                    lyrics,
-                    errors,
-                    position,
-                    os.path.basename(audio_file),
-                    manual_offset,
-                    is_txt_format,
-                    current_idx,
-                    use_manual_offset=manual_scroll_active
-                )
-                manual_offset = new_manual_offset
-            else:
-                # For txt files, allow manual scrolling but prevent auto-scroll based on position
-                new_manual_offset = display_lyrics(
-                    stdscr,
-                    lyrics,
-                    errors,
-                    position,
-                    os.path.basename(audio_file),
-                    manual_offset,
-                    is_txt_format,
-                    current_idx,
-                    use_manual_offset=True  # Allow manual scrolling
-                )
-                manual_offset = new_manual_offset
-
+                last_line_index = current_idx  # Update last displayed line index
             last_position = position
             last_redraw = current_time
+
+        # Force a refresh if manual input has gone inactive for 2 seconds
+        if not manual_scroll_active and last_input_time is None and (current_time - last_redraw >= 0.5):
+            last_line_index = -1  # Reset the last displayed line index
+            needs_redraw = True
 
         key = stdscr.getch()
         if key == ord('q'):
@@ -470,40 +621,163 @@ def main(stdscr):
 
         # Redraw lyrics if necessary
         if needs_redraw and audio_file:
-            height, width = stdscr.getmaxyx()
-            available_lines = height - 3
-            current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-            manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
+            if current_idx != last_line_index:  # Only redraw if the line has changed or manual scroll
+                if not is_txt_format:
+                    new_manual_offset = display_lyrics(
+                        stdscr,
+                        lyrics,
+                        errors,
+                        position,
+                        os.path.basename(audio_file),
+                        manual_offset,
+                        is_txt_format,
+                        current_idx,
+                        use_manual_offset=manual_scroll_active
+                    )
+                    manual_offset = new_manual_offset
+                else:
+                    # For txt files, allow manual scrolling but prevent auto-scroll based on position
+                    new_manual_offset = display_lyrics(
+                        stdscr,
+                        lyrics,
+                        errors,
+                        position,
+                        os.path.basename(audio_file),
+                        manual_offset,
+                        is_txt_format,
+                        current_idx,
+                        use_manual_offset=True  # Allow manual scrolling
+                    )
+                    manual_offset = new_manual_offset
 
-            if not is_txt_format:
-                new_manual_offset = display_lyrics(
-                    stdscr,
-                    lyrics,
-                    errors,
-                    position,
-                    os.path.basename(audio_file),
-                    manual_offset,
-                    is_txt_format,
-                    current_idx,
-                    use_manual_offset=manual_scroll_active
-                )
-                manual_offset = new_manual_offset
-            else:
-                # For txt files, allow manual scrolling but prevent auto-scroll based on position
-                new_manual_offset = display_lyrics(
-                    stdscr,
-                    lyrics,
-                    errors,
-                    position,
-                    os.path.basename(audio_file),
-                    manual_offset,
-                    is_txt_format,
-                    current_idx,
-                    use_manual_offset=True  # Allow manual scrolling
-                )
-                manual_offset = new_manual_offset
-
+                last_line_index = current_idx  # Update last displayed line index
             last_redraw = current_time
+
+# def main(stdscr):
+    # curses.start_color()
+    # curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
+    # curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
+    # curses.curs_set(0)
+    # stdscr.timeout(500)
+    # current_audio_file = None
+    # lyrics = []
+    # errors = []
+    # is_txt_format = False
+    # last_input_time = None
+    # manual_offset = 0
+    # last_redraw = 0
+    # last_position = -1
+    # while True:
+        # current_time = time.time()
+        # needs_redraw = False
+        # if not is_txt_format and last_input_time and (current_time - last_input_time >= 2):
+            # last_input_time = None
+            # needs_redraw = True
+        # audio_file, position, artist, title, duration = get_cmus_info()
+        # if audio_file != current_audio_file:
+            # current_audio_file = audio_file
+            # manual_offset = 0
+            # last_input_time = None
+            # lyrics = []
+            # errors = []
+            # needs_redraw = True
+            # if audio_file:
+                # directory = os.path.dirname(audio_file)
+                # artist_name = artist if artist else "UnknownArtist"
+                # track_name = title if title else os.path.splitext(os.path.basename(audio_file))[0]
+                # lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
+                # if lyrics_file:
+                    # is_txt_format = lyrics_file.endswith('.txt')
+                    # lyrics, errors = load_lyrics(lyrics_file)
+
+        # # Prevent auto-scroll for txt files, but allow manual scroll
+        # if audio_file and (needs_redraw or (current_time - last_redraw >= 0.5) or position != last_position):
+            # height, width = stdscr.getmaxyx()
+            # available_lines = height - 3
+            # current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+            # manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
+
+            # if not is_txt_format:
+                # new_manual_offset = display_lyrics(
+                    # stdscr,
+                    # lyrics,
+                    # errors,
+                    # position,
+                    # os.path.basename(audio_file),
+                    # manual_offset,
+                    # is_txt_format,
+                    # current_idx,
+                    # use_manual_offset=manual_scroll_active
+                # )
+                # manual_offset = new_manual_offset
+            # else:
+                # # For txt files, allow manual scrolling but prevent auto-scroll based on position
+                # new_manual_offset = display_lyrics(
+                    # stdscr,
+                    # lyrics,
+                    # errors,
+                    # position,
+                    # os.path.basename(audio_file),
+                    # manual_offset,
+                    # is_txt_format,
+                    # current_idx,
+                    # use_manual_offset=True  # Allow manual scrolling
+                # )
+                # manual_offset = new_manual_offset
+
+            # last_position = position
+            # last_redraw = current_time
+
+        # key = stdscr.getch()
+        # if key == ord('q'):
+            # break
+        # elif key == curses.KEY_UP:
+            # manual_offset = max(0, manual_offset - 1)
+            # last_input_time = current_time
+            # needs_redraw = True
+        # elif key == curses.KEY_DOWN:
+            # manual_offset += 1
+            # last_input_time = current_time
+            # needs_redraw = True
+        # elif key == curses.KEY_RESIZE:
+            # needs_redraw = True
+
+        # # Redraw lyrics if necessary
+        # if needs_redraw and audio_file:
+            # height, width = stdscr.getmaxyx()
+            # available_lines = height - 3
+            # current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+            # manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
+
+            # if not is_txt_format:
+                # new_manual_offset = display_lyrics(
+                    # stdscr,
+                    # lyrics,
+                    # errors,
+                    # position,
+                    # os.path.basename(audio_file),
+                    # manual_offset,
+                    # is_txt_format,
+                    # current_idx,
+                    # use_manual_offset=manual_scroll_active
+                # )
+                # manual_offset = new_manual_offset
+            # else:
+                # # For txt files, allow manual scrolling but prevent auto-scroll based on position
+                # new_manual_offset = display_lyrics(
+                    # stdscr,
+                    # lyrics,
+                    # errors,
+                    # position,
+                    # os.path.basename(audio_file),
+                    # manual_offset,
+                    # is_txt_format,
+                    # current_idx,
+                    # use_manual_offset=True  # Allow manual scrolling
+                # )
+                # manual_offset = new_manual_offset
+
+            # last_redraw = current_time
 
 
 # def main(stdscr):
