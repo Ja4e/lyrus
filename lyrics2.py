@@ -148,8 +148,8 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
     def worker(queue, search_term):
         """Worker function to fetch lyrics"""
         try:
-            #lyrics = syncedlyrics.search(search_term)
-            lyrics = syncedlyrics.search(search_term, enhanced=True)
+            lyrics = syncedlyrics.search(search_term)
+            # lyrics = syncedlyrics.search(search_term, enhanced=True) CURRENTLY A2 IS NOT WORKING PROPERLY
             queue.put(lyrics)  # Store result in queue
         except Exception as e:
             queue.put(None)
