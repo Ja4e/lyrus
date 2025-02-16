@@ -822,7 +822,7 @@ def main(stdscr):
 			title != current_title):
 			while True:
 				current_time = time.time()
-				needs_redraw = False
+				needs_redraw = True
 
 				audio_file, position, artist, title, duration = get_cmus_info()
 				# Update current tracking variables
@@ -890,6 +890,10 @@ def main(stdscr):
 				if manual_scroll_active:
 					last_line_index = -1
 				
+				if position != last_position or needs_redraw:
+					last_position = position
+					last_redraw = current_time
+				
 				current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
 				manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
 				if audio_file and (needs_redraw or (current_time - last_redraw >= 0.1) or position != last_position):
@@ -926,7 +930,6 @@ def main(stdscr):
 						last_line_index = current_idx  # Update last displayed line index
 					last_position = position
 					last_redraw = current_time
-					break
 
 				# Force a refresh if manual input has gone inactive for 2 seconds
 				if last_input_time and (current_time - last_input_time >= 2):
@@ -985,6 +988,7 @@ def main(stdscr):
 
 						last_line_index = current_idx  # Update last displayed line index
 					last_redraw = current_time
+				if position != last_position:
 					break
 
 		# Prevent auto-scroll for txt files, but allow manual scroll
@@ -1054,7 +1058,10 @@ def main(stdscr):
 			last_line_index = -1  
 			needs_redraw = True
 			last_redraw = current_time
-
+		if position != last_position or needs_redraw:
+			last_position = position
+			last_redraw = current_time
+		
 		# Redraw lyrics if necessary
 		#if needs_redraw or audio_file or position != last_position:
 		if position != last_position or (lyrics and (current_time - last_redraw >= 0.1)) or needs_redraw:
@@ -1090,6 +1097,7 @@ def main(stdscr):
 
 				last_line_index = current_idx  # Update last displayed line index
 			last_redraw = current_time
+		
 
 if __name__ == "__main__":
 	try:
