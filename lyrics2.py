@@ -1154,12 +1154,13 @@ def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, 
     else:
         return display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, is_a2_format, current_idx, use_manual_offset=manual_scroll_active)
 
+
 def main(stdscr):
     curses.start_color()
     curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
     curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
     curses.curs_set(0)
-    stdscr.timeout(200)
+    stdscr.timeout(100)
     
     current_audio_file, current_artist, current_title = None, None, None
     lyrics, errors = [], []
@@ -1173,7 +1174,7 @@ def main(stdscr):
         needs_redraw = False
         audio_file, position, artist, title, duration = get_cmus_info()
 
-        # Redraw if format is A2 and active words or position change
+        # Redraw only if position change correlates with lyrics change (A2 format)
         if is_a2_format:
             active_words = set()
             a2_lines = []
@@ -1194,6 +1195,7 @@ def main(stdscr):
                     if start <= position < end:
                         active_words.add((text, word_idx))
 
+            # Only redraw if the active words or position has changed
             if active_words != last_active_words or position != last_position:
                 needs_redraw = True
                 last_active_words = active_words
@@ -1216,18 +1218,29 @@ def main(stdscr):
                 is_a2_format = lyrics_file.endswith('.a2') if lyrics_file else False
                 lyrics, errors = load_lyrics(lyrics_file)
 
+        # Check if the position has changed enough to affect the lyrics
         current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+        if current_idx != last_line_index:
+            needs_redraw = True
+            last_line_index = current_idx
+        
         manual_scroll_active = last_input_time and (current_time - last_input_time < 2)
         
-        # Update display with the current lyrics
-        new_manual_offset = update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, is_txt_format, is_a2_format, current_idx, manual_scroll_active)
-        manual_offset = new_manual_offset
-        last_position = position
-        last_redraw = current_time
+        # Update display with the current lyrics only if necessary
+        if needs_redraw:
+            new_manual_offset = update_display(
+                stdscr, lyrics, errors, position, audio_file, manual_offset, 
+                is_txt_format, is_a2_format, current_idx, manual_scroll_active
+            )
+            manual_offset = new_manual_offset
+            last_position = position
+            last_redraw = current_time
 
         # Handle key input for scrolling
         key = stdscr.getch()
-        continue_running, manual_offset, last_input_time, needs_redraw = handle_scroll_input(key, manual_offset, last_input_time, needs_redraw)
+        continue_running, manual_offset, last_input_time, needs_redraw = handle_scroll_input(
+            key, manual_offset, last_input_time, needs_redraw
+        )
         if not continue_running:
             break
 
@@ -1237,21 +1250,21 @@ def main(stdscr):
             needs_redraw = True
             last_input_time = None
 
-        # Redraw lyrics if necessary
-        if position != last_position or needs_redraw:
+        # Redraw lyrics if necessary due to position change or other conditions
+        if needs_redraw:
             current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-            new_manual_offset = update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, is_txt_format, is_a2_format, current_idx, manual_scroll_active)
+            new_manual_offset = update_display(
+                stdscr, lyrics, errors, position, audio_file, manual_offset,
+                is_txt_format, is_a2_format, current_idx, manual_scroll_active
+            )
             manual_offset = new_manual_offset
-
-        if position != last_position:
-            last_position = position
 
         # Handle window resize
         if key == curses.KEY_RESIZE:
             needs_redraw = True
 
 if __name__ == "__main__":
-	try:
-		curses.wrapper(main)
-	except KeyboardInterrupt:
-		exit()
+    try:
+        curses.wrapper(main)
+    except KeyboardInterrupt:
+        exit()
