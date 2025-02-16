@@ -1201,11 +1201,13 @@ def main(stdscr):
                 last_active_words = active_words
 
         # Check if audio info has changed (force redraw)
+        # Check if audio info has changed (force immediate redraw)
         if (audio_file != current_audio_file or artist != current_artist or title != current_title):
             current_audio_file, current_artist, current_title = audio_file, artist, title
             lyrics, errors = [], []
             last_line_index, manual_offset = -1, 0
             last_input_time = None
+            needs_redraw = True  # Force immediate redraw
 
             # Load lyrics based on format
             directory = os.path.dirname(audio_file)
@@ -1215,8 +1217,19 @@ def main(stdscr):
 
             if lyrics_file:
                 is_txt_format = lyrics_file.endswith('.txt')
-                is_a2_format = lyrics_file.endswith('.a2') if lyrics_file else False
+                is_a2_format = lyrics_file.endswith('.a2')
                 lyrics, errors = load_lyrics(lyrics_file)
+
+            # Immediate refresh upon track change
+            current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+            manual_scroll_active = False
+            manual_offset = update_display(
+                stdscr, lyrics, errors, position, audio_file, manual_offset,
+                is_txt_format, is_a2_format, current_idx, manual_scroll_active
+            )
+            last_position = position
+            last_redraw = time.time()
+
 
         # Check if the position has changed enough to affect the lyrics
         current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
