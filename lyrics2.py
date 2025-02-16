@@ -144,41 +144,41 @@ def validate_lyrics(content, artist, title):
 		# exit()
 
 def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15):
-    """Fetch lyrics with strict validation against track metadata, with timeout handling"""
-    def worker(queue, search_term):
-        """Worker function to fetch lyrics"""
-        try:
-            lyrics = syncedlyrics.search(search_term)
-            # lyrics = syncedlyrics.search(search_term, enhanced=True) CURRENTLY A2 IS NOT WORKING PROPERLY
-            queue.put(lyrics)  # Store result in queue
-        except Exception as e:
-            queue.put(None)
+	"""Fetch lyrics with strict validation against track metadata, with timeout handling"""
+	def worker(queue, search_term):
+		"""Worker function to fetch lyrics"""
+		try:
+			lyrics = syncedlyrics.search(search_term)
+			# lyrics = syncedlyrics.search(search_term, enhanced=True) CURRENTLY A2 IS NOT WORKING PROPERLY
+			queue.put(lyrics)  # Store result in queue
+		except Exception as e:
+			queue.put(None)
 
-    search_term = f"{track_name} {artist_name}".strip()
-    if not search_term:
-        return None, None
-    
-    queue = multiprocessing.Queue()
-    process = multiprocessing.Process(target=worker, args=(queue, search_term))
-    process.start()
-    process.join(timeout)  # Wait for the process with a timeout
+	search_term = f"{track_name} {artist_name}".strip()
+	if not search_term:
+		return None, None
+	
+	queue = multiprocessing.Queue()
+	process = multiprocessing.Process(target=worker, args=(queue, search_term))
+	process.start()
+	process.join(timeout)  # Wait for the process with a timeout
 
-    if process.is_alive():
-        process.terminate()  # Kill the process if it exceeds timeout
-        process.join()  # Ensure it's cleaned up
-        print("Lyrics fetch timed out")
-        return None, None
+	if process.is_alive():
+		process.terminate()  # Kill the process if it exceeds timeout
+		process.join()  # Ensure it's cleaned up
+		print("Lyrics fetch timed out")
+		return None, None
 
-    lyrics = queue.get() if not queue.empty() else None
-    if not lyrics:
-        return None, None
-    
-    if not validate_lyrics(lyrics, artist_name, track_name):
-        print("Lyrics validation failed - metadata mismatch")
-        return None, None
+	lyrics = queue.get() if not queue.empty() else None
+	if not lyrics:
+		return None, None
+	
+	if not validate_lyrics(lyrics, artist_name, track_name):
+		print("Lyrics validation failed - metadata mismatch")
+		return None, None
 
-    is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
-    return lyrics, is_synced
+	is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
+	return lyrics, is_synced
 
 # def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None):
 	# """Fetch lyrics with strict validation against track metadata"""
@@ -821,6 +821,10 @@ def main(stdscr):
 			artist != current_artist or 
 			title != current_title):
 			while True:
+				current_time = time.time()
+				needs_redraw = False
+
+				audio_file, position, artist, title, duration = get_cmus_info()
 				# Update current tracking variables
 				current_audio_file = audio_file
 				current_artist = artist
@@ -832,8 +836,6 @@ def main(stdscr):
 				last_input_time = None
 				lyrics = []
 				errors = []
-				needs_redraw = False
-
 				if audio_file:
 					directory = os.path.dirname(audio_file)
 					artist_name = current_artist if current_artist else "UnknownArtist"
