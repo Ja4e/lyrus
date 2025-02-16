@@ -761,374 +761,494 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 	return start_screen_line
 
 
-def main(stdscr):
-	curses.start_color()
-	curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
-	curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
-	curses.curs_set(0)
-	stdscr.timeout(200)
-	current_audio_file = None
-	current_artist = None  # Track current artist
-	current_title = None   # Track current title
-	lyrics = []
-	errors = []
-	is_txt_format = False
-	is_a2_format = False
-	last_input_time = None
-	manual_offset = 0
-	last_redraw = 0
-	last_position = -1
-	last_line_index = -1
-	last_active_words = set()  # Track previously highlighted words
+# def main(stdscr):
+	# curses.start_color()
+	# curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
+	# curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
+	# curses.curs_set(0)
+	# stdscr.timeout(200)
+	# current_audio_file = None
+	# current_artist = None  # Track current artist
+	# current_title = None   # Track current title
+	# lyrics = []
+	# errors = []
+	# is_txt_format = False
+	# is_a2_format = False
+	# last_input_time = None
+	# manual_offset = 0
+	# last_redraw = 0
+	# last_position = -1
+	# last_line_index = -1
+	# last_active_words = set()  # Track previously highlighted words
 	
-	while True:
-		current_time = time.time()
-		needs_redraw = False
+	# while True:
+		# current_time = time.time()
+		# needs_redraw = False
 
-		audio_file, position, artist, title, duration = get_cmus_info()
+		# audio_file, position, artist, title, duration = get_cmus_info()
 		
-		# **Force redraws only for A2 format**
-		if is_a2_format:
-			active_words = set()
-			a2_lines = []
-			current_line = []
+		# # **Force redraws only for A2 format**
+		# if is_a2_format:
+			# active_words = set()
+			# a2_lines = []
+			# current_line = []
 			
-			# Group words by line
-			for t, item in lyrics:
-				if item is None:
-					if current_line:
-						a2_lines.append(current_line)
-						current_line = []
-				else:
-					current_line.append((t, item))
+			# # Group words by line
+			# for t, item in lyrics:
+				# if item is None:
+					# if current_line:
+						# a2_lines.append(current_line)
+						# current_line = []
+				# else:
+					# current_line.append((t, item))
 			
-			# Identify active words based on position
-			for line in a2_lines:
-				for word_idx, (start, (text, end)) in enumerate(line):
-					if start <= position < end:
-						active_words.add((text, word_idx))  # Track active words
+			# # Identify active words based on position
+			# for line in a2_lines:
+				# for word_idx, (start, (text, end)) in enumerate(line):
+					# if start <= position < end:
+						# active_words.add((text, word_idx))  # Track active words
 			
-			# **Trigger redraw if active words changed**
-			if active_words != last_active_words:
-				needs_redraw = True
-				last_active_words = active_words
+			# # **Trigger redraw if active words changed**
+			# if active_words != last_active_words:
+				# needs_redraw = True
+				# last_active_words = active_words
 
-		# **Trigger redraw if position changed (for A2)**
-		if is_a2_format and position != last_position:
-			needs_redraw = True
+		# # **Trigger redraw if position changed (for A2)**
+		# if is_a2_format and position != last_position:
+			# needs_redraw = True
 		
-		if (audio_file != current_audio_file or 
-			artist != current_artist or 
-			title != current_title):
-			while True:
-				current_time = time.time()
-				needs_redraw = True
+		# if (audio_file != current_audio_file or 
+			# artist != current_artist or 
+			# title != current_title):
+				# # Update current tracking variables
+			# current_audio_file = audio_file
+			# current_artist = artist
+			# current_title = title
+			# while True:
+				# current_time = time.time()
+				# needs_redraw = True
 
-				audio_file, position, artist, title, duration = get_cmus_info()
-				# Update current tracking variables
-				current_audio_file = audio_file
-				current_artist = artist
-				current_title = title
+				# audio_file, position, artist, title, duration = get_cmus_info()
+				# # Update current tracking variables
+				# current_audio_file = audio_file
+				# current_artist = artist
+				# current_title = title
 
-				# Reset lyric state
-				last_line_index = -1
-				manual_offset = 0
-				last_input_time = None
-				lyrics = []
-				errors = []
+				# # Reset lyric state
+				# last_line_index = -1
+				# manual_offset = 0
+				# last_input_time = None
+				# lyrics = []
+				# errors = []
 
-				# **Force redraws only for A2 format**
-				if is_a2_format:
-					active_words = set()
-					a2_lines = []
-					current_line = []
+				# # **Force redraws only for A2 format**
+				# if is_a2_format:
+					# active_words = set()
+					# a2_lines = []
+					# current_line = []
 					
-					# Group words by line
-					for t, item in lyrics:
-						if item is None:
-							if current_line:
-								a2_lines.append(current_line)
-								current_line = []
-						else:
-							current_line.append((t, item))
+					# # Group words by line
+					# for t, item in lyrics:
+						# if item is None:
+							# if current_line:
+								# a2_lines.append(current_line)
+								# current_line = []
+						# else:
+							# current_line.append((t, item))
 					
-					# Identify active words based on position
-					for line in a2_lines:
-						for word_idx, (start, (text, end)) in enumerate(line):
-							if start <= position < end:
-								active_words.add((text, word_idx))  # Track active words
+					# # Identify active words based on position
+					# for line in a2_lines:
+						# for word_idx, (start, (text, end)) in enumerate(line):
+							# if start <= position < end:
+								# active_words.add((text, word_idx))  # Track active words
 					
-					# **Trigger redraw if active words changed**
-					if active_words != last_active_words:
-						needs_redraw = True
-						last_active_words = active_words
+					# # **Trigger redraw if active words changed**
+					# if active_words != last_active_words:
+						# needs_redraw = True
+						# last_active_words = active_words
 
-				# **Trigger redraw if position changed (for A2)**
-				if is_a2_format and position != last_position:
-					needs_redraw = True
+				# # **Trigger redraw if position changed (for A2)**
+				# if is_a2_format and position != last_position:
+					# needs_redraw = True
 
-				if audio_file:
-					directory = os.path.dirname(audio_file)
-					artist_name = current_artist if current_artist else "UnknownArtist"
-					track_name = current_title if current_title else os.path.splitext(os.path.basename(audio_file))[0]
-					lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
-					if lyrics_file:
-						is_txt_format = lyrics_file.endswith('.txt')
-						is_a2_format = lyrics_file.endswith('.a2') if lyrics_file else False
-						lyrics, errors = load_lyrics(lyrics_file)
+				# if audio_file:
+					# directory = os.path.dirname(audio_file)
+					# artist_name = current_artist if current_artist else "UnknownArtist"
+					# track_name = current_title if current_title else os.path.splitext(os.path.basename(audio_file))[0]
+					# lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
+					# if lyrics_file:
+						# is_txt_format = lyrics_file.endswith('.txt')
+						# is_a2_format = lyrics_file.endswith('.a2') if lyrics_file else False
+						# lyrics, errors = load_lyrics(lyrics_file)
 
-				# Calculate current_idx based on position and lyrics
-				current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-				manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
+				# # Calculate current_idx based on position and lyrics
+				# current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+				# manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
 
-				# Call display_lyrics based on the file format
-				if not is_txt_format:
-					new_manual_offset = display_lyrics(
-						stdscr,
-						lyrics,
-						errors,
-						position,
-						os.path.basename(audio_file),
-						manual_offset,
-						is_txt_format,
-						is_a2_format,
-						current_idx,
-						use_manual_offset=manual_scroll_active
-					)
-					manual_offset = new_manual_offset
-				else:
-					# For txt files, allow manual scrolling but prevent auto-scroll based on position
-					new_manual_offset = display_lyrics(
-						stdscr,
-						lyrics,
-						errors,
-						position,
-						os.path.basename(audio_file),
-						manual_offset,
-						is_txt_format,
-						is_a2_format,
-						current_idx,
-						use_manual_offset=True  # Allow manual scrolling
-					)
-					manual_offset = new_manual_offset
+				# # Call display_lyrics based on the file format
+				# if not is_txt_format:
+					# new_manual_offset = display_lyrics(
+						# stdscr,
+						# lyrics,
+						# errors,
+						# position,
+						# os.path.basename(audio_file),
+						# manual_offset,
+						# is_txt_format,
+						# is_a2_format,
+						# current_idx,
+						# use_manual_offset=manual_scroll_active
+					# )
+					# manual_offset = new_manual_offset
+				# else:
+					# # For txt files, allow manual scrolling but prevent auto-scroll based on position
+					# new_manual_offset = display_lyrics(
+						# stdscr,
+						# lyrics,
+						# errors,
+						# position,
+						# os.path.basename(audio_file),
+						# manual_offset,
+						# is_txt_format,
+						# is_a2_format,
+						# current_idx,
+						# use_manual_offset=True  # Allow manual scrolling
+					# )
+					# manual_offset = new_manual_offset
 
-				last_position = position
-				last_redraw = current_time
-						# Prevent auto-scroll for txt files, but allow manual scroll
-				height, width = stdscr.getmaxyx()
-				available_lines = height - 3
-				# If manual scroll is active, override the last_line_index to -1 to force redraw
-				if manual_scroll_active:
-					last_line_index = -1
+				# last_position = position
+				# last_redraw = current_time
+						# # Prevent auto-scroll for txt files, but allow manual scroll
+				# height, width = stdscr.getmaxyx()
+				# available_lines = height - 3
+				# # If manual scroll is active, override the last_line_index to -1 to force redraw
+				# if manual_scroll_active:
+					# last_line_index = -1
 				
-				if position != last_position or needs_redraw:
-					last_position = position
-					last_redraw = current_time
+				# if position != last_position or needs_redraw:
+					# last_position = position
+					# last_redraw = current_time
 				
-				current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-				manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
-				if audio_file and (needs_redraw or (current_time - last_redraw >= 0.1) or position != last_position):
-					if current_idx != last_line_index:  # Only redraw if the line has changed (or manual scroll)
-						if not is_txt_format:
-							new_manual_offset = display_lyrics(
-								stdscr,
-								lyrics,
-								errors,
-								position,
-								os.path.basename(audio_file),
-								manual_offset,
-								is_txt_format,
-								is_a2_format,
-								current_idx,
-								use_manual_offset=manual_scroll_active
-							)
-							manual_offset = new_manual_offset
-						else:
-							new_manual_offset = display_lyrics(
-								stdscr,
-								lyrics,
-								errors,
-								position,
-								os.path.basename(audio_file),
-								manual_offset,
-								is_txt_format,
-								is_a2_format,
-								current_idx,
-								use_manual_offset=True  # Always allow manual scrolling for .txt files
-							)
-							manual_offset = new_manual_offset
+				# current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+				# manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
+				# if audio_file and (needs_redraw or (current_time - last_redraw >= 0.1) or position != last_position):
+					# if current_idx != last_line_index:  # Only redraw if the line has changed (or manual scroll)
+						# if not is_txt_format:
+							# new_manual_offset = display_lyrics(
+								# stdscr,
+								# lyrics,
+								# errors,
+								# position,
+								# os.path.basename(audio_file),
+								# manual_offset,
+								# is_txt_format,
+								# is_a2_format,
+								# current_idx,
+								# use_manual_offset=manual_scroll_active
+							# )
+							# manual_offset = new_manual_offset
+						# else:
+							# new_manual_offset = display_lyrics(
+								# stdscr,
+								# lyrics,
+								# errors,
+								# position,
+								# os.path.basename(audio_file),
+								# manual_offset,
+								# is_txt_format,
+								# is_a2_format,
+								# current_idx,
+								# use_manual_offset=True  # Always allow manual scrolling for .txt files
+							# )
+							# manual_offset = new_manual_offset
 
-						last_line_index = current_idx  # Update last displayed line index
-					last_position = position
-					last_redraw = current_time
+						# last_line_index = current_idx  # Update last displayed line index
+					# last_position = position
+					# last_redraw = current_time
 
-				# Force a refresh if manual input has gone inactive for 2 seconds
-				if last_input_time and (current_time - last_input_time >= 2):
-					last_line_index = -1  # Reset the last displayed line index
-					needs_redraw = True
-					last_input_time = None  # Reset the last input time after forcing a refresh
+				# # Force a refresh if manual input has gone inactive for 2 seconds
+				# if last_input_time and (current_time - last_input_time >= 2):
+					# last_line_index = -1  # Reset the last displayed line index
+					# needs_redraw = True
+					# last_input_time = None  # Reset the last input time after forcing a refresh
 				
-				key = stdscr.getch()
-				if key == ord('q'):
-					break
-				elif key == curses.KEY_UP:
-					manual_offset = max(0, manual_offset - 1)
-					last_input_time = current_time
-					needs_redraw = True
-				elif key == curses.KEY_DOWN:
-					manual_offset += 1
-					last_input_time = current_time
-					needs_redraw = True
-				elif key == curses.KEY_RESIZE:
-					last_line_index = -1  
-					needs_redraw = True
-					last_redraw = current_time
+				# key = stdscr.getch()
+				# if key == ord('q'):
+					# break
+				# elif key == curses.KEY_UP:
+					# manual_offset = max(0, manual_offset - 1)
+					# last_input_time = current_time
+					# needs_redraw = True
+				# elif key == curses.KEY_DOWN:
+					# manual_offset += 1
+					# last_input_time = current_time
+					# needs_redraw = True
+				# elif key == curses.KEY_RESIZE:
+					# last_line_index = -1  
+					# needs_redraw = True
+					# last_redraw = current_time
 
-				# Redraw lyrics if necessary
-				#if needs_redraw or audio_file or position != last_position:
-				if position != last_position or (lyrics and (current_time - last_redraw >= 0.1)) or needs_redraw:
-					if current_idx != last_line_index:  # Only redraw if the line has changed or manual scroll
-						if not is_txt_format:
-							new_manual_offset = display_lyrics(
-								stdscr,
-								lyrics,
-								errors,
-								position,
-								os.path.basename(audio_file),
-								manual_offset,
-								is_txt_format,
-								is_a2_format,
-								current_idx,
-								use_manual_offset=manual_scroll_active
-							)
-							manual_offset = new_manual_offset
-						else:
-							new_manual_offset = display_lyrics(
-								stdscr,
-								lyrics,
-								errors,
-								position,
-								os.path.basename(audio_file),
-								manual_offset,
-								is_txt_format,
-								is_a2_format,
-								current_idx,
-								use_manual_offset=True  # Always allow manual scrolling for .txt files
-							)
-							manual_offset = new_manual_offset
+				# # Redraw lyrics if necessary
+				# #if needs_redraw or audio_file or position != last_position:
+				# if position != last_position or (lyrics and (current_time - last_redraw >= 0.1)) or needs_redraw:
+					# if current_idx != last_line_index:  # Only redraw if the line has changed or manual scroll
+						# if not is_txt_format:
+							# new_manual_offset = display_lyrics(
+								# stdscr,
+								# lyrics,
+								# errors,
+								# position,
+								# os.path.basename(audio_file),
+								# manual_offset,
+								# is_txt_format,
+								# is_a2_format,
+								# current_idx,
+								# use_manual_offset=manual_scroll_active
+							# )
+							# manual_offset = new_manual_offset
+						# else:
+							# new_manual_offset = display_lyrics(
+								# stdscr,
+								# lyrics,
+								# errors,
+								# position,
+								# os.path.basename(audio_file),
+								# manual_offset,
+								# is_txt_format,
+								# is_a2_format,
+								# current_idx,
+								# use_manual_offset=True  # Always allow manual scrolling for .txt files
+							# )
+							# manual_offset = new_manual_offset
 
-						last_line_index = current_idx  # Update last displayed line index
-					last_redraw = current_time
-				if position != last_position:
-					break
+						# last_line_index = current_idx  # Update last displayed line index
+					# last_redraw = current_time
+				# if position != last_position:
+					# break
 
-		# Prevent auto-scroll for txt files, but allow manual scroll
-		height, width = stdscr.getmaxyx()
-		available_lines = height - 3
-		# Recalculate current_idx and manual_scroll_active each loop iteration
-		current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-		manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
+		# # Prevent auto-scroll for txt files, but allow manual scroll
+		# height, width = stdscr.getmaxyx()
+		# available_lines = height - 3
+		# # Recalculate current_idx and manual_scroll_active each loop iteration
+		# current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+		# manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
 
-		# If manual scroll is active, override the last_line_index to -1 to force redraw
-		if manual_scroll_active:
-			last_line_index = -1
+		# # If manual scroll is active, override the last_line_index to -1 to force redraw
+		# if manual_scroll_active:
+			# last_line_index = -1
 		
-		if audio_file and (needs_redraw or (current_time - last_redraw >= 0.1) or position != last_position):
-			if current_idx != last_line_index:  # Only redraw if the line has changed (or manual scroll)
-				if not is_txt_format:
-					new_manual_offset = display_lyrics(
-						stdscr,
-						lyrics,
-						errors,
-						position,
-						os.path.basename(audio_file),
-						manual_offset,
-						is_txt_format,
-						is_a2_format,
-						current_idx,
-						use_manual_offset=manual_scroll_active
-					)
-					manual_offset = new_manual_offset
-				else:
-					new_manual_offset = display_lyrics(
-						stdscr,
-						lyrics,
-						errors,
-						position,
-						os.path.basename(audio_file),
-						manual_offset,
-						is_txt_format,
-						is_a2_format,
-						current_idx,
-						use_manual_offset=True  # Always allow manual scrolling for .txt files
-					)
-					manual_offset = new_manual_offset
+		# if audio_file and (needs_redraw or (current_time - last_redraw >= 0.1) or position != last_position):
+			# if current_idx != last_line_index:  # Only redraw if the line has changed (or manual scroll)
+				# if not is_txt_format:
+					# new_manual_offset = display_lyrics(
+						# stdscr,
+						# lyrics,
+						# errors,
+						# position,
+						# os.path.basename(audio_file),
+						# manual_offset,
+						# is_txt_format,
+						# is_a2_format,
+						# current_idx,
+						# use_manual_offset=manual_scroll_active
+					# )
+					# manual_offset = new_manual_offset
+				# else:
+					# new_manual_offset = display_lyrics(
+						# stdscr,
+						# lyrics,
+						# errors,
+						# position,
+						# os.path.basename(audio_file),
+						# manual_offset,
+						# is_txt_format,
+						# is_a2_format,
+						# current_idx,
+						# use_manual_offset=True  # Always allow manual scrolling for .txt files
+					# )
+					# manual_offset = new_manual_offset
 
-				last_line_index = current_idx  # Update last displayed line index
-			last_position = position
-			last_redraw = current_time
+				# last_line_index = current_idx  # Update last displayed line index
+			# last_position = position
+			# last_redraw = current_time
 
-		# Force a refresh if manual input has gone inactive for 2 seconds
-		if last_input_time and (current_time - last_input_time >= 2):
-			last_line_index = -1  # Reset the last displayed line index
-			needs_redraw = True
-			last_input_time = None  # Reset the last input time after forcing a refresh
+		# # Force a refresh if manual input has gone inactive for 2 seconds
+		# if last_input_time and (current_time - last_input_time >= 2):
+			# last_line_index = -1  # Reset the last displayed line index
+			# needs_redraw = True
+			# last_input_time = None  # Reset the last input time after forcing a refresh
 		
-		key = stdscr.getch()
-		if key == ord('q'):
-			break
-		elif key == curses.KEY_UP:
-			manual_offset = max(0, manual_offset - 1)
-			last_input_time = current_time
-			needs_redraw = True
-		elif key == curses.KEY_DOWN:
-			manual_offset += 1
-			last_input_time = current_time
-			needs_redraw = True
-		elif key == curses.KEY_RESIZE:
-			last_line_index = -1  
-			needs_redraw = True
-			last_redraw = current_time
-		if position != last_position or needs_redraw:
-			last_position = position
-			last_redraw = current_time
+		# key = stdscr.getch()
+		# if key == ord('q'):
+			# break
+		# elif key == curses.KEY_UP:
+			# manual_offset = max(0, manual_offset - 1)
+			# last_input_time = current_time
+			# needs_redraw = True
+		# elif key == curses.KEY_DOWN:
+			# manual_offset += 1
+			# last_input_time = current_time
+			# needs_redraw = True
+		# elif key == curses.KEY_RESIZE:
+			# last_line_index = -1  
+			# needs_redraw = True
+			# last_redraw = current_time
+		# if position != last_position or needs_redraw:
+			# last_position = position
+			# last_redraw = current_time
 		
-		# Redraw lyrics if necessary
-		#if needs_redraw or audio_file or position != last_position:
-		if position != last_position or (lyrics and (current_time - last_redraw >= 0.1)) or needs_redraw:
-			if current_idx != last_line_index:  # Only redraw if the line has changed or manual scroll
-				if not is_txt_format:
-					new_manual_offset = display_lyrics(
-						stdscr,
-						lyrics,
-						errors,
-						position,
-						os.path.basename(audio_file),
-						manual_offset,
-						is_txt_format,
-						is_a2_format,
-						current_idx,
-						use_manual_offset=manual_scroll_active
-					)
-					manual_offset = new_manual_offset
-				else:
-					new_manual_offset = display_lyrics(
-						stdscr,
-						lyrics,
-						errors,
-						position,
-						os.path.basename(audio_file),
-						manual_offset,
-						is_txt_format,
-						is_a2_format,
-						current_idx,
-						use_manual_offset=True  # Always allow manual scrolling for .txt files
-					)
-					manual_offset = new_manual_offset
+		# # Redraw lyrics if necessary
+		# #if needs_redraw or audio_file or position != last_position:
+		# if position != last_position or (lyrics and (current_time - last_redraw >= 0.1)) or needs_redraw:
+			# if current_idx != last_line_index:  # Only redraw if the line has changed or manual scroll
+				# if not is_txt_format:
+					# new_manual_offset = display_lyrics(
+						# stdscr,
+						# lyrics,
+						# errors,
+						# position,
+						# os.path.basename(audio_file),
+						# manual_offset,
+						# is_txt_format,
+						# is_a2_format,
+						# current_idx,
+						# use_manual_offset=manual_scroll_active
+					# )
+					# manual_offset = new_manual_offset
+				# else:
+					# new_manual_offset = display_lyrics(
+						# stdscr,
+						# lyrics,
+						# errors,
+						# position,
+						# os.path.basename(audio_file),
+						# manual_offset,
+						# is_txt_format,
+						# is_a2_format,
+						# current_idx,
+						# use_manual_offset=True  # Always allow manual scrolling for .txt files
+					# )
+					# manual_offset = new_manual_offset
 
-				last_line_index = current_idx  # Update last displayed line index
-			last_redraw = current_time
-		
+				# last_line_index = current_idx  # Update last displayed line index
+			# last_redraw = current_time
+
+def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw):
+    if key == ord('q'):
+        return False, manual_offset, last_input_time, needs_redraw
+    elif key == curses.KEY_UP:
+        manual_offset = max(0, manual_offset - 1)
+        last_input_time = time.time()
+        needs_redraw = True
+    elif key == curses.KEY_DOWN:
+        manual_offset += 1
+        last_input_time = time.time()
+        needs_redraw = True
+    elif key == curses.KEY_RESIZE:
+        needs_redraw = True
+    return True, manual_offset, last_input_time, needs_redraw
+
+def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, is_txt_format, is_a2_format, current_idx, manual_scroll_active):
+    if is_txt_format:
+        return display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, is_a2_format, current_idx, use_manual_offset=True)
+    else:
+        return display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, is_a2_format, current_idx, use_manual_offset=manual_scroll_active)
+
+def main(stdscr):
+    curses.start_color()
+    curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
+    curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
+    curses.curs_set(0)
+    stdscr.timeout(200)
+    
+    current_audio_file, current_artist, current_title = None, None, None
+    lyrics, errors = [], []
+    is_txt_format, is_a2_format = False, False
+    last_input_time, manual_offset = None, 0
+    last_redraw, last_position = 0, -1
+    last_active_words, last_line_index = set(), -1
+    
+    while True:
+        current_time = time.time()
+        needs_redraw = False
+        audio_file, position, artist, title, duration = get_cmus_info()
+
+        # Redraw if format is A2 and active words or position change
+        if is_a2_format:
+            active_words = set()
+            a2_lines = []
+            current_line = []
+
+            # Group words by line
+            for t, item in lyrics:
+                if item is None:
+                    if current_line:
+                        a2_lines.append(current_line)
+                        current_line = []
+                else:
+                    current_line.append((t, item))
+
+            # Highlight active words based on position
+            for line in a2_lines:
+                for word_idx, (start, (text, end)) in enumerate(line):
+                    if start <= position < end:
+                        active_words.add((text, word_idx))
+
+            if active_words != last_active_words or position != last_position:
+                needs_redraw = True
+                last_active_words = active_words
+
+        # Check if audio info has changed (force redraw)
+        if (audio_file != current_audio_file or artist != current_artist or title != current_title):
+            current_audio_file, current_artist, current_title = audio_file, artist, title
+            lyrics, errors = [], []
+            last_line_index, manual_offset = -1, 0
+            last_input_time = None
+
+            # Load lyrics based on format
+            directory = os.path.dirname(audio_file)
+            artist_name = current_artist or "UnknownArtist"
+            track_name = current_title or os.path.splitext(os.path.basename(audio_file))[0]
+            lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
+
+            if lyrics_file:
+                is_txt_format = lyrics_file.endswith('.txt')
+                is_a2_format = lyrics_file.endswith('.a2') if lyrics_file else False
+                lyrics, errors = load_lyrics(lyrics_file)
+
+        current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+        manual_scroll_active = last_input_time and (current_time - last_input_time < 2)
+        
+        # Update display with the current lyrics
+        new_manual_offset = update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, is_txt_format, is_a2_format, current_idx, manual_scroll_active)
+        manual_offset = new_manual_offset
+        last_position = position
+        last_redraw = current_time
+
+        # Handle key input for scrolling
+        key = stdscr.getch()
+        continue_running, manual_offset, last_input_time, needs_redraw = handle_scroll_input(key, manual_offset, last_input_time, needs_redraw)
+        if not continue_running:
+            break
+
+        # Force a refresh if no input for 2 seconds
+        if last_input_time and (current_time - last_input_time >= 2):
+            last_line_index = -1
+            needs_redraw = True
+            last_input_time = None
+
+        # Redraw lyrics if necessary
+        if position != last_position or needs_redraw:
+            current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+            new_manual_offset = update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, is_txt_format, is_a2_format, current_idx, manual_scroll_active)
+            manual_offset = new_manual_offset
+
+        if position != last_position:
+            last_position = position
+
+        # Handle window resize
+        if key == curses.KEY_RESIZE:
+            needs_redraw = True
 
 if __name__ == "__main__":
 	try:
