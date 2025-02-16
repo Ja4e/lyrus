@@ -836,6 +836,37 @@ def main(stdscr):
 				last_input_time = None
 				lyrics = []
 				errors = []
+
+				# **Force redraws only for A2 format**
+				if is_a2_format:
+					active_words = set()
+					a2_lines = []
+					current_line = []
+					
+					# Group words by line
+					for t, item in lyrics:
+						if item is None:
+							if current_line:
+								a2_lines.append(current_line)
+								current_line = []
+						else:
+							current_line.append((t, item))
+					
+					# Identify active words based on position
+					for line in a2_lines:
+						for word_idx, (start, (text, end)) in enumerate(line):
+							if start <= position < end:
+								active_words.add((text, word_idx))  # Track active words
+					
+					# **Trigger redraw if active words changed**
+					if active_words != last_active_words:
+						needs_redraw = True
+						last_active_words = active_words
+
+				# **Trigger redraw if position changed (for A2)**
+				if is_a2_format and position != last_position:
+					needs_redraw = True
+
 				if audio_file:
 					directory = os.path.dirname(audio_file)
 					artist_name = current_artist if current_artist else "UnknownArtist"
