@@ -1160,7 +1160,7 @@ def main(stdscr):
 	curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
 	curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
 	curses.curs_set(0)
-	stdscr.timeout(100)
+	stdscr.timeout(1000)
 	
 	current_audio_file, current_artist, current_title = None, None, None
 	lyrics, errors = [], []
