@@ -749,13 +749,13 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 			current_line_y += 1
 		
 		if current_idx is not None and current_idx < len(lyrics):
-			status = f"Line {current_idx+1}/{len(lyrics)} "[:width-2]
+			status = f" Line {current_idx+1}/{len(lyrics)} "[:width-2]
 			if height > 1:
 				stdscr.addstr(height-1, 0, status, curses.A_BOLD)
 		
 		if current_idx is not None and current_idx == len(lyrics) - 1 and not is_txt_format:
 			if height > 2:
-				stdscr.addstr(height-2, 0, "End of lyrics ", curses.A_BOLD)
+				stdscr.addstr(height-2, 0, " End of lyrics ", curses.A_BOLD)
 		
 	stdscr.refresh()
 	return start_screen_line
