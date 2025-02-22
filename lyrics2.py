@@ -301,7 +301,7 @@ def get_cmus_info():
 		return None, 0, None, None, 0
 
 	track_file = None
-	position = 0-1	
+	position = 0
 	artist = None
 	title = None
 	duration = 0
@@ -708,9 +708,10 @@ def load_lyrics(file_path):
 	return lyrics, errors
 
 
-def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format, is_a2_format, current_idx, use_manual_offset):
+def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, is_txt_format, is_a2_format, current_idx, use_manual_offset,time_adjust=0):
 	height, width = stdscr.getmaxyx()
 	start_screen_line = 0  # Default value
+	
 	if is_a2_format:
 		a2_lines = []
 		current_line = []
@@ -821,6 +822,27 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 			if height > 2:
 				stdscr.addstr(height-2, 0, " End of lyrics ", curses.A_BOLD)
 		
+		# Add offset indicator at bottom right
+	if time_adjust != 0:
+		offset_str = f" Offset: {time_adjust:+.1f}s "
+		offset_str = offset_str[:width-1]
+		try:
+			color = curses.color_pair(2) if time_adjust != 0 else curses.color_pair(3)
+			stdscr.addstr(height-2, width-len(offset_str)-1, offset_str, color | curses.A_BOLD)
+		except curses.error:
+			pass
+
+	# Modify existing status line to include adjustment indicator
+	status_line = f" Line {current_idx+1}/{len(lyrics)} "
+	if time_adjust != 0:
+		status_line += "[Adj]"
+	status_line = status_line[:width-1]
+	
+	if height > 1:
+		try:
+			stdscr.addstr(height-1, 0, status_line, curses.A_BOLD)
+		except curses.error:
+			pass
 	stdscr.refresh()
 	return start_screen_line
 
@@ -1212,32 +1234,33 @@ def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw):
 		needs_redraw = True
 	return True, manual_offset, last_input_time, needs_redraw
 	
-def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw, time_adjust):  # Add time_adjust parameter
-	if key == ord('q'):
-		return False, manual_offset, last_input_time, needs_redraw, time_adjust
-	elif key == curses.KEY_UP:
-		manual_offset = max(0, manual_offset - 1)
-		last_input_time = time.time()
-		needs_redraw = True
-	elif key == curses.KEY_DOWN:
-		manual_offset += 1
-		last_input_time = time.time()
-		needs_redraw = True
-	elif key == curses.KEY_RESIZE:
-		needs_redraw = True
-	elif key == ord('+'):
-		return True, manual_offset, last_input_time, needs_redraw, time_adjust + 0.5
-	elif key == ord('-'):
-		return True, manual_offset, last_input_time, needs_redraw, time_adjust - 0.5
-	
-	return True, manual_offset, last_input_time, needs_redraw, time_adjust  # Return all 5 value   
+# Remove the first handle_scroll_input definition and keep only this one:
+def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw, time_adjust):
+    if key == ord('q'):
+        return False, manual_offset, last_input_time, needs_redraw, time_adjust
+    elif key == curses.KEY_UP:
+        manual_offset = max(0, manual_offset - 1)
+        last_input_time = time.time()
+        needs_redraw = True
+    elif key == curses.KEY_DOWN:
+        manual_offset += 1
+        last_input_time = time.time()
+        needs_redraw = True
+    elif key == curses.KEY_RESIZE:
+        needs_redraw = True
+    # elif key == ord('+'):
+        # return True, manual_offset, last_input_time, needs_redraw, time_adjust + 0.5 #currently broken do not use
+    # elif key == ord('-'):
+        # return True, manual_offset, last_input_time, needs_redraw, time_adjust - 0.5
+    
+    return True, manual_offset, last_input_time, needs_redraw, time_adjust
 
 
-def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, is_txt_format, is_a2_format, current_idx, manual_scroll_active):
+def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, is_txt_format, is_a2_format, current_idx, manual_scroll_active, time_adjust=0):
 	if is_txt_format:
-		return display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, is_a2_format, current_idx, use_manual_offset=True)
+		return display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, is_a2_format, current_idx, use_manual_offset=True, time_adjust=time_adjust)
 	else:
-		return display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, is_a2_format, current_idx, use_manual_offset=manual_scroll_active)
+		return display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, is_a2_format, current_idx, use_manual_offset=manual_scroll_active, time_adjust=time_adjust)
 
 
 def main(stdscr):
@@ -1341,7 +1364,8 @@ def main(stdscr):
 			manual_scroll_active = False
 			manual_offset = update_display(
 				stdscr, lyrics, errors, position, audio_file, manual_offset,
-				is_txt_format, is_a2_format, current_idx, manual_scroll_active
+				is_txt_format, is_a2_format, current_idx, manual_scroll_active,
+				time_adjust=time_adjust  # Add this
 			)
 			last_position = position
 			last_redraw = time.time()
@@ -1359,7 +1383,8 @@ def main(stdscr):
 		if needs_redraw:
 			new_manual_offset = update_display(
 				stdscr, lyrics, errors, position, audio_file, manual_offset, 
-				is_txt_format, is_a2_format, current_idx, manual_scroll_active
+				is_txt_format, is_a2_format, current_idx, manual_scroll_active,
+				time_adjust=time_adjust  # Add this
 			)
 			manual_offset = new_manual_offset
 			last_position = position
