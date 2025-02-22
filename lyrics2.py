@@ -10,6 +10,69 @@ import urllib.parse
 import syncedlyrics 
 import multiprocessing
 
+# Add this at the top with other constants
+LYRICS_TIMEOUT_LOG = "lyrics_timeouts.log"
+LOG_RETENTION_DAYS = 10
+
+def log_timeout(artist, title):
+	"""Log timeout with automatic cleanup of old entries"""
+	timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+	log_entry = f"{timestamp} | Artist: {artist or 'Unknown'} | Title: {title or 'Unknown'}\n"
+	
+	log_dir = os.path.join(os.getcwd(), "logs")
+	os.makedirs(log_dir, exist_ok=True)
+	
+	log_path = os.path.join(log_dir, LYRICS_TIMEOUT_LOG)
+	
+	try:
+		# Append new entry
+		with open(log_path, 'a', encoding='utf-8') as f:
+			f.write(log_entry)
+		
+		# Clean up old entries after writing new one
+		clean_old_timeouts()
+		
+	except Exception as e:
+		print(f"Failed to write timeout log: {e}")
+		
+def clean_old_timeouts():
+	"""Remove log entries older than LOG_RETENTION_DAYS days"""
+	log_dir = os.path.join(os.getcwd(), "logs")
+	log_path = os.path.join(log_dir, LYRICS_TIMEOUT_LOG)
+	
+	if not os.path.exists(log_path):
+		return
+
+	cutoff = datetime.now() - timedelta(days=LOG_RETENTION_DAYS)
+	new_lines = []
+
+	try:
+		with open(log_path, 'r', encoding='utf-8') as f:
+			for line in f:
+				line = line.strip()
+				if not line:
+					continue
+				
+				# Extract timestamp from log line format: "YYYY-MM-DD HH:MM:SS | Artist: ..."
+				parts = line.split(' | ', 1)
+				if len(parts) < 1:
+					continue
+				
+				try:
+					entry_time = datetime.strptime(parts[0], "%Y-%m-%d %H:%M:%S")
+					if entry_time >= cutoff:
+						new_lines.append(line + '\n')
+				except ValueError:
+					# Skip lines with invalid timestamps
+					continue
+
+		# Write filtered lines back to the file
+		with open(log_path, 'w', encoding='utf-8') as f:
+			f.writelines(new_lines)
+			
+	except Exception as e:
+		print(f"Error cleaning log file: {e}")
+
 def sanitize_filename(name):
 	"""Replace special characters with underscores to avoid filesystem issues."""
 	return re.sub(r'[<>:"/\\|?*]', '_', name)
@@ -167,6 +230,7 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 		process.terminate()  # Kill the process if it exceeds timeout
 		process.join()  # Ensure it's cleaned up
 		print("Lyrics fetch timed out")
+		log_timeout(artist_name, track_name)  # logging
 		return None, None
 
 	lyrics = queue.get() if not queue.empty() else None
@@ -1147,6 +1211,27 @@ def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw):
 	elif key == curses.KEY_RESIZE:
 		needs_redraw = True
 	return True, manual_offset, last_input_time, needs_redraw
+	
+def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw, time_adjust):  # Add time_adjust parameter
+	if key == ord('q'):
+		return False, manual_offset, last_input_time, needs_redraw, time_adjust
+	elif key == curses.KEY_UP:
+		manual_offset = max(0, manual_offset - 1)
+		last_input_time = time.time()
+		needs_redraw = True
+	elif key == curses.KEY_DOWN:
+		manual_offset += 1
+		last_input_time = time.time()
+		needs_redraw = True
+	elif key == curses.KEY_RESIZE:
+		needs_redraw = True
+	elif key == ord('+'):
+		return True, manual_offset, last_input_time, needs_redraw, time_adjust + 0.5
+	elif key == ord('-'):
+		return True, manual_offset, last_input_time, needs_redraw, time_adjust - 0.5
+	
+	return True, manual_offset, last_input_time, needs_redraw, time_adjust  # Return all 5 value   
+
 
 def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, is_txt_format, is_a2_format, current_idx, manual_scroll_active):
 	if is_txt_format:
@@ -1169,10 +1254,40 @@ def main(stdscr):
 	last_redraw, last_position = 0, -1
 	last_active_words, last_line_index = set(), -1
 	
+	track_start_time = None
+	last_cmus_position = 0
+	calculated_position = 0
+	current_duration = 0
+	time_adjust = 0.0
+	
 	while True:
 		current_time = time.time()
 		needs_redraw = False
-		audio_file, position, artist, title, duration = get_cmus_info()
+		#audio_file, position, artist, title, duration = get_cmus_info()
+		audio_file, cmus_position, artist, title, duration = get_cmus_info()  # Rename position to cmus_position
+		# Update timing calculations
+		now = time.time()
+		
+		# Change this block:
+		if audio_file != current_audio_file:  # New track
+			track_start_time = now
+			last_cmus_position = cmus_position
+			calculated_position = cmus_position
+			current_duration = duration
+		elif cmus_position != last_cmus_position:  # Position changed externally
+			# Handle seeks by resetting the clock
+			track_start_time = now
+			last_cmus_position = cmus_position
+			calculated_position = cmus_position
+		else:  # Calculate position based on elapsed time
+			if track_start_time and current_duration:
+				calculated_position = cmus_position + (now - track_start_time)
+				# Don't exceed track duration
+				calculated_position = min(calculated_position, current_duration)
+		
+		# Use calculated_position instead of cmus_position
+		position = calculated_position
+		adjusted_position = max(0, position + time_adjust)
 
 		# Redraw only if position change correlates with lyrics change (A2 format)
 		if is_a2_format:
@@ -1221,7 +1336,8 @@ def main(stdscr):
 				lyrics, errors = load_lyrics(lyrics_file)
 
 			# Immediate refresh upon track change
-			current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+			current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], adjusted_position) - 1
+			#current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
 			manual_scroll_active = False
 			manual_offset = update_display(
 				stdscr, lyrics, errors, position, audio_file, manual_offset,
@@ -1230,9 +1346,9 @@ def main(stdscr):
 			last_position = position
 			last_redraw = time.time()
 
-
+		current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], adjusted_position) - 1
 		# Check if the position has changed enough to affect the lyrics
-		current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
+		#current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
 		if current_idx != last_line_index:
 			needs_redraw = True
 			last_line_index = current_idx
@@ -1251,8 +1367,8 @@ def main(stdscr):
 
 		# Handle key input for scrolling
 		key = stdscr.getch()
-		continue_running, manual_offset, last_input_time, needs_redraw = handle_scroll_input(
-			key, manual_offset, last_input_time, needs_redraw
+		continue_running, manual_offset, last_input_time, needs_redraw, time_adjust = handle_scroll_input(
+			key, manual_offset, last_input_time, needs_redraw, time_adjust
 		)
 		if not continue_running:
 			break
