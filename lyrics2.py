@@ -1315,7 +1315,10 @@ def main(stdscr):
                 if lyrics_file:
                     is_txt_format = lyrics_file.endswith('.txt')
                     is_a2_format = lyrics_file.endswith('.a2')
-                    lyrics, errors = load_lyrics(lyrics_file)
+                    new_lyrics, errors = load_lyrics(lyrics_file)
+                    if new_lyrics != lyrics:  # Check for lyrics change
+                        lyrics = new_lyrics
+                        needs_redraw = True  # Immediate redraw if lyrics have changed
 
         # Position calculation
         if not playback_paused:
@@ -1344,10 +1347,9 @@ def main(stdscr):
         # Calculate current lyric index
         current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], adjusted_position) - 1
 
-        # Check if we need to redraw due to position change
-        needs_redraw = False
+        # Check if we need to redraw due to position change or if lyrics have changed
+        needs_redraw = needs_redraw or (current_idx != last_line_index)
         if current_idx != last_line_index:
-            needs_redraw = True
             last_line_index = current_idx
 
         # A2 format active words check
