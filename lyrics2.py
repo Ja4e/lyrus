@@ -1310,11 +1310,14 @@ def main(stdscr):
             playback_paused = status == "paused"  # Adjust playback state
             needs_redraw = True  # Update UI
 
-        elif status == "paused" and not playback_paused:  # Paused
-            playback_paused = True
-            needs_redraw = True  # Update UI
+        elif status == "paused":  # Paused
+            if not playback_paused:
+                playback_paused = True
+                calculated_position = last_cmus_position  # Set position to 0 on pause
+                needs_redraw = True  # Update UI
         elif status == "playing" and playback_paused:  # Resumed
             playback_paused = False
+
 
         # Update position if not paused
         if not playback_paused and track_start_time and current_duration:
