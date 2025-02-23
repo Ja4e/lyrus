@@ -292,38 +292,41 @@ def save_lyrics(lyrics, track_name, artist_name, extension):
 	return file_path
 
 def get_cmus_info():
-	try:
-		result = subprocess.run(['cmus-remote', '-Q'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-		if result.returncode != 0:
-			return None, 0, None, None, 0
-		output = result.stdout.decode('utf-8')
-	except Exception:
-		return None, 0, None, None, 0
+    try:
+        result = subprocess.run(['cmus-remote', '-Q'], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        if result.returncode != 0:
+            return None, 0, None, None, 0, "stopped"
+        output = result.stdout.decode('utf-8')
+    except Exception:
+        return None, 0, None, None, 0, "stopped"
 
-	track_file = None
-	position = 0
-	artist = None
-	title = None
-	duration = 0
+    track_file = None
+    position = 0
+    artist = None
+    title = None
+    duration = 0
+    status = "stopped"
 
-	for line in output.split('\n'):
-		line = line.strip()
-		if line.startswith('file '):
-			track_file = line[5:].strip()
-		elif line.startswith('tag artist '):
-			artist = line[11:].strip()
-		elif line.startswith('tag title '):
-			title = line[10:].strip()
-		elif line.startswith('duration '):
-			parts = line.split()
-			if len(parts) >= 2:
-				duration = int(parts[1])
-		elif line.startswith('position '):
-			parts = line.split()
-			if len(parts) >= 2:
-				position = int(parts[1])
+    for line in output.split('\n'):
+        line = line.strip()
+        if line.startswith('file '):
+            track_file = line[5:].strip()
+        elif line.startswith('tag artist '):
+            artist = line[11:].strip()
+        elif line.startswith('tag title '):
+            title = line[10:].strip()
+        elif line.startswith('duration '):
+            parts = line.split()
+            if len(parts) >= 2:
+                duration = int(parts[1])
+        elif line.startswith('position '):
+            parts = line.split()
+            if len(parts) >= 2:
+                position = int(parts[1])
+        elif line.startswith('status '):  # Get playback status
+            status = line.split()[1]
 
-	return track_file, position, artist, title, duration
+    return track_file, position, artist, title, duration, status
 
 # def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
 	# base_name, _ = os.path.splitext(os.path.basename(audio_file))
@@ -1264,165 +1267,158 @@ def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, 
 
 
 def main(stdscr):
-	curses.start_color()
-	curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
-	curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
-	curses.curs_set(0)
-	stdscr.timeout(500)
-	
-	current_audio_file, current_artist, current_title = None, None, None
-	lyrics, errors = [], []
-	is_txt_format, is_a2_format = False, False
-	last_input_time, manual_offset = None, 0
-	last_redraw, last_position = 0, -1
-	last_active_words, last_line_index = set(), -1
-	
-	track_start_time = None
-	last_cmus_position = 0
-	calculated_position = 0
-	current_duration = 0
-	time_adjust = 0.0
-	
-	while True:
-		current_time = time.time()
-		needs_redraw = False
-		#audio_file, position, artist, title, duration = get_cmus_info()
-		audio_file, cmus_position, artist, title, duration = get_cmus_info()  # Rename position to cmus_position
-		# Update timing calculations
-		now = time.time()
-		
-		# Change this block:
-		if audio_file != current_audio_file:  # New track
-			track_start_time = now
-			last_cmus_position = cmus_position
-			calculated_position = cmus_position
-			current_duration = duration
-		elif cmus_position != last_cmus_position:  # Position changed externally
-			# Handle seeks by resetting the clock
-			track_start_time = now
-			last_cmus_position = cmus_position
-			calculated_position = cmus_position
-		else:  # Calculate position based on elapsed time
-			if track_start_time and current_duration:
-				calculated_position = cmus_position + (now - track_start_time)
-				# Don't exceed track duration
-				calculated_position = min(calculated_position, current_duration)
-		
-		# Use calculated_position instead of cmus_position
-		position = calculated_position
-		adjusted_position = max(0, position + time_adjust)
+    curses.start_color()
+    curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
+    curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
+    curses.curs_set(0)
+    stdscr.timeout(500)
 
-		# Redraw only if position change correlates with lyrics change (A2 format)
-		if is_a2_format:
-			active_words = set()
-			a2_lines = []
-			current_line = []
+    current_audio_file, current_artist, current_title = None, None, None
+    lyrics, errors = [], []
+    is_txt_format, is_a2_format = False, False
+    last_input_time, manual_offset = None, 0
+    last_redraw, last_position = 0, -1
+    last_active_words, last_line_index = set(), -1
 
-			# Group words by line
-			for t, item in lyrics:
-				if item is None:
-					if current_line:
-						a2_lines.append(current_line)
-						current_line = []
-				else:
-					current_line.append((t, item))
+    track_start_time = None
+    last_cmus_position = 0
+    calculated_position = 0
+    current_duration = 0
+    time_adjust = 0.0
+    playback_paused = False  # Track playback state
 
-			# Highlight active words based on position
-			for line in a2_lines:
-				for word_idx, (start, (text, end)) in enumerate(line):
-					if start <= position < end:
-						active_words.add((text, word_idx))
+    while True:
+        current_time = time.time()
+        needs_redraw = False
 
-			# Only redraw if the active words or position has changed
-			if active_words != last_active_words or position != last_position:
-				needs_redraw = True
-				last_active_words = active_words
+        # Get current playback information
+        audio_file, cmus_position, artist, title, duration, status = get_cmus_info()
+        now = time.time()
 
-		# Check if audio info has changed (force redraw)
-		# Check if audio info has changed (force immediate redraw)
-		if (audio_file != current_audio_file or artist != current_artist or title != current_title):
-			current_audio_file, current_artist, current_title = audio_file, artist, title
-			lyrics, errors = [], []
-			last_line_index, manual_offset = -1, 0
-			last_input_time = None
-			needs_redraw = True  # Force immediate redraw
+        if audio_file != current_audio_file:  # Track changed
+            track_start_time = now
+            last_cmus_position = cmus_position
+            calculated_position = cmus_position
+            current_duration = duration
+            playback_paused = False  # Reset pause state
 
-			# Load lyrics based on format
-			directory = os.path.dirname(audio_file)
-			artist_name = current_artist or "UnknownArtist"
-			track_name = current_title or os.path.splitext(os.path.basename(audio_file))[0]
-			lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
+        elif cmus_position != last_cmus_position:  # Position changed externally (e.g., seek)
+            track_start_time = now
+            last_cmus_position = cmus_position
+            calculated_position = cmus_position
+            playback_paused = status == "paused"  # Adjust playback state
 
-			if lyrics_file:
-				is_txt_format = lyrics_file.endswith('.txt')
-				is_a2_format = lyrics_file.endswith('.a2')
-				lyrics, errors = load_lyrics(lyrics_file)
+        elif cmus_position == last_cmus_position:  # Position unchanged
+            if status == "paused" and not playback_paused:
+                playback_paused = True  # Mark as paused
+                needs_redraw = True  # Update UI
+            elif status == "playing" and playback_paused:
+                playback_paused = False  # Resume playback
 
-			# Immediate refresh upon track change
-			current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], adjusted_position) - 1
-			#current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-			manual_scroll_active = False
-			manual_offset = update_display(
-				stdscr, lyrics, errors, position, audio_file, manual_offset,
-				is_txt_format, is_a2_format, current_idx, manual_scroll_active,
-				time_adjust=time_adjust  # Add this
-			)
-			last_position = position
-			last_redraw = time.time()
+        if not playback_paused:  # Update position if not paused
+            if track_start_time and current_duration:
+                calculated_position = cmus_position + (now - track_start_time)
+                calculated_position = min(calculated_position, current_duration)  # Cap at track duration
+        else:
+            track_start_time = now  # Reset time tracking when paused
 
-		current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], adjusted_position) - 1
-		# Check if the position has changed enough to affect the lyrics
-		#current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-		if current_idx != last_line_index:
-			needs_redraw = True
-			last_line_index = current_idx
-		
-		manual_scroll_active = last_input_time and (current_time - last_input_time < 2)
-		
-		# Update display with the current lyrics only if necessary
-		if needs_redraw:
-			new_manual_offset = update_display(
-				stdscr, lyrics, errors, position, audio_file, manual_offset, 
-				is_txt_format, is_a2_format, current_idx, manual_scroll_active,
-				time_adjust=time_adjust  # Add this
-			)
-			manual_offset = new_manual_offset
-			last_position = position
-			last_redraw = current_time
+        position = calculated_position
+        adjusted_position = max(0, position + time_adjust)
 
-		# Handle key input for scrolling
-		key = stdscr.getch()
-		continue_running, manual_offset, last_input_time, needs_redraw, time_adjust = handle_scroll_input(
-			key, manual_offset, last_input_time, needs_redraw, time_adjust
-		)
-		if not continue_running:
-			break
+        # Check if lyrics need to be redrawn (A2 format)
+        if is_a2_format:
+            active_words = set()
+            a2_lines = []
+            current_line = []
 
-		# Force a refresh if no input for 2 seconds
-		if last_input_time and (current_time - last_input_time >= 2):
-			last_line_index = -1
-			needs_redraw = True
-			last_input_time = None
+            for t, item in lyrics:
+                if item is None:
+                    if current_line:
+                        a2_lines.append(current_line)
+                        current_line = []
+                else:
+                    current_line.append((t, item))
 
-		# Redraw lyrics if necessary due to position change or other conditions
-		if needs_redraw:
-			current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-			new_manual_offset = update_display(
-				stdscr, lyrics, errors, position, audio_file, manual_offset,
-				is_txt_format, is_a2_format, current_idx, manual_scroll_active
-			)
-			manual_offset = new_manual_offset
+            for line in a2_lines:
+                for word_idx, (start, (text, end)) in enumerate(line):
+                    if start <= position < end:
+                        active_words.add((text, word_idx))
 
-		# Handle window resize
-		if key == curses.KEY_RESIZE:
-			needs_redraw = True
+            if active_words != last_active_words or position != last_position:
+                needs_redraw = True
+                last_active_words = active_words
+
+        # Check if track metadata has changed (force redraw)
+        if (audio_file != current_audio_file or artist != current_artist or title != current_title):
+            current_audio_file, current_artist, current_title = audio_file, artist, title
+            lyrics, errors = [], []
+            last_line_index, manual_offset = -1, 0
+            last_input_time = None
+            needs_redraw = True
+
+            # Load lyrics
+            directory = os.path.dirname(audio_file)
+            artist_name = current_artist or "UnknownArtist"
+            track_name = current_title or os.path.splitext(os.path.basename(audio_file))[0]
+            lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
+
+            if lyrics_file:
+                is_txt_format = lyrics_file.endswith('.txt')
+                is_a2_format = lyrics_file.endswith('.a2')
+                lyrics, errors = load_lyrics(lyrics_file)
+
+            current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], adjusted_position) - 1
+            manual_scroll_active = False
+            manual_offset = update_display(
+                stdscr, lyrics, errors, position, audio_file, manual_offset,
+                is_txt_format, is_a2_format, current_idx, manual_scroll_active,
+                time_adjust=time_adjust
+            )
+            last_position = position
+            last_redraw = time.time()
+
+        # Determine if lyrics position has changed
+        current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], adjusted_position) - 1
+        if current_idx != last_line_index:
+            needs_redraw = True
+            last_line_index = current_idx
+
+        manual_scroll_active = last_input_time and (current_time - last_input_time < 2)
+
+        # Update display if necessary
+        if needs_redraw:
+            new_manual_offset = update_display(
+                stdscr, lyrics, errors, position, audio_file, manual_offset,
+                is_txt_format, is_a2_format, current_idx, manual_scroll_active,
+                time_adjust=time_adjust
+            )
+            manual_offset = new_manual_offset
+            last_position = position
+            last_redraw = current_time
+
+        # Handle key input for scrolling
+        key = stdscr.getch()
+        continue_running, manual_offset, last_input_time, needs_redraw, time_adjust = handle_scroll_input(
+            key, manual_offset, last_input_time, needs_redraw, time_adjust
+        )
+        if not continue_running:
+            break
+
+        # Force a refresh if no input for 2 seconds
+        if last_input_time and (current_time - last_input_time >= 2):
+            last_line_index = -1
+            needs_redraw = True
+            last_input_time = None
+
+        # Handle window resize
+        if key == curses.KEY_RESIZE:
+            needs_redraw = True
 
 if __name__ == "__main__":
-	while True:
-		try:
-			curses.wrapper(main)
-		except KeyboardInterrupt:
-			break
-			exit()
-		except:
-			continue
+    while True:
+        try:
+            curses.wrapper(main)
+        except KeyboardInterrupt:
+            break
+        except:
+            continue
