@@ -1265,13 +1265,12 @@ def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, 
 	else:
 		return display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, is_a2_format, current_idx, use_manual_offset=manual_scroll_active, time_adjust=time_adjust)
 
-
 def main(stdscr):
     curses.start_color()
     curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
     curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
     curses.curs_set(0)
-    stdscr.timeout(500)
+    stdscr.timeout(0)  # Set timeout to 0 for non-blocking input
 
     current_audio_file, current_artist, current_title = None, None, None
     lyrics, errors = [], []
@@ -1398,11 +1397,12 @@ def main(stdscr):
 
         # Handle key input for scrolling
         key = stdscr.getch()
-        continue_running, manual_offset, last_input_time, needs_redraw, time_adjust = handle_scroll_input(
-            key, manual_offset, last_input_time, needs_redraw, time_adjust
-        )
-        if not continue_running:
-            break
+        if key != -1:  # Check for immediate key input
+            continue_running, manual_offset, last_input_time, needs_redraw, time_adjust = handle_scroll_input(
+                key, manual_offset, last_input_time, needs_redraw, time_adjust
+            )
+            if not continue_running:
+                break
 
         # Force a refresh if no input for 2 seconds
         if last_input_time and (current_time - last_input_time >= 2):
@@ -1413,6 +1413,14 @@ def main(stdscr):
         # Handle window resize
         if key == curses.KEY_RESIZE:
             needs_redraw = True
+
+        if needs_redraw:  # Refresh UI immediately if resizing or needs redraw
+            stdscr.clear()  # Clear the screen before redrawing
+            manual_offset = update_display(
+                stdscr, lyrics, errors, position, audio_file, manual_offset,
+                is_txt_format, is_a2_format, current_idx, manual_scroll_active,
+                time_adjust=time_adjust
+            )
 
 if __name__ == "__main__":
     while True:
