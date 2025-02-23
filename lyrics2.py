@@ -1270,7 +1270,7 @@ def main(stdscr):
     curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
     curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
     curses.curs_set(0)
-    stdscr.timeout(0)  # Set timeout to 0 for non-blocking input
+    stdscr.timeout(400)  # Set timeout to 400ms for non-blocking input
 
     current_audio_file, current_artist, current_title = None, None, None
     lyrics, errors = [], []
@@ -1294,32 +1294,32 @@ def main(stdscr):
         audio_file, cmus_position, artist, title, duration, status = get_cmus_info()
         now = time.time()
 
+        # Check for changes in the track
         if audio_file != current_audio_file:  # Track changed
             track_start_time = now
             last_cmus_position = cmus_position
             calculated_position = cmus_position
             current_duration = duration
             playback_paused = False  # Reset pause state
+            needs_redraw = True
 
-        elif cmus_position != last_cmus_position:  # Position changed externally (e.g., seek)
+        elif cmus_position != last_cmus_position:  # Position changed externally
             track_start_time = now
             last_cmus_position = cmus_position
             calculated_position = cmus_position
             playback_paused = status == "paused"  # Adjust playback state
+            needs_redraw = True  # Update UI
 
-        elif cmus_position == last_cmus_position:  # Position unchanged
-            if status == "paused" and not playback_paused:
-                playback_paused = True  # Mark as paused
-                needs_redraw = True  # Update UI
-            elif status == "playing" and playback_paused:
-                playback_paused = False  # Resume playback
+        elif status == "paused" and not playback_paused:  # Paused
+            playback_paused = True
+            needs_redraw = True  # Update UI
+        elif status == "playing" and playback_paused:  # Resumed
+            playback_paused = False
 
-        if not playback_paused:  # Update position if not paused
-            if track_start_time and current_duration:
-                calculated_position = cmus_position + (now - track_start_time)
-                calculated_position = min(calculated_position, current_duration)  # Cap at track duration
-        else:
-            track_start_time = now  # Reset time tracking when paused
+        # Update position if not paused
+        if not playback_paused and track_start_time and current_duration:
+            calculated_position = cmus_position + (now - track_start_time)
+            calculated_position = min(calculated_position, current_duration)  # Cap at track duration
 
         position = calculated_position
         adjusted_position = max(0, position + time_adjust)
@@ -1347,7 +1347,7 @@ def main(stdscr):
                 needs_redraw = True
                 last_active_words = active_words
 
-        # Check if track metadata has changed (force redraw)
+        # Check if track metadata has changed
         if (audio_file != current_audio_file or artist != current_artist or title != current_title):
             current_audio_file, current_artist, current_title = audio_file, artist, title
             lyrics, errors = [], []
@@ -1421,6 +1421,7 @@ def main(stdscr):
                 is_txt_format, is_a2_format, current_idx, manual_scroll_active,
                 time_adjust=time_adjust
             )
+
 
 if __name__ == "__main__":
     while True:
