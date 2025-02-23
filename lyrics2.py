@@ -10,7 +10,6 @@ import urllib.parse
 import syncedlyrics 
 import multiprocessing
 
-# Add this at the top with other constants
 LYRICS_TIMEOUT_LOG = "lyrics_timeouts.log"
 LOG_RETENTION_DAYS = 10
 
@@ -25,11 +24,8 @@ def log_timeout(artist, title):
 	log_path = os.path.join(log_dir, LYRICS_TIMEOUT_LOG)
 	
 	try:
-		# Append new entry
 		with open(log_path, 'a', encoding='utf-8') as f:
 			f.write(log_entry)
-		
-		# Clean up old entries after writing new one
 		clean_old_timeouts()
 		
 	except Exception as e:
@@ -63,7 +59,6 @@ def clean_old_timeouts():
 					if entry_time >= cutoff:
 						new_lines.append(line + '\n')
 				except ValueError:
-					# Skip lines with invalid timestamps
 					continue
 
 		# Write filtered lines back to the file
@@ -117,52 +112,6 @@ def sanitize_string(s):
 		# print(f"Error fetching lyrics from LRCLIB: {e}")
 		# return None, None
 
-# def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None):
-	# """
-	# Fetch lyrics using the syncedlyrics library, prioritizing Enhanced LRC.
-	# Returns a tuple (lyrics_content, is_synced) or (None, None) on error.
-	# """
-	# search_term = f"{track_name} {artist_name}".strip()
-	# if not search_term:
-		# return None, None
-	# try:
-		# # Attempt to fetch Enhanced LRC first
-		# lyrics = syncedlyrics.search(search_term, enhanced=True)
-		# if lyrics:
-			# is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in lyrics.split('\n'))
-			# is_synced = is_enhanced or any(re.search(r'\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
-			# return lyrics, is_synced
-		# # Fallback to regular synced or plain
-		# lyrics = syncedlyrics.search(search_term)
-		# if lyrics:
-			# is_synced = any(re.search(r'\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
-			# return lyrics, is_synced
-		# return None, None
-	# except Exception as e:
-		# print(f"Error fetching lyrics via syncedlyrics: {e}")
-		# return None, None
-		
-
-# def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None):
-	# """
-	# Fetch lyrics using the syncedlyrics library.
-	# Returns a tuple (lyrics_content, is_synced) or (None, None) on error.
-	# """
-	# search_term = f"{track_name} {artist_name}".strip()
-	# if not search_term:
-		# return None, None
-	# try:
-		# # Attempt to fetch lyrics using syncedlyrics, preferring synced but allowing plain
-		# lyrics = syncedlyrics.search(search_term)
-		# if not lyrics:
-			# return None, None
-		# # Determine if the lyrics are synced by checking for timestamp lines
-		# is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
-		# return lyrics, is_synced
-	# except Exception as e:
-		# print(f"Error fetching lyrics via syncedlyrics: {e}")
-		# return None, None
-
 def parse_lrc_tags(lyrics):
 	"""Extract LRC metadata tags from lyrics content"""
 	tags = {}
@@ -176,20 +125,15 @@ def parse_lrc_tags(lyrics):
 
 
 def validate_lyrics(content, artist, title):
-	"""More lenient validation that allows approximate matches"""
-	# Always allow files with timestamps through
 	if re.search(r'\[\d+:\d+\.\d+\]', content):
 		return True
 		
-	# Check for instrumental marker
 	if re.search(r'\b(instrumental)\b', content, re.IGNORECASE):
 		return True
 
-	# Normalize without being too aggressive
 	def normalize(s):
 		return re.sub(r'[^\w]', '', str(s)).lower().replace(' ', '')[:15]
 
-	# Check for partial matches
 	norm_title = normalize(title)[:15]
 	norm_artist = normalize(artist)[:15] if artist else ''
 	norm_content = normalize(content)
@@ -224,11 +168,11 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 	queue = multiprocessing.Queue()
 	process = multiprocessing.Process(target=worker, args=(queue, search_term))
 	process.start()
-	process.join(timeout)  # Wait for the process with a timeout
+	process.join(timeout)
 
 	if process.is_alive():
-		process.terminate()  # Kill the process if it exceeds timeout
-		process.join()  # Ensure it's cleaned up
+		process.terminate() 
+		process.join()
 		print("Lyrics fetch timed out")
 		log_timeout(artist_name, track_name)  # logging
 		return None, None
@@ -244,38 +188,6 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 	is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
 	return lyrics, is_synced
 
-# def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None):
-	# """Fetch lyrics with strict validation against track metadata"""
-	# search_term = f"{track_name} {artist_name}".strip()
-	# if not search_term:
-		# return None, None
-	
-	# try:
-		# # p = multiprocessing.Process(target=bar)
-		# # p.start()
-		# #lyrics = syncedlyrics.search(search_term, enhanced=True)
-		# lyrics = syncedlyrics.search(search_term)
-		# if not lyrics:
-			# return None, None
-			
-		# if not validate_lyrics(lyrics, artist_name, track_name):
-			# print("Lyrics validation failed - metadata mismatch")
-			# return None, None
-			
-		# is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) 
-						  # for line in lyrics.split('\n'))
-		# # p.join(15)
-		# # if p.is_alive():
-			# # print("Failed to fetch in time... killing process")
-			# # p.terminate()
-			# # p.kill()
-			# # p.join()
-			# # return None, None
-		# return lyrics, is_synced
-	# except Exception as e:
-		# print(f"Error fetching lyrics: {e}")
-		# return None, None
-	
 def save_lyrics(lyrics, track_name, artist_name, extension):
 	"""Save lyrics to a sanitized filename with appropriate extension."""
 	folder = os.path.join(os.getcwd(), "synced_lyrics")
@@ -323,54 +235,11 @@ def get_cmus_info():
 			parts = line.split()
 			if len(parts) >= 2:
 				position = int(parts[1])
-		elif line.startswith('status '):  # Get playback status
+		elif line.startswith('status '): 
 			status = line.split()[1]
 
 	return track_file, position, artist, title, duration, status
 
-# def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
-	# base_name, _ = os.path.splitext(os.path.basename(audio_file))
-
-	# a2_file = os.path.join(directory, f"{base_name}.a2")
-	# lrc_file = os.path.join(directory, f"{base_name}.lrc")
-	# txt_file = os.path.join(directory, f"{base_name}.txt")
-
-	# # Check local files
-	# if os.path.exists(a2_file):
-		# print("Using local .a2 file")
-		# return a2_file
-	# elif os.path.exists(lrc_file):
-		# print("Using local .lrc file")
-		# return lrc_file
-	# elif os.path.exists(txt_file):
-		# print("Using local .txt file")
-		# return txt_file
-	
-	# sanitized_track = sanitize_filename(track_name)
-	# sanitized_artist = sanitize_filename(artist_name)
-
-	# # Construct expected filenames
-	# possible_filenames = [
-		# f"{sanitized_track}.a2",
-		# f"{sanitized_track}.lrc",
-		# f"{sanitized_track}.txt",
-		# f"{sanitized_track}_{sanitized_artist}.a2",
-		# f"{sanitized_track}_{sanitized_artist}.lrc",
-		# f"{sanitized_track}_{sanitized_artist}.txt"
-	# ]
-
-	# synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
-
-	# # Search in both directories
-	# for dir_path in [directory, synced_dir]:
-		# for filename in possible_filenames:
-			# file_path = os.path.join(dir_path, filename)
-			# if os.path.exists(file_path):
-				# print(f"[DEBUG] Found lyrics: {file_path}")
-				# return file_path
-
-	# print("[DEBUG] No local nor cached file found, fetching from snycedlyrics...")
-	
 	# # # Fetch from LRCLIB only if no local file exists
 	# # fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
 	# # if fetched_lyrics:
@@ -379,78 +248,10 @@ def get_cmus_info():
 
 	# # print("[DEBUG] LRCLIB failed, trying syncedlyrics...")
 
-	# # Fallback to syncedlyrics
-	# fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
-	# if fetched_lyrics:
-		# is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
-		# extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
-		# return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-
-	# print("[ERROR] No lyrics found from any source.")
-	# return None
-	
-# def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
-	# base_name, _ = os.path.splitext(os.path.basename(audio_file))
-
-	# a2_file = os.path.join(directory, f"{base_name}.a2")
-	# lrc_file = os.path.join(directory, f"{base_name}.lrc")
-	# txt_file = os.path.join(directory, f"{base_name}.txt")
-
-	# # Check local files
-	# if os.path.exists(a2_file):
-		# print("Using local .a2 file")
-		# return a2_file
-	# elif os.path.exists(lrc_file):
-		# print("Using local .lrc file")
-		# return lrc_file
-	# elif os.path.exists(txt_file):
-		# print("Using local .txt file")
-		# return txt_file
-
-	# sanitized_track = sanitize_filename(track_name)
-	# sanitized_artist = sanitize_filename(artist_name)
-
-	# # Construct expected filenames
-	# possible_filenames = [
-		# f"{sanitized_track}.a2",
-		# f"{sanitized_track}.lrc",
-		# f"{sanitized_track}.txt",
-		# f"{sanitized_track}_{sanitized_artist}.a2",
-		# f"{sanitized_track}_{sanitized_artist}.lrc",
-		# f"{sanitized_track}_{sanitized_artist}.txt"
-	# ]
-
-	# synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
-
-	# # Search in both directories
-	# for dir_path in [directory, synced_dir]:
-		# for filename in possible_filenames:
-			# file_path = os.path.join(dir_path, filename)
-			# if os.path.exists(file_path):
-				# print(f"[DEBUG] Found lyrics: {file_path}")
-				# return file_path
-
-	# print("[DEBUG] No local nor cached file found, fetching from syncedlyrics...")
-	
-	# # Fallback to syncedlyrics
-	# fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
-	# if fetched_lyrics:
-		# is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
-		# extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
-
-		# # Save the lyrics and ensure they're valid
-		# saved_lyrics_path = save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-
-		# # Return the saved path, so it can be loaded
-		# return saved_lyrics_path
-
-	# print("[ERROR] No lyrics found from any source.")
-	# return None
 	
 def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
 	base_name, _ = os.path.splitext(os.path.basename(audio_file))
 
-	# Check local files first (original structure)
 	a2_file = os.path.join(directory, f"{base_name}.a2")
 	lrc_file = os.path.join(directory, f"{base_name}.lrc")
 	txt_file = os.path.join(directory, f"{base_name}.txt")
@@ -461,26 +262,22 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 		(txt_file, 'txt')
 	]
 
-	# Modified validation check with fallback
 	for file_path, ext in local_files:
 		if os.path.exists(file_path):
 			try:
 				with open(file_path, 'r', encoding='utf-8') as f:
 					content = f.read()
 				
-				# Give priority to unvalidated local files over fetched ones
 				if validate_lyrics(content, artist_name, track_name):
 					print(f"Using validated local .{ext} file")
 					return file_path
 				else:
-					# Still use local file but warn about validation
 					print(f"Using unvalidated local .{ext} file (fallback)")
 					return file_path
 					
 			except Exception as e:
 				print(f"Error reading {file_path}: {e}")
 
-	# Check if metadata indicates instrumental
 	is_instrumental_metadata = (
 		"instrumental" in track_name.lower() or 
 		(artist_name and "instrumental" in artist_name.lower())
@@ -499,7 +296,6 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 
 	synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
 
-	# Search in both directories with validation
 	for dir_path in [directory, synced_dir]:
 		for filename in possible_filenames:
 			file_path = os.path.join(dir_path, filename)
@@ -515,24 +311,20 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 				except Exception as e:
 					print(f"Error reading {file_path}: {e}")
 
-	# Instrumental handling (keep your existing logic)
 	if is_instrumental_metadata:
 		print("[INFO] Instrumental track detected via metadata")
 		return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
 
 	print("[DEBUG] Fetching from syncedlyrics...")
 	
-	# Modified fetched lyrics handling
+
 	fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
 	
 	if fetched_lyrics:
-		# Add tolerant validation
 		if not validate_lyrics(fetched_lyrics, artist_name, track_name):
-			# Instead of discarding, add warning and use anyway
 			print("Validation warning - using lyrics with caution")
 			fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
 
-		# Keep your existing saving logic
 		is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
 		extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
 		return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
@@ -540,80 +332,7 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 	print("[ERROR] No lyrics found")
 	return None
 
-# def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
-	# base_name, _ = os.path.splitext(os.path.basename(audio_file))
 
-	# a2_file = os.path.join(directory, f"{base_name}.a2")
-	# lrc_file = os.path.join(directory, f"{base_name}.lrc")
-	# txt_file = os.path.join(directory, f"{base_name}.txt")
-
-	# # Check local files first
-	# local_files = {
-		# 'a2': os.path.exists(a2_file),
-		# 'lrc': os.path.exists(lrc_file),
-		# 'txt': os.path.exists(txt_file)
-	# }
-	
-	# if local_files['a2']:
-		# print("Using local .a2 file")
-		# return a2_file
-	# elif local_files['lrc']:
-		# print("Using local .lrc file")
-		# return lrc_file
-	# elif local_files['txt']:
-		# print("Using local .txt file")
-		# return txt_file
-
-	# # Check if metadata indicates instrumental
-	# is_instrumental_metadata = (
-		# "instrumental" in track_name.lower() or 
-		# (artist_name and "instrumental" in artist_name.lower())
-	# )
-	
-	# sanitized_track = sanitize_filename(track_name)
-	# sanitized_artist = sanitize_filename(artist_name)
-	# possible_filenames = [
-		# f"{sanitized_track}.a2",
-		# f"{sanitized_track}.lrc",
-		# f"{sanitized_track}.txt",
-		# f"{sanitized_track}_{sanitized_artist}.a2",
-		# f"{sanitized_track}_{sanitized_artist}.lrc",
-		# f"{sanitized_track}_{sanitized_artist}.txt"
-	# ]
-
-	# synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
-	
-	# # Search in both directories
-	# for dir_path in [directory, synced_dir]:
-		# for filename in possible_filenames:
-			# file_path = os.path.join(dir_path, filename)
-			# if os.path.exists(file_path):
-				# print(f"[DEBUG] Found lyrics: {file_path}")
-				# return file_path
-
-	# # If metadata indicates instrumental, save and return instrumental marker
-	# if is_instrumental_metadata:
-		# print("[INFO] Instrumental track detected via metadata")
-		# return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
-
-	# print("[DEBUG] No local nor cached file found, fetching from syncedlyrics...")
-	
-	# # Fetch lyrics
-	# fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
-	
-	# if fetched_lyrics:
-		# # Check if lyrics contain instrumental marker
-		# if re.search(r'\[Instrumental\]', fetched_lyrics, re.IGNORECASE):
-			# print("[INFO] Instrumental track detected via lyrics content")
-			# return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
-		# else:
-			# # Determine extension and save normally
-			# is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
-			# extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
-			# return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-
-	# print("[ERROR] No lyrics found from any source.")
-	# return None
 
 def parse_time_to_seconds(time_str):
 	minutes, seconds = time_str.split(':')
@@ -642,16 +361,16 @@ def load_lyrics(file_path):
 			if not line:
 				continue
 
-			# Parse line with aggressive timestamp removal
+
 			clean_line = re.sub(r'\[.*?\]|<.*?>', '', line).strip()
 			if not clean_line:
 				continue
 
-			# Extract and store word timestamps
+
 			line_match = line_pattern.match(line)
 			if line_match:
 				current_line_time = parse_time_to_seconds(line_match.group(1))
-				lyrics.append((current_line_time, None))  # Line start
+				lyrics.append((current_line_time, None))
 				
 				content = line_match.group(2)
 				words = word_pattern.findall(content)
@@ -668,10 +387,9 @@ def load_lyrics(file_path):
 				if remaining_text:
 					lyrics.append((current_line_time, (remaining_text, current_line_time)))
 
-				lyrics.append((current_line_time, None))  # Line end
+				lyrics.append((current_line_time, None)) 
 
 
-	# Check for TXT format or other formats
 	elif file_path.endswith('.txt'):
 		for line in lines:
 			raw_line = line.rstrip('\n')
@@ -849,504 +567,6 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 	stdscr.refresh()
 	return start_screen_line
 	
-# def main(stdscr):
-	# curses.start_color()
-	# curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
-	# curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
-	# curses.curs_set(0)
-	# stdscr.timeout(400)  # Non-blocking input with 400ms timeout
-
-	# # State variables
-	# current_audio_file, current_artist, current_title = None, None, None
-	# lyrics, errors = [], []
-	# is_txt_format, is_a2_format = False, False
-	# manual_offset, last_line_index = 0, -1
-	# last_active_words, last_position = set(), -1
-	# last_input_time = None
-	# prev_window_size = stdscr.getmaxyx()  # Track window dimensions
-
-	# # Playback tracking
-	# track_start_time = None
-	# last_cmus_position = 0
-	# calculated_position = 0
-	# current_duration = 0
-	# time_adjust = 0.0
-	# playback_paused = False
-
-	# while True:
-		# current_time = time.time()
-		# needs_redraw = False
-		# manual_scroll_active = last_input_time and (current_time - last_input_time < 2)
-
-		# # Window resize handling (preserve scroll position)
-		# current_window_size = stdscr.getmaxyx()
-		# if current_window_size != prev_window_size:
-			# # Adjust manual offset based on height ratio
-			# old_height, _ = prev_window_size
-			# new_height, _ = current_window_size
-			# if old_height > 0 and new_height > 0:
-				# manual_offset = int(manual_offset * (new_height / old_height))
-			# prev_window_size = current_window_size
-			# needs_redraw = True
-
-		# # Get playback state
-		# audio_file, cmus_position, artist, title, duration, status = get_cmus_info()
-		# now = time.time()
-
-		# # Track change detection (only check if audio file has changed)
-		# if audio_file != current_audio_file:
-			# current_audio_file, current_artist, current_title = audio_file, artist, title
-			# track_start_time = now
-			# last_cmus_position = cmus_position
-			# calculated_position = cmus_position
-			# current_duration = duration
-			# playback_paused = False
-			# needs_redraw = True
-
-			# # Load lyrics
-			# lyrics, errors = [], []
-			# if audio_file:
-				# directory = os.path.dirname(audio_file)
-				# artist_name = artist or "UnknownArtist"
-				# track_name = title or os.path.splitext(os.path.basename(audio_file))[0]
-				# lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
-				# if lyrics_file:
-					# is_txt_format = lyrics_file.endswith('.txt')
-					# is_a2_format = lyrics_file.endswith('.a2')
-					# lyrics, errors = load_lyrics(lyrics_file)
-
-		# # Playback state updates (less frequent checks)
-		# if cmus_position != last_cmus_position or status != ("paused" if playback_paused else "playing"):
-			# last_cmus_position = cmus_position
-			# playback_paused = status == "paused"
-			# if not playback_paused:
-				# track_start_time = now  # Only update when playing
-			# needs_redraw = True
-
-		# # Position calculation (only if not paused)
-		# if not playback_paused and track_start_time:
-			# calculated_position = min(cmus_position + (now - track_start_time), current_duration or 0)
-		# adjusted_position = max(0, calculated_position + time_adjust)
-
-		# # Lyric position tracking (optimize index lookup)
-		# current_idx = last_line_index  # Start from last known index
-		# while current_idx < len(lyrics) and lyrics[current_idx][0] <= adjusted_position:
-			# current_idx += 1
-		# current_idx -= 1  # Get the last valid index
-		# if current_idx != last_line_index:
-			# needs_redraw = True
-			# last_line_index = current_idx
-
-		# # A2 format word highlighting
-		# if is_a2_format and lyrics:
-			# active_words = set()
-			# current_line = []
-			# for t, item in lyrics:
-				# if item is None:
-					# current_line = []
-				# else:
-					# current_line.append((t, item[1]))  # (end_time, word)
-					# for start, (word, end) in current_line:
-						# if start <= adjusted_position < end:
-							# active_words.add(word)
-			# if active_words != last_active_words:
-				# needs_redraw = True
-				# last_active_words = active_words
-
-		# # Input handling
-		# key = stdscr.getch()
-		# if key != -1:
-			# cont, manual_offset, last_input_time, needs_redraw_input, time_adjust = handle_scroll_input(
-				# key, manual_offset, last_input_time, needs_redraw, time_adjust
-			# )
-			# needs_redraw |= needs_redraw_input
-			# if not cont:
-				# break
-
-		# # Conditional redraw
-		# if needs_redraw or adjusted_position != last_position:
-			# #stdscr.erase()  # More efficient than clear()
-			# manual_offset = update_display(
-				# stdscr, lyrics, errors, adjusted_position, audio_file, manual_offset,
-				# is_txt_format, is_a2_format, current_idx, manual_scroll_active,
-				# time_adjust=time_adjust
-			# )
-			# last_position = adjusted_position
-
-		# time.sleep(0.01)  # Increased sleep for reduced CPU usage
-
-
-# def main(stdscr):
-	# curses.start_color()
-	# curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
-	# curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
-	# curses.curs_set(0)
-	# stdscr.timeout(200)
-	# current_audio_file = None
-	# current_artist = None  # Track current artist
-	# current_title = None   # Track current title
-	# lyrics = []
-	# errors = []
-	# is_txt_format = False
-	# is_a2_format = False
-	# last_input_time = None
-	# manual_offset = 0
-	# last_redraw = 0
-	# last_position = -1
-	# last_line_index = -1
-	# last_active_words = set()  # Track previously highlighted words
-	
-	# while True:
-		# current_time = time.time()
-		# needs_redraw = False
-
-		# audio_file, position, artist, title, duration = get_cmus_info()
-		
-		# # **Force redraws only for A2 format**
-		# if is_a2_format:
-			# active_words = set()
-			# a2_lines = []
-			# current_line = []
-			
-			# # Group words by line
-			# for t, item in lyrics:
-				# if item is None:
-					# if current_line:
-						# a2_lines.append(current_line)
-						# current_line = []
-				# else:
-					# current_line.append((t, item))
-			
-			# # Identify active words based on position
-			# for line in a2_lines:
-				# for word_idx, (start, (text, end)) in enumerate(line):
-					# if start <= position < end:
-						# active_words.add((text, word_idx))  # Track active words
-			
-			# # **Trigger redraw if active words changed**
-			# if active_words != last_active_words:
-				# needs_redraw = True
-				# last_active_words = active_words
-
-		# # **Trigger redraw if position changed (for A2)**
-		# if is_a2_format and position != last_position:
-			# needs_redraw = True
-		
-		# if (audio_file != current_audio_file or 
-			# artist != current_artist or 
-			# title != current_title):
-				# # Update current tracking variables
-			# current_audio_file = audio_file
-			# current_artist = artist
-			# current_title = title
-			# while True:
-				# current_time = time.time()
-				# needs_redraw = True
-
-				# audio_file, position, artist, title, duration = get_cmus_info()
-				# # Update current tracking variables
-				# current_audio_file = audio_file
-				# current_artist = artist
-				# current_title = title
-
-				# # Reset lyric state
-				# last_line_index = -1
-				# manual_offset = 0
-				# last_input_time = None
-				# lyrics = []
-				# errors = []
-
-				# # **Force redraws only for A2 format**
-				# if is_a2_format:
-					# active_words = set()
-					# a2_lines = []
-					# current_line = []
-					
-					# # Group words by line
-					# for t, item in lyrics:
-						# if item is None:
-							# if current_line:
-								# a2_lines.append(current_line)
-								# current_line = []
-						# else:
-							# current_line.append((t, item))
-					
-					# # Identify active words based on position
-					# for line in a2_lines:
-						# for word_idx, (start, (text, end)) in enumerate(line):
-							# if start <= position < end:
-								# active_words.add((text, word_idx))  # Track active words
-					
-					# # **Trigger redraw if active words changed**
-					# if active_words != last_active_words:
-						# needs_redraw = True
-						# last_active_words = active_words
-
-				# # **Trigger redraw if position changed (for A2)**
-				# if is_a2_format and position != last_position:
-					# needs_redraw = True
-
-				# if audio_file:
-					# directory = os.path.dirname(audio_file)
-					# artist_name = current_artist if current_artist else "UnknownArtist"
-					# track_name = current_title if current_title else os.path.splitext(os.path.basename(audio_file))[0]
-					# lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
-					# if lyrics_file:
-						# is_txt_format = lyrics_file.endswith('.txt')
-						# is_a2_format = lyrics_file.endswith('.a2') if lyrics_file else False
-						# lyrics, errors = load_lyrics(lyrics_file)
-
-				# # Calculate current_idx based on position and lyrics
-				# current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-				# manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
-
-				# # Call display_lyrics based on the file format
-				# if not is_txt_format:
-					# new_manual_offset = display_lyrics(
-						# stdscr,
-						# lyrics,
-						# errors,
-						# position,
-						# os.path.basename(audio_file),
-						# manual_offset,
-						# is_txt_format,
-						# is_a2_format,
-						# current_idx,
-						# use_manual_offset=manual_scroll_active
-					# )
-					# manual_offset = new_manual_offset
-				# else:
-					# # For txt files, allow manual scrolling but prevent auto-scroll based on position
-					# new_manual_offset = display_lyrics(
-						# stdscr,
-						# lyrics,
-						# errors,
-						# position,
-						# os.path.basename(audio_file),
-						# manual_offset,
-						# is_txt_format,
-						# is_a2_format,
-						# current_idx,
-						# use_manual_offset=True  # Allow manual scrolling
-					# )
-					# manual_offset = new_manual_offset
-
-				# last_position = position
-				# last_redraw = current_time
-						# # Prevent auto-scroll for txt files, but allow manual scroll
-				# height, width = stdscr.getmaxyx()
-				# available_lines = height - 3
-				# # If manual scroll is active, override the last_line_index to -1 to force redraw
-				# if manual_scroll_active:
-					# last_line_index = -1
-				
-				# if position != last_position or needs_redraw:
-					# last_position = position
-					# last_redraw = current_time
-				
-				# current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-				# manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
-				# if audio_file and (needs_redraw or (current_time - last_redraw >= 0.1) or position != last_position):
-					# if current_idx != last_line_index:  # Only redraw if the line has changed (or manual scroll)
-						# if not is_txt_format:
-							# new_manual_offset = display_lyrics(
-								# stdscr,
-								# lyrics,
-								# errors,
-								# position,
-								# os.path.basename(audio_file),
-								# manual_offset,
-								# is_txt_format,
-								# is_a2_format,
-								# current_idx,
-								# use_manual_offset=manual_scroll_active
-							# )
-							# manual_offset = new_manual_offset
-						# else:
-							# new_manual_offset = display_lyrics(
-								# stdscr,
-								# lyrics,
-								# errors,
-								# position,
-								# os.path.basename(audio_file),
-								# manual_offset,
-								# is_txt_format,
-								# is_a2_format,
-								# current_idx,
-								# use_manual_offset=True  # Always allow manual scrolling for .txt files
-							# )
-							# manual_offset = new_manual_offset
-
-						# last_line_index = current_idx  # Update last displayed line index
-					# last_position = position
-					# last_redraw = current_time
-
-				# # Force a refresh if manual input has gone inactive for 2 seconds
-				# if last_input_time and (current_time - last_input_time >= 2):
-					# last_line_index = -1  # Reset the last displayed line index
-					# needs_redraw = True
-					# last_input_time = None  # Reset the last input time after forcing a refresh
-				
-				# key = stdscr.getch()
-				# if key == ord('q'):
-					# break
-				# elif key == curses.KEY_UP:
-					# manual_offset = max(0, manual_offset - 1)
-					# last_input_time = current_time
-					# needs_redraw = True
-				# elif key == curses.KEY_DOWN:
-					# manual_offset += 1
-					# last_input_time = current_time
-					# needs_redraw = True
-				# elif key == curses.KEY_RESIZE:
-					# last_line_index = -1  
-					# needs_redraw = True
-					# last_redraw = current_time
-
-				# # Redraw lyrics if necessary
-				# #if needs_redraw or audio_file or position != last_position:
-				# if position != last_position or (lyrics and (current_time - last_redraw >= 0.1)) or needs_redraw:
-					# if current_idx != last_line_index:  # Only redraw if the line has changed or manual scroll
-						# if not is_txt_format:
-							# new_manual_offset = display_lyrics(
-								# stdscr,
-								# lyrics,
-								# errors,
-								# position,
-								# os.path.basename(audio_file),
-								# manual_offset,
-								# is_txt_format,
-								# is_a2_format,
-								# current_idx,
-								# use_manual_offset=manual_scroll_active
-							# )
-							# manual_offset = new_manual_offset
-						# else:
-							# new_manual_offset = display_lyrics(
-								# stdscr,
-								# lyrics,
-								# errors,
-								# position,
-								# os.path.basename(audio_file),
-								# manual_offset,
-								# is_txt_format,
-								# is_a2_format,
-								# current_idx,
-								# use_manual_offset=True  # Always allow manual scrolling for .txt files
-							# )
-							# manual_offset = new_manual_offset
-
-						# last_line_index = current_idx  # Update last displayed line index
-					# last_redraw = current_time
-				# if position != last_position:
-					# break
-
-		# # Prevent auto-scroll for txt files, but allow manual scroll
-		# height, width = stdscr.getmaxyx()
-		# available_lines = height - 3
-		# # Recalculate current_idx and manual_scroll_active each loop iteration
-		# current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], position) - 1
-		# manual_scroll_active = last_input_time is not None and (current_time - last_input_time < 2)
-
-		# # If manual scroll is active, override the last_line_index to -1 to force redraw
-		# if manual_scroll_active:
-			# last_line_index = -1
-		
-		# if audio_file and (needs_redraw or (current_time - last_redraw >= 0.1) or position != last_position):
-			# if current_idx != last_line_index:  # Only redraw if the line has changed (or manual scroll)
-				# if not is_txt_format:
-					# new_manual_offset = display_lyrics(
-						# stdscr,
-						# lyrics,
-						# errors,
-						# position,
-						# os.path.basename(audio_file),
-						# manual_offset,
-						# is_txt_format,
-						# is_a2_format,
-						# current_idx,
-						# use_manual_offset=manual_scroll_active
-					# )
-					# manual_offset = new_manual_offset
-				# else:
-					# new_manual_offset = display_lyrics(
-						# stdscr,
-						# lyrics,
-						# errors,
-						# position,
-						# os.path.basename(audio_file),
-						# manual_offset,
-						# is_txt_format,
-						# is_a2_format,
-						# current_idx,
-						# use_manual_offset=True  # Always allow manual scrolling for .txt files
-					# )
-					# manual_offset = new_manual_offset
-
-				# last_line_index = current_idx  # Update last displayed line index
-			# last_position = position
-			# last_redraw = current_time
-
-		# # Force a refresh if manual input has gone inactive for 2 seconds
-		# if last_input_time and (current_time - last_input_time >= 2):
-			# last_line_index = -1  # Reset the last displayed line index
-			# needs_redraw = True
-			# last_input_time = None  # Reset the last input time after forcing a refresh
-		
-		# key = stdscr.getch()
-		# if key == ord('q'):
-			# break
-		# elif key == curses.KEY_UP:
-			# manual_offset = max(0, manual_offset - 1)
-			# last_input_time = current_time
-			# needs_redraw = True
-		# elif key == curses.KEY_DOWN:
-			# manual_offset += 1
-			# last_input_time = current_time
-			# needs_redraw = True
-		# elif key == curses.KEY_RESIZE:
-			# last_line_index = -1  
-			# needs_redraw = True
-			# last_redraw = current_time
-		# if position != last_position or needs_redraw:
-			# last_position = position
-			# last_redraw = current_time
-		
-		# # Redraw lyrics if necessary
-		# #if needs_redraw or audio_file or position != last_position:
-		# if position != last_position or (lyrics and (current_time - last_redraw >= 0.1)) or needs_redraw:
-			# if current_idx != last_line_index:  # Only redraw if the line has changed or manual scroll
-				# if not is_txt_format:
-					# new_manual_offset = display_lyrics(
-						# stdscr,
-						# lyrics,
-						# errors,
-						# position,
-						# os.path.basename(audio_file),
-						# manual_offset,
-						# is_txt_format,
-						# is_a2_format,
-						# current_idx,
-						# use_manual_offset=manual_scroll_active
-					# )
-					# manual_offset = new_manual_offset
-				# else:
-					# new_manual_offset = display_lyrics(
-						# stdscr,
-						# lyrics,
-						# errors,
-						# position,
-						# os.path.basename(audio_file),
-						# manual_offset,
-						# is_txt_format,
-						# is_a2_format,
-						# current_idx,
-						# use_manual_offset=True  # Always allow manual scrolling for .txt files
-					# )
-					# manual_offset = new_manual_offset
-
-				# last_line_index = current_idx  # Update last displayed line index
-			# last_redraw = current_time
 
 def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw):
 	if key == ord('q'):
@@ -1391,145 +611,7 @@ def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, 
 	else:
 		return display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, is_a2_format, current_idx, use_manual_offset=manual_scroll_active, time_adjust=time_adjust)
 
-def main(stdscr):
-	curses.start_color()
-	curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
-	curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
-	curses.curs_set(0)
-	stdscr.timeout(200)  # Non-blocking input with 400ms timeout
 
-	# State variables
-	current_audio_file, current_artist, current_title = None, None, None
-	lyrics, errors = [], []
-	is_txt_format, is_a2_format = False, False
-	manual_offset, last_line_index = 0, -1
-	last_active_words, last_position = set(), -1
-	last_input_time = None
-	prev_window_size = stdscr.getmaxyx()  # Track window dimensions
-
-	# Playback tracking
-	track_start_time = None
-	last_cmus_position = 0
-	calculated_position = 0
-	current_duration = 0
-	time_adjust = 0.0
-	playback_paused = False
-
-	while True:
-		current_time = time.time()
-		needs_redraw = False
-		manual_scroll_active = last_input_time and (current_time - last_input_time < 2)
-
-		# Window resize handling (preserve scroll position)
-		current_window_size = stdscr.getmaxyx()
-		if current_window_size != prev_window_size:
-			# Adjust manual offset based on height ratio
-			old_height, _ = prev_window_size
-			new_height, _ = current_window_size
-			if old_height > 0 and new_height > 0:
-				manual_offset = int(manual_offset * (new_height / old_height))
-			prev_window_size = current_window_size
-			needs_redraw = True
-
-		# Get playback state
-		audio_file, cmus_position, artist, title, duration, status = get_cmus_info()
-		now = time.time()
-
-		# Track change detection
-		if audio_file != current_audio_file:
-			current_audio_file, current_artist, current_title = audio_file, artist, title
-			track_start_time = now
-			last_cmus_position = cmus_position
-			calculated_position = cmus_position
-			current_duration = duration
-			playback_paused = False
-			needs_redraw = True
-
-			# Load lyrics
-			lyrics, errors = [], []
-			if audio_file:
-				directory = os.path.dirname(audio_file)
-				artist_name = artist or "UnknownArtist"
-				track_name = title or os.path.splitext(os.path.basename(audio_file))[0]
-				lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
-				if lyrics_file:
-					is_txt_format = lyrics_file.endswith('.txt')
-					is_a2_format = lyrics_file.endswith('.a2')
-					lyrics, errors = load_lyrics(lyrics_file)
-
-		# Playback state updates
-		# if cmus_position != last_cmus_position or status != ("paused" if playback_paused else "playing"):
-			# last_cmus_position = cmus_position
-			# playback_paused = status == "paused"
-			# track_start_time = now if not playback_paused else track_start_time
-			# #if not playback_paused and track_start_time is None:
-				# #track_start_time = now
-			# needs_redraw = True
-
-		# Playback state updates (removed forced redraw here)
-		if cmus_position != last_cmus_position or status != ("paused" if playback_paused else "playing"):
-			last_cmus_position = cmus_position
-			was_paused = playback_paused
-			playback_paused = (status == "paused")
-			# Update track_start_time only when resuming playback
-			if not playback_paused and was_paused:
-				track_start_time = now
-			# Do not force a redraw; rely on lyric position tracking below
-
-		# Position calculation
-		if not playback_paused and track_start_time:
-			calculated_position = min(cmus_position + (now - track_start_time), current_duration or 0)
-			#calculated_position = cmus_position if manual_scroll_active else min(cmus_position + (now - track_start_time), current_duration or 0)
-
-		adjusted_position = max(0, calculated_position + time_adjust)
-		#adjusted_position = round(max(0, calculated_position + time_adjust), 2)  # Limits unnecessary changes
-
-		# Lyric position tracking
-		current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], adjusted_position)-1
-		if current_idx != last_line_index:
-			needs_redraw = True
-			last_line_index = current_idx
-
-		# A2 format word highlighting
-		if is_a2_format and lyrics:
-			active_words = set()
-			current_line = []
-			for t, item in lyrics:
-				if item is None:
-					current_line = []
-				else:
-					current_line.append((t, item[1]))  # (end_time, word)
-					for start, (word, end) in current_line:
-						if start <= adjusted_position < end:
-							active_words.add(word)
-			if active_words != last_active_words:
-				needs_redraw = True
-				last_active_words = active_words
-
-		# Input handling
-		key = stdscr.getch()
-		if key != -1:
-			cont, manual_offset, last_input_time, needs_redraw_input, time_adjust = handle_scroll_input(
-				key, manual_offset, last_input_time, needs_redraw, time_adjust
-			)
-			needs_redraw |= needs_redraw_input
-			if not cont:
-				break
-
-		# Conditional redraw
-		#if needs_redraw or adjusted_position != last_position:
-		if needs_redraw:
-		#if needs_redraw or abs(adjusted_position - last_position) >= 0.05:
-
-			#stdscr.erase()  # More efficient than clear()
-			manual_offset = update_display(
-				stdscr, lyrics, errors, adjusted_position, audio_file, manual_offset,
-				is_txt_format, is_a2_format, current_idx, manual_scroll_active,
-				time_adjust=time_adjust
-			)
-			last_position = adjusted_position
-
-		time.sleep(0.01)  # Reduced CPU usage
 
 def main(stdscr):
     curses.start_color()
@@ -1657,157 +739,6 @@ def main(stdscr):
 
         time.sleep(0.01)  # Reduced CPU usage
 
-
-# def main(stdscr):
-	# curses.start_color()
-	# curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
-	# curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
-	# curses.curs_set(0)
-	# stdscr.nodelay(1)  # Non-blocking input
-	# stdscr.timeout(0)  # Immediate input polling
-
-	# # State variables
-	# current_audio_file, current_artist, current_title = None, None, None
-	# lyrics, errors = [], []
-	# is_txt_format, is_a2_format = False, False
-	# manual_offset = 0
-	# last_line_index = -1
-	# last_active_words = set()
-	# time_adjust = 0.0
-	# last_input_time = time.time()
-
-	# # Playback tracking
-	# track_start_time = None
-	# last_cmus_position = 0
-	# calculated_position = 0
-	# current_duration = 0
-	# playback_paused = False
-
-	# prev_window_size = stdscr.getmaxyx()  # Track window dimensions
-
-	# while True:
-		# # Immediate input handling FIRST
-		# key = stdscr.getch()
-		# manual_scroll_active = (time.time() - last_input_time) < 2
-
-		# # Process input before anything else
-		# needs_redraw = False  # Initialize needs_redraw
-		# if key != -1:
-			# # Handle input and get redraw needs
-			# cont, manual_offset, _, needs_redraw_input, time_adjust = handle_scroll_input(
-				# key, manual_offset, None, False, time_adjust
-			# )
-			# needs_redraw = needs_redraw_input
-			# last_input_time = time.time()
-			# if not cont:
-				# break
-
-		# # Get playback state AFTER input handling
-		# audio_file, cmus_position, artist, title, duration, status = get_cmus_info()
-		# now = time.time()
-
-		# # Track change detection
-		# if audio_file != current_audio_file:
-			# current_audio_file = audio_file
-			# current_artist, current_title = artist, title
-			# track_start_time = now
-			# last_cmus_position = cmus_position
-			# calculated_position = cmus_position
-			# current_duration = duration
-			# playback_paused = False
-			# needs_redraw = True
-			# manual_offset = 0  # Reset scroll position on track change
-
-			# # Load new lyrics
-			# lyrics, errors = [], []
-			# if audio_file:
-				# directory = os.path.dirname(audio_file)
-				# artist_name = artist or "UnknownArtist"
-				# track_name = title or os.path.splitext(os.path.basename(audio_file))[0]
-				# lyrics_file = find_lyrics_file(audio_file, directory, artist_name, track_name, duration)
-				# if lyrics_file:
-					# is_txt_format = lyrics_file.endswith('.txt')
-					# is_a2_format = lyrics_file.endswith('.a2')
-					# lyrics, errors = load_lyrics(lyrics_file)
-
-		# # Position calculation
-		# if not playback_paused:
-			# if cmus_position != last_cmus_position:
-				# track_start_time = now
-				# last_cmus_position = cmus_position
-				# calculated_position = cmus_position
-			# else:
-				# calculated_position = cmus_position + (now - track_start_time)
-
-			# calculated_position = min(calculated_position, duration) if duration else calculated_position
-
-		# position = calculated_position
-		# adjusted_position = max(0, position + time_adjust)
-
-		# # Update playback state
-		# if status == "paused" and not playback_paused:
-			# playback_paused = True
-		# elif status == "playing" and playback_paused:
-			# playback_paused = False
-			# track_start_time = now - (calculated_position - cmus_position)
-
-		# # Calculate current lyric index
-		# current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], adjusted_position) - 1
-
-		# # Always check for redraw needs after input
-		# needs_redraw = needs_redraw or (current_idx != last_line_index)
-		# last_line_index = current_idx
-
-		# # A2 format active words check
-		# if is_a2_format and lyrics:
-			# active_words = set()
-			# a2_lines = []
-			# current_line = []
-			
-			# for t, item in lyrics:
-				# if item is None:
-					# if current_line:
-						# a2_lines.append(current_line)
-						# current_line = []
-				# else:
-					# current_line.append((t, item))
-			
-			# for line in a2_lines:
-				# for word_idx, (start, (text, end)) in enumerate(line):
-					# if start <= adjusted_position < end:
-						# active_words.add((text, word_idx))
-			
-			# if active_words != last_active_words:
-				# needs_redraw = True
-				# last_active_words = active_words
-
-		# # Window resize handling
-		# current_window_size = stdscr.getmaxyx()
-		# if current_window_size != prev_window_size:
-			# # Adjust manual offset based on height ratio
-			# old_height, _ = prev_window_size
-			# new_height, _ = current_window_size
-			# if old_height > 0 and new_height > 0:
-				# # Update the manual offset to keep the current line visible
-				# line_offset_change = current_idx - (manual_offset + (old_height // 2))
-				# manual_offset += line_offset_change
-				# manual_offset = max(0, manual_offset)  # Ensure manual offset is not negative
-			
-			# prev_window_size = current_window_size
-			# needs_redraw = True  # Indicate that a redraw is needed
-
-		# # Immediate redraw when needed
-		# if needs_redraw:
-			# stdscr.erase()
-			# # Draw the display with the updated manual_offset
-			# update_display(
-				# stdscr, lyrics, errors, adjusted_position, audio_file, manual_offset,
-				# is_txt_format, is_a2_format, current_idx, manual_scroll_active,
-				# time_adjust=time_adjust
-			# )
-
-		# # Tiny sleep to prevent CPU overload
-		# time.sleep(0.01)
 
 
 if __name__ == "__main__":
