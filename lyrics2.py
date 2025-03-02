@@ -787,6 +787,7 @@ def main(stdscr):
 			last_position_time = now
 			estimated_position = cmus_position
 			playback_paused = (status == "paused")
+			
 		elif status == "playing" and not playback_paused:
 			# Estimate position based on elapsed time
 			elapsed = now - last_position_time
@@ -908,12 +909,25 @@ def main(stdscr):
 				last_cmus_position = cmus_position
 				last_position_time = now
 				estimated_position = cmus_position
-				playback_paused = (status == "paused")
-			elif status == "playing" and not playback_paused:
+				#playback_paused = (status == "paused")
+				if status == "paused":
+					playback_paused = True
+				elif status == "playing":
+					playback_paused = False
+
+			# elif status == "playing" and not playback_paused:
+				# elapsed = now - last_position_time
+				# estimated_position = min(cmus_position + elapsed, duration)
+			# elif status == "paused":
+				# estimated_position = cmus_position  # Freeze position when paused
+			if status == "playing" and not playback_paused:
 				elapsed = now - last_position_time
 				estimated_position = min(cmus_position + elapsed, duration)
-			else:
-				estimated_position = cmus_position  # Freeze position when paused
+				last_position_time = now  # Keep time reference updated
+			elif status == "paused":
+				estimated_position = cmus_position  # Stop updating position
+				last_position_time = now  # Reset timer to prevent future drift
+
 
 			# Track change detection
 			if audio_file != current_audio_file:
@@ -922,7 +936,11 @@ def main(stdscr):
 				last_position_time = now
 				estimated_position = cmus_position
 				current_duration = duration
-				playback_paused = (status == "paused")
+				#playback_paused = (status == "paused")
+				if status == "paused":
+					playback_paused = True
+				elif status == "playing":
+					playback_paused = False
 				needs_redraw = True
 
 				# Load lyrics
