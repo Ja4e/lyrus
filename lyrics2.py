@@ -969,7 +969,7 @@ def main(stdscr):
                 )
                 last_position = adjusted_position
 
-            #time.sleep(0.01)
+            time.sleep(0.01)
         
         except Exception as e:
             with open("error_log.txt", "a") as f:
