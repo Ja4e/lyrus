@@ -13,24 +13,7 @@ import multiprocessing
 LYRICS_TIMEOUT_LOG = "lyrics_timeouts.log"
 LOG_RETENTION_DAYS = 10
 
-def log_timeout(artist, title):
-	"""Log timeout with automatic cleanup of old entries"""
-	timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-	log_entry = f"{timestamp} | Artist: {artist or 'Unknown'} | Title: {title or 'Unknown'}\n"
 	
-	log_dir = os.path.join(os.getcwd(), "logs")
-	os.makedirs(log_dir, exist_ok=True)
-	
-	log_path = os.path.join(log_dir, LYRICS_TIMEOUT_LOG)
-	
-	try:
-		with open(log_path, 'a', encoding='utf-8') as f:
-			f.write(log_entry)
-		clean_old_timeouts()
-		
-	except Exception as e:
-		print(f"Failed to write timeout log: {e}")
-		
 def clean_old_timeouts():
 	"""Remove log entries older than LOG_RETENTION_DAYS days"""
 	log_dir = os.path.join(os.getcwd(), "logs")
@@ -67,6 +50,24 @@ def clean_old_timeouts():
 			
 	except Exception as e:
 		print(f"Error cleaning log file: {e}")
+
+def log_timeout(artist, title):
+	"""Log timeout with automatic cleanup of old entries"""
+	timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+	log_entry = f"{timestamp} | Artist: {artist or 'Unknown'} | Title: {title or 'Unknown'}\n"
+	
+	log_dir = os.path.join(os.getcwd(), "logs")
+	os.makedirs(log_dir, exist_ok=True)
+	
+	log_path = os.path.join(log_dir, LYRICS_TIMEOUT_LOG)
+	
+	try:
+		with open(log_path, 'a', encoding='utf-8') as f:
+			f.write(log_entry)
+		clean_old_timeouts()
+		
+	except Exception as e:
+		print(f"Failed to write timeout log: {e}")
 
 def sanitize_filename(name):
 	"""Replace special characters with underscores to avoid filesystem issues."""
@@ -239,6 +240,47 @@ def get_cmus_info():
 			status = line.split()[1]
 
 	return track_file, position, artist, title, duration, status
+
+def get_cmus_info():
+    try:
+        result = subprocess.run(['cmus-remote', '-Q'], capture_output=True, text=True, check=True)
+        output = result.stdout.splitlines()
+    except subprocess.CalledProcessError:
+        return None, 0, None, None, 0, "stopped"
+
+    # Default values
+    track_file = artist = title = status = None
+    position = duration = 0
+
+    # Parse output efficiently
+    data_map = {
+        "file": lambda x: x,
+        "tag artist": lambda x: x,
+        "tag title": lambda x: x,
+        "status": lambda x: x,
+        "duration": lambda x: int(x) if x.isdigit() else 0,
+        "position": lambda x: int(x) if x.isdigit() else 0
+    }
+
+    for line in output:
+        key, *value = line.split(maxsplit=1)
+        if key in data_map and value:
+            parsed_value = data_map[key](value[0])
+            if key == "file":
+                track_file = parsed_value
+            elif key == "tag artist":
+                artist = parsed_value
+            elif key == "tag title":
+                title = parsed_value
+            elif key == "status":
+                status = parsed_value
+            elif key == "duration":
+                duration = parsed_value
+            elif key == "position":
+                position = parsed_value
+
+    return track_file, position, artist, title, duration, status
+	
 
 	# # # Fetch from LRCLIB only if no local file exists
 	# # fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
