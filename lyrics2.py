@@ -990,10 +990,10 @@ def main(stdscr):
 
             time.sleep(0.01)
         
-        # except Exception as e:
-            # with open("error_log.txt", "a") as f:
-                # f.write(f"Error: {str(e)}\n")
-            # continue
+        except Exception as e:
+            #with open("error_log.txt", "a") as f:
+            #    f.write(f"Error: {str(e)}\n")
+            continue
 
 if __name__ == "__main__":
     while True:
