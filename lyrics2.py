@@ -1001,6 +1001,8 @@ if __name__ == "__main__":
             curses.wrapper(main)
         except KeyboardInterrupt:
             break
+        except Exception as e:
+			continue
         # except Exception as e:
             # with open("error_log.txt", "a") as f:
                 # f.write(f"Main Error: {str(e)}\n")
