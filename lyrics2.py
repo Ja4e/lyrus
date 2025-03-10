@@ -53,6 +53,7 @@ def clean_old_timeouts():
 
 def log_timeout(artist, title):
 	"""Log timeout with automatic cleanup of old entries"""
+	
 	timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 	log_entry = f"{timestamp} | Artist: {artist or 'Unknown'} | Title: {title or 'Unknown'}\n"
 	
@@ -77,41 +78,41 @@ def sanitize_string(s):
 	"""Normalize strings for comparison by removing non-alphanumeric chars and lowercasing"""
 	return re.sub(r'[^a-zA-Z0-9]', '', str(s)).lower()
 
-# def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
-	# """
-	# Fetch lyrics using LRCLIB API by artist name and track name.
-	# Returns a tuple (lyrics_content, is_synced) or (None, None) on error.
-	# """
-	# base_url = "https://lrclib.net/api/get"
-	# params = {
-		# 'artist_name': artist_name,
-		# 'track_name': track_name,
-	# }
-	# if duration is not None:
-		# params['duration'] = duration
-	# try:
-		# response = requests.get(base_url, params=params)
-		# if response.status_code == 200:
-			# data = response.json()
-			# if data.get('instrumental', False):
-				# return None, None  # Instrumental track
-			# synced_lyrics = data.get('syncedLyrics', '')
-			# plain_lyrics = data.get('plainLyrics', '')
-			# if synced_lyrics.strip():
-				# return synced_lyrics, True
-			# elif plain_lyrics.strip():
-				# return plain_lyrics, False
-			# else:
-				# return None, None  # No lyrics available
-		# elif response.status_code == 404:
-			# print("Lyrics not found on LRCLIB.")
-			# return None, None
-		# else:
-			# print(f"Error fetching lyrics: HTTP {response.status_code}")
-			# return None, None
-	# except Exception as e:
-		# print(f"Error fetching lyrics from LRCLIB: {e}")
-		# return None, None
+def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
+	"""
+	Fetch lyrics using LRCLIB API by artist name and track name.
+	Returns a tuple (lyrics_content, is_synced) or (None, None) on error.
+	"""
+	base_url = "https://lrclib.net/api/get"
+	params = {
+		'artist_name': artist_name,
+		'track_name': track_name,
+	}
+	if duration is not None:
+		params['duration'] = duration
+	try:
+		response = requests.get(base_url, params=params)
+		if response.status_code == 200:
+			data = response.json()
+			if data.get('instrumental', False):
+				return None, None  # Instrumental track
+			synced_lyrics = data.get('syncedLyrics', '')
+			plain_lyrics = data.get('plainLyrics', '')
+			if synced_lyrics.strip():
+				return synced_lyrics, True
+			elif plain_lyrics.strip():
+				return plain_lyrics, False
+			else:
+				return None, None  # No lyrics available
+		elif response.status_code == 404:
+			print("Lyrics not found on LRCLIB.")
+			return None, None
+		else:
+			print(f"Error fetching lyrics: HTTP {response.status_code}")
+			return None, None
+	except Exception as e:
+		print(f"Error fetching lyrics from LRCLIB: {e}")
+		return None, None
 
 def parse_lrc_tags(lyrics):
 	"""Extract LRC metadata tags from lyrics content"""
@@ -180,6 +181,7 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 
 	lyrics = queue.get() if not queue.empty() else None
 	if not lyrics:
+		log_timeout(artist_name, track_name)  # logging
 		return None, None
 	
 	if not validate_lyrics(lyrics, artist_name, track_name):
@@ -290,6 +292,29 @@ def get_cmus_info():
 
 	# # print("[DEBUG] LRCLIB failed, trying syncedlyrics...")
 
+def is_lyrics_timed_out(artist_name, track_name):
+	"""Check if lyrics for the given artist and track have timed out"""
+	log_dir = os.path.join(os.getcwd(), "logs")
+	log_path = os.path.join(log_dir, LYRICS_TIMEOUT_LOG)
+
+	if not os.path.exists(log_path):
+		return False
+
+	try:
+		with open(log_path, 'r', encoding='utf-8') as f:
+			for line in f:
+				line = line.strip()
+				if not line:
+					continue
+				
+				# Extract the artist and track information from the log
+				if artist_name and track_name:
+					if f"Artist: {artist_name}" in line and f"Title: {track_name}" in line:
+						return True
+		return False
+	except Exception as e:
+		print(f"Error checking timeout log: {e}")
+		return False
 	
 def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
 	base_name, _ = os.path.splitext(os.path.basename(audio_file))
@@ -357,10 +382,13 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 		print("[INFO] Instrumental track detected via metadata")
 		return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
 
+	if is_lyrics_timed_out(artist_name, track_name):
+		print(f"[INFO] Lyrics for {artist_name} - {track_name} have timed out. Skipping fetch.")
+		return None
+
 	print("[DEBUG] Fetching from syncedlyrics...")
 
 	fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
-	
 	if fetched_lyrics:
 		if not validate_lyrics(fetched_lyrics, artist_name, track_name):
 			print("Validation warning - using lyrics with caution")
@@ -370,7 +398,16 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 		extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
 		return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
 	
+	print("[DEBUG] Fetching from LRCLIB...")
+	# Fetch from LRCLIB only if no local file exists
+	fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
+	if fetched_lyrics:
+		extension = 'lrc' if is_synced else 'txt'
+		return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+	
 	print("[ERROR] No lyrics found")
+	print(f"Logging timeout for {artist} - {title}")  # Debug print
+	log_timeout(artist_name, track_name)  # logging
 	return None
 
 
@@ -969,9 +1006,11 @@ def main(stdscr):
 				elapsed = now - last_position_time
 				estimated_position = last_cmus_position + elapsed
 				estimated_position = max(0, min(estimated_position, duration))
-			elif status == "paused" and playback_paused:
+			elif status == "paused":
+			#elif status == "paused" and playback_paused:
 				estimated_position = cmus_position
 				last_position_time = now
+				elapsed = last_position_time
 
 			# Track change detection
 			if audio_file != current_audio_file:
