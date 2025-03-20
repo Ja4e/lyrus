@@ -193,147 +193,79 @@ def validate_lyrics(content, artist, title):
 	return norm_title in norm_content if norm_title else True or \
 		   norm_artist in norm_content if norm_artist else True
 
+def fetch_lyrics_syncedlyrics_plain(artist_name, track_name, duration=None, timeout=15):
+	def worker(queue, search_term):
+		try: 
+			lyrics = snycedlyrics.search(search_term, plain_only=True)
+			queue.put(lyrics)
+		except Exception as e:
+			queue.put(None)
+	
+	search_term = f"{track_name} {artist_name}".strip()
+	if not search_term:
+		return None, None
+	
+	queue = multiprocessing.Queue()
+	process2 = multiprocessing.Process(target= worker, args=(queue, search_term))
+	process2.start()
+	process2.join(timeout)
+	
+	if process2.is_alive():
+		process2.terminate()
+		process2.join()
+		log_debug("Attmpted plain lyrics fetch timed out")
+		log_timeout(artist_name, track_name)
+		return None, None
+	
+	if not lyrics:
+		log_timeout(artist_name, track_name)
+		return None, None
+	
+	if not validate_lyrics(lyrics, artist_name, track_name):
+		log_debug("Lyrics validation failed - metadata mismatch")
+		return None, None
+	
+	return lyrics, is_plain
+	
+
 def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15):
-    def worker(queue, search_term, synced=True):
-        try:
-            if synced:
-                result = syncedlyrics.search(search_term)
-            else:
-                result = syncedlyrics.search(search_term, plain_only=True)
-            queue.put((result, synced))
-        except Exception as e:
-            queue.put((None, synced))
+	def worker(queue, search_term):
+		try:
+			lyrics = syncedlyrics.search(search_term)
+			queue.put(lyrics)
+		except Exception as e:
+			queue.put(None)
 
-    search_term = f"{track_name} {artist_name}".strip()
-    if not search_term:
-        log_debug("Empty search term")
-        return None, None
 
-    # First attempt: Synced lyrics
-    queue = multiprocessing.Queue()
-    process = multiprocessing.Process(
-        target=worker,
-        args=(queue, search_term),
-        kwargs={'synced': True}
-    )
-    process.start()
-    process.join(timeout)
-
-    lyrics, is_synced = None, False
-    synced_success = False
-    
-    if not queue.empty():
-        lyrics, _ = queue.get()
-        if lyrics and validate_lyrics(lyrics, artist_name, track_name):
-            is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) 
-                         for line in lyrics.split('\n'))
-            synced_success = True
-
-    if process.is_alive():
-        process.terminate()
-        process.join()
-        log_debug("Synced lyrics search timed out")
-
-    if synced_success:
-        return lyrics, is_synced
-
-    # Fallback: Plain lyrics
-    log_debug("Attempting plain lyrics after synced failed")
-    process = multiprocessing.Process(
-        target=worker,
-        args=(queue, search_term),
-        kwargs={'synced': False}
-    )
-    process.start()
-    process.join(timeout)
-
-    plain_lyrics = None
-    if not queue.empty():
-        plain_lyrics, _ = queue.get()
-        if plain_lyrics and validate_lyrics(plain_lyrics, artist_name, track_name):
-            return plain_lyrics, False
-
-    if process.is_alive():
-        process.terminate()
-        process.join()
-        log_debug("Plain lyrics search timed out")
-
-    log_timeout(artist_name, track_name)
-    return None, None
-
-# def fetch_lyrics_syncedlyrics_plain(artist_name, track_name, duration=None, timeout=15):
-	# def worker(queue, search_term):
-		# try: 
-			# lyrics = snycedlyrics.search(search_term, plain_only=True)
-			# queue.put(lyrics)
-		# except Exception as e:
-			# queue.put(None)
+	search_term = f"{track_name} {artist_name}".strip()
+	if not search_term:
+		log_timeout(f"{track_name} {artist_name} not found returning None")
+		return None, None
 	
-	# search_term = f"{track_name} {artist_name}".strip()
-	# if not search_term:
-		# return None, None
-	
-	# queue = multiprocessing.Queue()
-	# process2 = multiprocessing.Process(target= worker, args=(queue, search_term))
-	# process2.start()
-	# process2.join(timeout)
-	
-	# if process2.is_alive():
-		# process2.terminate()
-		# process2.join()
-		# log_debug("Attmpted plain lyrics fetch timed out")
-		# log_timeout(artist_name, track_name)
-		# return None, None
-	
-	# if not lyrics:
-		# log_timeout(artist_name, track_name)
-		# return None, None
-	
-	# if not validate_lyrics(lyrics, artist_name, track_name):
-		# log_debug("Lyrics validation failed - metadata mismatch")
-		# return None, None
-	
-	# return lyrics, is_plain
-	
+	queue = multiprocessing.Queue()
+	process = multiprocessing.Process(target=worker, args=(queue, search_term))
+	process.start()
+	process.join(timeout)
 
-# def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15):
-	# def worker(queue, search_term):
-		# try:
-			# lyrics = syncedlyrics.search(search_term)
-			# queue.put(lyrics)
-		# except Exception as e:
-			# queue.put(None)
+	if process.is_alive():
+		process.terminate() 
+		process.join()
+		log_debug("Attempted fetch snyced lyrics fetch timed out")
+		log_timeout(artist_name, track_name)
 
-
-	# search_term = f"{track_name} {artist_name}".strip()
-	# if not search_term:
-		# log_timeout(f"{track_name} {artist_name} not found returning None")
-		# return None, None
+	lyrics = queue.get() if not queue.empty() else None
+	if not lyrics:
+		pass
+		#log_timeout(artist_name, track_name)
 	
-	# queue = multiprocessing.Queue()
-	# process = multiprocessing.Process(target=worker, args=(queue, search_term))
-	# process.start()
-	# process.join(timeout)
+	if not validate_lyrics(lyrics, artist_name, track_name):
+		log_debug("Lyrics validation failed - metadata mismatch")
+	else:
+		fetch_lyrics_syncedlyrics_plain(artist_name, track_name, duration+None)
+		return fetch_lyrics_syncedlyrics_plain
 
-	# if process.is_alive():
-		# process.terminate() 
-		# process.join()
-		# log_debug("Attempted fetch snyced lyrics fetch timed out")
-		# log_timeout(artist_name, track_name)
-
-	# lyrics = queue.get() if not queue.empty() else None
-	# if not lyrics:
-		# pass
-		# #log_timeout(artist_name, track_name)
-	
-	# if not validate_lyrics(lyrics, artist_name, track_name):
-		# log_debug("Lyrics validation failed - metadata mismatch")
-	# else:
-		# fetch_lyrics_syncedlyrics_plain(artist_name, track_name, duration+None)
-		# return fetch_lyrics_syncedlyrics_plain
-
-	# is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
-	# return lyrics, is_synced
+	is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
+	return lyrics, is_synced
 
 def save_lyrics(lyrics, track_name, artist_name, extension):
 	folder = os.path.join(os.getcwd(), "synced_lyrics")
@@ -473,31 +405,31 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 	log_timeout(artist_name, track_name)
 	return None
 
-def parse_time_to_seconds(time_str):
-	try:
-		minutes, rest = time_str.split(':', 1)
-		seconds, milliseconds = rest.split('.', 1)
-		return int(minutes)*60 + int(seconds) + float(f"0.{milliseconds}")
-	except ValueError:
-		return 0
-
 # def parse_time_to_seconds(time_str):
-    # try:
-        # if '.' in time_str:
-            # minutes, rest = time_str.split(':', 1)
-            # seconds, milliseconds = rest.split('.', 1)
-        # else:
-            # minutes, seconds = time_str.split(':', 1)
-            # milliseconds = '0'
+	# try:
+		# minutes, rest = time_str.split(':', 1)
+		# seconds, milliseconds = rest.split('.', 1)
+		# return int(minutes)*60 + int(seconds) + float(f"0.{milliseconds}")
+	# except ValueError:
+		# return 0
+
+def parse_time_to_seconds(time_str):
+    try:
+        if '.' in time_str:
+            minutes, rest = time_str.split(':', 1)
+            seconds, milliseconds = rest.split('.', 1)
+        else:
+            minutes, seconds = time_str.split(':', 1)
+            milliseconds = '0'
         
-        # return (
-            # int(minutes) * 60 + 
-            # int(seconds) + 
-            # float(f"0.{milliseconds[:2]}")  # Handle arbitrary millisecond precision
-        # )
-    # except ValueError:
-        # log_debug(f"Failed to parse time: {time_str}")
-        # return 0
+        return (
+            int(minutes) * 60 + 
+            int(seconds) + 
+            float(f"0.{milliseconds[:2]}")  # Handle arbitrary millisecond precision
+        )
+    except ValueError:
+        log_debug(f"Failed to parse time: {time_str}")
+        return 0
 
 def load_lyrics(file_path):
 	lyrics = []
