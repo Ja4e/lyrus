@@ -11,10 +11,12 @@ import syncedlyrics
 import multiprocessing
 from datetime import datetime, timedelta
 
+
 LYRICS_TIMEOUT_LOG = "lyrics_timeouts.log"
+ENABLE_DEBUG_LOGGING = os.environ.get('CMUS_LYRIC_DEBUG') == '1'
 DEBUG_LOG = "debug.log"
 LOG_RETENTION_DAYS = 10
-
+#global track_file, artist, title,status
 # === Logging Functions ===
 def clean_debug_log():
 	"""Keep debug.log to a maximum of 100 lines"""
@@ -39,7 +41,10 @@ def clean_debug_log():
 		log_debug(f"Error cleaning debug log: {e}")
 
 def log_debug(message):
-	"""Log debug messages to file"""
+	"""Log debug messages to file only if debug mode is enabled"""
+	if not ENABLE_DEBUG_LOGGING:
+		return
+
 	log_dir = os.path.join(os.getcwd(), "logs")
 	os.makedirs(log_dir, exist_ok=True)
 	log_path = os.path.join(log_dir, DEBUG_LOG)
@@ -50,7 +55,6 @@ def log_debug(message):
 	try:
 		with open(log_path, 'a', encoding='utf-8') as f:
 			f.write(log_entry)
-		# Clean up after writing new entry
 		clean_debug_log()
 	except Exception as e:
 		pass  # Can't log logging failures
@@ -62,6 +66,8 @@ def clean_old_timeouts():
 	
 	if not os.path.exists(log_path):
 		return
+	else:
+		log_debug("file and directory not existing creating one...")
 
 	cutoff = datetime.now() - timedelta(days=LOG_RETENTION_DAYS)
 	new_lines = []
@@ -187,6 +193,41 @@ def validate_lyrics(content, artist, title):
 	return norm_title in norm_content if norm_title else True or \
 		   norm_artist in norm_content if norm_artist else True
 
+def fetch_lyrics_syncedlyrics_plain(artist_name, track_name, duration=None, timeout=15):
+	def worker(queue, search_term):
+		try: 
+			lyrics = snycedlyrics.search(search_term, plain_only=True)
+			queue.put(lyrics)
+		except Exception as e:
+			queue.put(None)
+	
+	search_term = f"{track_name} {artist_name}".strip()
+	if not search_term:
+		return None, None
+	
+	queue = multiprocessing.Queue()
+	process2 = multiprocessing.Process(target= worker, args=(search_term))
+	process2.start()
+	process2.join(timeout)
+	
+	if process2.is_alive():
+		process2.terminate()
+		process2.join()
+		log_debug("Attmpted plain lyrics fetch timed out")
+		log_timeout(artist_name, track_name)
+		return None, None
+	
+	if not lyrics:
+		log_timeout(artist_name, track_name)
+		return None, None
+	
+	if not validate_lyrics(lyrics, artist_name, track_name):
+		log_debug("Lyrics validation failed - metadata mismatch")
+		return None, None
+	
+	return lyrics, is_plain
+	
+
 def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15):
 	def worker(queue, search_term):
 		try:
@@ -195,8 +236,10 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 		except Exception as e:
 			queue.put(None)
 
+
 	search_term = f"{track_name} {artist_name}".strip()
 	if not search_term:
+		log_timeout(f"{track_name} {artist_name} not found returning None")
 		return None, None
 	
 	queue = multiprocessing.Queue()
@@ -207,18 +250,19 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 	if process.is_alive():
 		process.terminate() 
 		process.join()
-		log_debug("Lyrics fetch timed out")
+		log_debug("Attempted fetch snyced lyrics fetch timed out")
 		log_timeout(artist_name, track_name)
-		return None, None
 
 	lyrics = queue.get() if not queue.empty() else None
 	if not lyrics:
-		log_timeout(artist_name, track_name)
-		return None, None
+		pass
+		#log_timeout(artist_name, track_name)
 	
 	if not validate_lyrics(lyrics, artist_name, track_name):
 		log_debug("Lyrics validation failed - metadata mismatch")
-		return None, None
+	else:
+		fetch_lyrics_syncedlyrics_plain(artist_name, track_name, duration+None)
+		return fetch_lyrics_syncedlyrics_plain
 
 	is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
 	return lyrics, is_synced
@@ -255,7 +299,6 @@ def get_cmus_info():
 		"duration": lambda x: int(x) if x.isdigit() else 0,
 		"position": lambda x: int(x) if x.isdigit() else 0
 	}
-
 	track_file = artist = title = status = None
 	position = duration = 0
 
@@ -540,7 +583,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 			except curses.error:
 				pass
 
-		status_line = f" Line {current_idx+1}/{len(lyrics)} "
+		status_line = f"Line {current_idx+1}/{len(lyrics)}"
 		if time_adjust != 0:
 			status_line += "[Adj]"
 		status_line = status_line[:width-1]
@@ -554,7 +597,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 	return start_screen_line
 
 def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw, time_adjust):
-	if key == ord('r'):
+	if key == ord('r') or key == ord('R'):
 		return False, manual_offset, last_input_time, needs_redraw, time_adjust
 	elif key == curses.KEY_UP:
 		manual_offset = max(0, manual_offset - 1)
