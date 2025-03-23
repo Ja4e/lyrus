@@ -16,7 +16,7 @@ LYRICS_TIMEOUT_LOG = "lyrics_timeouts.log"
 ENABLE_DEBUG_LOGGING = os.environ.get('CMUS_LYRIC_DEBUG') == '1'
 DEBUG_LOG = "debug.log"
 LOG_RETENTION_DAYS = 10
-#global track_file, artist, title,status
+
 # === Logging Functions ===
 def clean_debug_log():
 	"""Keep debug.log to a maximum of 100 lines"""
@@ -261,79 +261,6 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
     log_timeout(artist_name, track_name)
     return None, None
 
-# def fetch_lyrics_syncedlyrics_plain(artist_name, track_name, duration=None, timeout=15):
-	# def worker(queue, search_term):
-		# try: 
-			# lyrics = snycedlyrics.search(search_term, plain_only=True)
-			# queue.put(lyrics)
-		# except Exception as e:
-			# queue.put(None)
-	
-	# search_term = f"{track_name} {artist_name}".strip()
-	# if not search_term:
-		# return None, None
-	
-	# queue = multiprocessing.Queue()
-	# process2 = multiprocessing.Process(target= worker, args=(queue, search_term))
-	# process2.start()
-	# process2.join(timeout)
-	
-	# if process2.is_alive():
-		# process2.terminate()
-		# process2.join()
-		# log_debug("Attmpted plain lyrics fetch timed out")
-		# log_timeout(artist_name, track_name)
-		# return None, None
-	
-	# if not lyrics:
-		# log_timeout(artist_name, track_name)
-		# return None, None
-	
-	# if not validate_lyrics(lyrics, artist_name, track_name):
-		# log_debug("Lyrics validation failed - metadata mismatch")
-		# return None, None
-	
-	# return lyrics, is_plain
-	
-
-# def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15):
-	# def worker(queue, search_term):
-		# try:
-			# lyrics = syncedlyrics.search(search_term)
-			# queue.put(lyrics)
-		# except Exception as e:
-			# queue.put(None)
-
-
-	# search_term = f"{track_name} {artist_name}".strip()
-	# if not search_term:
-		# log_timeout(f"{track_name} {artist_name} not found returning None")
-		# return None, None
-	
-	# queue = multiprocessing.Queue()
-	# process = multiprocessing.Process(target=worker, args=(queue, search_term))
-	# process.start()
-	# process.join(timeout)
-
-	# if process.is_alive():
-		# process.terminate() 
-		# process.join()
-		# log_debug("Attempted fetch snyced lyrics fetch timed out")
-		# log_timeout(artist_name, track_name)
-
-	# lyrics = queue.get() if not queue.empty() else None
-	# if not lyrics:
-		# pass
-		# #log_timeout(artist_name, track_name)
-	
-	# if not validate_lyrics(lyrics, artist_name, track_name):
-		# log_debug("Lyrics validation failed - metadata mismatch")
-	# else:
-		# fetch_lyrics_syncedlyrics_plain(artist_name, track_name, duration+None)
-		# return fetch_lyrics_syncedlyrics_plain
-
-	# is_synced = any(re.match(r'^\[\d+:\d+\.\d+\]', line) for line in lyrics.split('\n'))
-	# return lyrics, is_synced
 
 def save_lyrics(lyrics, track_name, artist_name, extension):
 	folder = os.path.join(os.getcwd(), "synced_lyrics")
@@ -352,42 +279,50 @@ def save_lyrics(lyrics, track_name, artist_name, extension):
 		log_debug(f"Error saving lyrics: {e}")
 		return None
 
+
 def get_cmus_info():
-	try:
-		result = subprocess.run(['cmus-remote', '-Q'], capture_output=True, text=True, check=True)
-		output = result.stdout.splitlines()
-	except subprocess.CalledProcessError:
-		return None, 0, None, None, 0, "stopped"
+    try:
+        output = subprocess.run(['cmus-remote', '-Q'], capture_output=True, text=True, check=True).stdout.splitlines()
+    except subprocess.CalledProcessError:
+        return None, 0, None, None, 0, "stopped"
 
-	data_map = {
-		"file": lambda x: x,
-		"tag artist": lambda x: x,
-		"tag title": lambda x: x,
-		"status": lambda x: x,
-		"duration": lambda x: int(x) if x.isdigit() else 0,
-		"position": lambda x: int(x) if x.isdigit() else 0
-	}
-	track_file = artist = title = status = None
-	position = duration = 0
+    # Initialize data dictionary
+    data = {
+        "file": None,
+        "position": 0,
+        "artist": None,
+        "title": None,
+        "duration": 0,
+        "status": "stopped",
+        "tags": {}
+    }
 
-	for line in output:
-		key, *value = line.split(maxsplit=1)
-		if key in data_map and value:
-			parsed_value = data_map[key](value[0])
-			if key == "file":
-				track_file = parsed_value
-			elif key == "tag artist":
-				artist = parsed_value
-			elif key == "tag title":
-				title = parsed_value
-			elif key == "status":
-				status = parsed_value
-			elif key == "duration":
-				duration = parsed_value
-			elif key == "position":
-				position = parsed_value
+    # Direct parsing without regex, checking each line for known keywords
+    for line in output:
+        if line.startswith("file "):
+            # Extracting the file path directly
+            data["file"] = line[5:].strip()
+        elif line.startswith("status "):
+            # Extracting the status (playing/stopped)
+            data["status"] = line[7:].strip()
+        elif line.startswith("position "):
+            # Extracting position as an integer, skipping validation for speed
+            data["position"] = int(line[9:].strip())
+        elif line.startswith("duration "):
+            # Extracting duration as an integer
+            data["duration"] = int(line[9:].strip())
+        elif line.startswith("tag "):
+            # Directly processing tags
+            parts = line.split(" ", 2)
+            if len(parts) == 3:
+                tag_name, tag_value = parts[1], parts[2].strip()
+                data["tags"][tag_name] = tag_value
 
-	return track_file, position, artist, title, duration, status
+    # Assign artist and title directly from the tags
+    data["artist"] = data["tags"].get("artist")
+    data["title"] = data["tags"].get("title")
+
+    return data["file"], data["position"], data["artist"], data["title"], data["duration"], data["status"]
 
 def is_lyrics_timed_out(artist_name, track_name):
 	log_dir = os.path.join(os.getcwd(), "logs")
@@ -428,10 +363,10 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 					content = f.read()
 				
 				if validate_lyrics(content, artist_name, track_name):
-					#log_debug(f"Using validated local .{ext} file")
+					log_debug(f"Using validated local .{ext} file")
 					return file_path
 				else:
-					#log_debug(f"Using unvalidated local .{ext} file (fallback)")
+					log_debug(f"Using unvalidated local .{ext} file (fallback)")
 					return file_path
 			except Exception as e:
 				log_debug(f"Error reading {file_path}: {e}")
@@ -442,12 +377,12 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 		(artist_name and "instrumental" in artist_name.lower())
 	)
 	if is_instrumental:
-		#log_debug("Instrumental track detected via metadata")
+		log_debug("Instrumental track detected via metadata")
 		return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
 
 	# Check timeout status
 	if is_lyrics_timed_out(artist_name, track_name):
-		#log_debug(f"Lyrics for {artist_name} - {track_name} timed out. Skipping fetch.")
+		log_debug(f"Lyrics for {artist_name} - {track_name} timed out. Skipping fetch.")
 		return None
 
 	# Fetch from syncedlyrics
@@ -703,39 +638,48 @@ def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, 
 	else:
 		return display_lyrics(stdscr, lyrics, errors, position, os.path.basename(audio_file), manual_offset, is_txt_format, is_a2_format, current_idx, manual_scroll_active, time_adjust)
 
-# === Main Application ===
 def main(stdscr):
 	curses.start_color()
 	curses.init_pair(2, curses.COLOR_GREEN, curses.COLOR_BLACK)
 	curses.init_pair(3, curses.COLOR_WHITE, curses.COLOR_BLACK)
 	curses.curs_set(0)
-	stdscr.timeout(200)
+	stdscr.timeout(200)  # Non-blocking input with 200ms timeout
 
-	current_audio_file = None
+	# State variables
+	current_audio_file, current_artist, current_title = None, None, None
 	lyrics, errors = [], []
-	is_txt_format = is_a2_format = False
-	manual_offset = last_line_index = 0
+	is_txt_format, is_a2_format = False, False
+	manual_offset, last_line_index = 0, -1
+	last_active_words, last_position = set(), -1
 	last_input_time = None
 	prev_window_size = stdscr.getmaxyx()
-	time_adjust = 0.0
+	manual_timeout_handled = True  # New state variable
+
+	# Playback tracking with time estimation
 	last_cmus_position = 0
 	last_position_time = time.time()
+	estimated_position = 0
+	current_duration = 0
+	time_adjust = 0.0
 	playback_paused = False
 
 	while True:
 		try:
 			current_time = time.time()
 			needs_redraw = False
-			time_since_input = current_time - (last_input_time or 0)
+			time_since_input = current_time - (last_input_time or 0)  # New calculation
 			
-			if last_input_time and time_since_input >= 2 and not hasattr(main, 'manual_timeout_handled'):
-				needs_redraw = True
-				main.manual_timeout_handled = True
-			elif last_input_time and time_since_input < 2:
-				main.manual_timeout_handled = False
+			# Detect 2-second timeout transition
+			if last_input_time is not None:
+				if time_since_input >= 2 and not manual_timeout_handled:
+					needs_redraw = True
+					manual_timeout_handled = True
+				elif time_since_input < 2:
+					manual_timeout_handled = False
 
 			manual_scroll_active = last_input_time and (time_since_input < 2)
 
+			# Window resize handling
 			current_window_size = stdscr.getmaxyx()
 			if current_window_size != prev_window_size:
 				old_height, _ = prev_window_size
@@ -745,9 +689,15 @@ def main(stdscr):
 				prev_window_size = current_window_size
 				needs_redraw = True
 
+			# Get playback state
 			audio_file, cmus_position, artist, title, duration, status = get_cmus_info()
 			now = time.time()
 
+			# Handle missing position/duration data
+			if cmus_position is None or duration is None:
+				cmus_position, duration = 0, 0
+
+			# Update position estimation
 			if cmus_position != last_cmus_position:
 				last_cmus_position = cmus_position
 				last_position_time = now
@@ -757,18 +707,25 @@ def main(stdscr):
 			if status == "playing" and not playback_paused:
 				elapsed = now - last_position_time
 				estimated_position = last_cmus_position + elapsed
-				estimated_position = max(0, min(estimated_position, duration or 0))
+				estimated_position = max(0, min(estimated_position, duration))
 			elif status == "paused":
+			#elif status == "paused" and playback_paused:
 				estimated_position = cmus_position
 				last_position_time = now
+				elapsed = last_position_time
 
+			# Track change detection
 			if audio_file != current_audio_file:
 				current_audio_file, current_artist, current_title = audio_file, artist, title
 				last_cmus_position = cmus_position
 				last_position_time = now
 				estimated_position = cmus_position
+				current_duration = duration
+				playback_paused = (status == "paused")
 				needs_redraw = True
-
+				stdscr.clear()
+				
+				# Load lyrics
 				lyrics, errors = [], []
 				if audio_file:
 					directory = os.path.dirname(audio_file)
@@ -780,37 +737,46 @@ def main(stdscr):
 						is_a2_format = lyrics_file.endswith('.a2')
 						lyrics, errors = load_lyrics(lyrics_file)
 
+			# Calculate continuous position with adjustment
 			continuous_position = max(0, estimated_position + time_adjust)
-			continuous_position = min(continuous_position, duration or 0)
+			continuous_position = min(continuous_position, current_duration)
 
+			# Determine current lyric index
 			current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], continuous_position) - 1
+
+			# Snap to line if available
 			adjusted_position = lyrics[current_idx][0] if 0 <= current_idx < len(lyrics) and lyrics[current_idx][0] is not None else continuous_position
 
+			# Trigger redraw on line change
 			if current_idx != last_line_index:
 				needs_redraw = True
 				last_line_index = current_idx
 
+			# Input handling
 			key = stdscr.getch()
 			if key != -1:
 				cont, manual_offset, last_input_time, needs_redraw_input, time_adjust = handle_scroll_input(
 					key, manual_offset, last_input_time, needs_redraw, time_adjust
 				)
-				main.manual_timeout_handled = False
+				manual_timeout_handled = False  # Reset on new input
 				needs_redraw |= needs_redraw_input
 				if not cont:
 					break
 
+			# Conditional redraw
 			if needs_redraw:
 				manual_offset = update_display(
 					stdscr, lyrics, errors, adjusted_position, audio_file, manual_offset,
 					is_txt_format, is_a2_format, current_idx, manual_scroll_active,
 					time_adjust=time_adjust
 				)
+				last_position = adjusted_position
 
 			time.sleep(0.01)
 		
 		except Exception as e:
-			log_debug(f"Main loop error: {str(e)}")
+			#with open("error_log.txt", "a") as f:
+			#    f.write(f"Error: {str(e)}\n")
 			continue
 
 if __name__ == "__main__":
@@ -820,5 +786,9 @@ if __name__ == "__main__":
 		except KeyboardInterrupt:
 			break
 		except Exception as e:
-			log_debug(f"Wrapper error: {str(e)}")
 			continue
+		# except Exception as e:
+			# with open("error_log.txt", "a") as f:
+				# f.write(f"Main Error: {str(e)}\n")
+			# continue
+
