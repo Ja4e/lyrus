@@ -1,1 +1,0 @@
-2025-03-20 22:25:25.769259: LyricsDisplay._render_standard_lyrics() takes 6 positional arguments but 7 were given
