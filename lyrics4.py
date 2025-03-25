@@ -20,7 +20,7 @@ SOFTWARE.
 
 """
 CMUS Lyrics Viewer with Synchronized Display
-Displays time-synced lyrics for cmus music player using multiple lyric sources
+Displays time-synced lyrics for cmus and MPD music player using multiple lyric sources
 """
 
 # ==============
