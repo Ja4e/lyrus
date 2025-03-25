@@ -17,10 +17,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 """
-
 """
 CMUS Lyrics Viewer with Synchronized Display
-Displays time-synced lyrics for cmus and MPD music player using multiple lyric sources
+Displays time-synced lyrics for cmus music player using multiple lyric sources
 """
 
 # ==============
@@ -55,6 +54,7 @@ LOG_RETENTION_DAYS = 10  # Days to keep timeout logs of music files
 MAX_DEBUG_COUNT = 100    # Maximum line count in debug log
 REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
+# REDIS_TTL = 3600  # 1 hour cache
 MPD_HOST = os.environ.get('MPD_HOST', 'localhost')
 MPD_PORT = int(os.environ.get('MPD_PORT', 6600))
 MPD_TIMEOUT = 10  # seconds
@@ -85,10 +85,11 @@ MESSAGES = {
 	'time_out': "In time-out log",
 	'failed': "No lyrics found",
 	'mpd':"scanning for MPD",
-	'done': "Loaded"
+	'done': "Loaded",
+	'clear': "",
 }
 
-TERMINAL_STATES = {'done', 'instrumental', 'time_out', 'failed', 'mpd'}  # Ensure this is defined
+TERMINAL_STATES = {'done', 'instrumental', 'time_out', 'failed', 'mpd', 'clear'}  # Ensure this is defined
 
 def update_fetch_status(step, lyrics_found=0):
 	"""Update the fetch status with the current progress"""
@@ -111,6 +112,9 @@ def get_current_status():
 		if step in TERMINAL_STATES and fetch_status['done_time']:
 			if time.time() - fetch_status['done_time'] > 2:
 				return ""
+
+		if step == 'clear':
+			return ""
 
 		# Return pre-defined message with elapsed time if applicable
 		base_msg = MESSAGES.get(step, step)
@@ -661,13 +665,18 @@ def get_player_info():
 		if mpd_info[0] is not None:
 			return 'mpd', mpd_info
 	except (base.ConnectionError, socket.error) as e:
+		#update_fetch_status('clear')
 		log_debug(f"MPD connection error: {str(e)}")
 	except base.CommandError as e:
+		#update_fetch_status('clear')
 		log_debug(f"MPD command error: {str(e)}")
 	except Exception as e:
+		#update_fetch_status('clear')
 		log_debug(f"Unexpected MPD error: {str(e)}")
 
 	return None, (None, 0, None, None, 0, "stopped")
+
+
 
 def get_mpd_info():
 	"""Get current playback info from MPD, handling password authentication."""
@@ -705,12 +714,15 @@ def get_mpd_info():
 				data["title"], data["duration"], data["status"])
 
 	except (socket.error, ConnectionRefusedError) as e:
+		#update_fetch_status('clear')
 		log_debug(f"MPD connection error: {str(e)}")
 	except Exception as e:
+		#update_fetch_status('clear')
 		log_debug(f"Unexpected MPD error: {str(e)}")
 
 	update_fetch_status("mpd")
 	return (None, 0, None, None, 0, "stopped")
+
 
 
 # ==============
@@ -953,13 +965,17 @@ def main(stdscr):
 	manual_timeout_handled = True
 
 	# Playback tracking
-	last_player_position = 0
+	last_player_position = 0.0
 	last_position_time = time.time()
-	estimated_position = 0
-	current_duration = 0
+	estimated_position = 0.0
+	current_duration = 0.0
 	time_adjust = 0.0
 	playback_paused = False
 	last_status = None
+	mpd_client = None  # Persistent MPD connection
+
+	# Time synchronization threshold
+	SYNC_THRESHOLD = 0.01
 
 	while True:
 		try:
@@ -969,36 +985,51 @@ def main(stdscr):
 
 			# Get player status (CMUS or MPD)
 			player_type, (audio_file, raw_position, artist, title, duration, status) = get_player_info()
-			
-			# Normalize MPD status values
-			if player_type == 'mpd':
-				if status == 'play': status = 'playing'
-				elif status == 'pause': status = 'paused'
-				elif status == 'stop': status = 'stopped'
 
-			position = int(raw_position)
+			# stopped state handling
+			if status == "stopped" and (current_audio_file is not None or lyrics):
+				current_audio_file = None
+				lyrics, errors = [], []
+				is_txt_format = is_a2_format = False
+				manual_offset = 0
+				needs_redraw = True
+				stdscr.clear()
+
+			# status normalization in naming
+			status_map = {
+				'play': 'playing',
+				'pause': 'paused',
+				'stop': 'stopped'
+			}
+			status = status_map.get(status, status)
+
+			# Unified position handling
+			position = float(raw_position) if raw_position is not None else 0.0
+			duration = float(duration) if duration is not None else 0.0
 			now = time.time()
 
-			# Handle missing position data
-			if position is None or duration is None:
-				position, duration = 0, 0
-
-			# Update position estimation
-			if position != last_player_position:
+			# position tracking with threshold
+			if abs(position - last_player_position) > SYNC_THRESHOLD:
 				last_player_position = position
 				last_position_time = now
-				estimated_position = position
-				playback_paused = (status == "paused")
 
-			if status == "playing" and not playback_paused:
+			# time estimation
+			if status == "playing":
 				elapsed = now - last_position_time
-				estimated_position = last_player_position + elapsed
-				estimated_position = max(0, min(estimated_position, duration))
-			elif status in ["paused", "stopped"]:
+				estimated_position = position + elapsed
+				estimated_position = max(0.0, min(estimated_position, duration))
+				last_position_time = now  # Update only if playing
+				playback_paused = False
+			elif status == "paused":
+				estimated_position = position  # Freeze estimated position
+				last_position_time = now  # Keep reference but don't advance
+				playback_paused = True
+			else:
 				estimated_position = position
-				last_position_time = now
+				playback_paused = False
 
-			# Track change detection
+
+			# track change detection
 			if audio_file != current_audio_file:
 				update_fetch_status('start')
 				current_audio_file = audio_file
@@ -1008,11 +1039,10 @@ def main(stdscr):
 				last_position_time = now
 				estimated_position = position
 				current_duration = duration
-				playback_paused = (status in ["paused", "stopped"])
 				needs_redraw = True
 				stdscr.clear()
-				
-				# Load new lyrics
+
+				# Maintain lyric loading functionality
 				lyrics, errors = [], []
 				is_txt_format, is_a2_format = False, False
 				if audio_file:
@@ -1025,16 +1055,19 @@ def main(stdscr):
 						title or os.path.splitext(os.path.basename(audio_file))[0],
 						duration
 					)
+			#else:
+				#update_fetch_status('clear')
 
-			# Check lyric fetch status
+			# status message handling 
 			current_status = get_current_status()
 			if current_status != last_status:
 				needs_redraw = True
 				last_status = current_status
-			
+
+			# async lyric fetching
 			is_fetching = future_lyrics is not None and not future_lyrics.done()
 
-			# Handle manual scroll timeout
+			# manual scroll functionality
 			if last_input_time is not None:
 				if time_since_input >= 2 and not manual_timeout_handled:
 					needs_redraw = True
@@ -1044,7 +1077,7 @@ def main(stdscr):
 
 			manual_scroll_active = last_input_time and (time_since_input < 2)
 
-			# Window resize handling
+			# window resize handling
 			current_window_size = stdscr.getmaxyx()
 			if current_window_size != prev_window_size:
 				old_height, _ = prev_window_size
@@ -1054,7 +1087,7 @@ def main(stdscr):
 				prev_window_size = current_window_size
 				needs_redraw = True
 
-			# Process async lyric results
+			# lyric processing
 			if future_lyrics and future_lyrics.done():
 				try:
 					result = future_lyrics.result(timeout=0.1)
@@ -1072,13 +1105,25 @@ def main(stdscr):
 				finally:
 					future_lyrics = None
 
-			# Calculate display position
-			continuous_position = max(0, estimated_position + time_adjust)
+			# Keep stopped state cleanup
+			if status != last_status and status == "stopped":
+				current_audio_file = None
+				lyrics, errors = [], []
+				is_txt_format = is_a2_format = False
+				manual_offset = 0
+				needs_redraw = True
+				stdscr.clear()
+
+			# display position calculation
+			continuous_position = max(0.0, estimated_position + time_adjust)
 			continuous_position = min(continuous_position, current_duration)
-			current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], continuous_position) - 1
+			MARGIN = 0.01  # Allow 50ms tolerance
+			timing_list = [t for t, _ in lyrics if t is not None]
+			current_idx = bisect.bisect_right(timing_list, continuous_position + MARGIN) - 1
+			# current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], continuous_position) - 1
 			adjusted_position = lyrics[current_idx][0] if 0 <= current_idx < len(lyrics) and lyrics[current_idx][0] else continuous_position
 
-			# Input handling
+			# input handling
 			key = stdscr.getch()
 			if key != -1:
 				cont, manual_offset, last_input_time, needs_redraw_input, time_adjust = handle_scroll_input(
@@ -1088,7 +1133,7 @@ def main(stdscr):
 				if not cont:
 					break
 
-			# Redraw if needed
+			# display update logic
 			if needs_redraw or current_idx != last_line_index:
 				manual_offset = update_display(
 					stdscr, lyrics, errors, adjusted_position, audio_file, manual_offset,
