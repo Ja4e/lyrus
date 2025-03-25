@@ -55,7 +55,6 @@ LOG_RETENTION_DAYS = 10  # Days to keep timeout logs of music files
 MAX_DEBUG_COUNT = 100    # Maximum line count in debug log
 REDIS_HOST = os.environ.get('REDIS_HOST', 'localhost')
 REDIS_PORT = int(os.environ.get('REDIS_PORT', 6379))
-# REDIS_TTL = 3600  # 1 hour cache
 MPD_HOST = os.environ.get('MPD_HOST', 'localhost')
 MPD_PORT = int(os.environ.get('MPD_PORT', 6600))
 MPD_TIMEOUT = 10  # seconds
