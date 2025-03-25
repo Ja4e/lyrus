@@ -684,12 +684,17 @@ def get_mpd_info():
 		status = client.status()
 		current_song = client.currentsong()
 
+		# Ensure artist is always a string (handle lists)
+		artist = current_song.get("artist", None)
+		if isinstance(artist, list):
+			artist = ", ".join(artist)  # Convert list to comma-separated string
+		
 		data = {
 			"file": current_song.get("file", ""),
 			"position": float(status.get("elapsed", 0)),
-			"artist": current_song.get("artist", None),
+			"artist": artist,
 			"title": current_song.get("title", None),
-			"duration": float(status.get("duration", status.get("time", 0))),  # Some MPD versions use "duration"
+			"duration": float(status.get("duration", status.get("time", 0))),
 			"status": status.get("state", "stopped")
 		}
 
@@ -703,6 +708,7 @@ def get_mpd_info():
 		log_debug(f"MPD connection error: {str(e)}")
 	except Exception as e:
 		log_debug(f"Unexpected MPD error: {str(e)}")
+
 	update_fetch_status("mpd")
 	return (None, 0, None, None, 0, "stopped")
 
