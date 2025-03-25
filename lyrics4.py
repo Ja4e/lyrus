@@ -1117,10 +1117,7 @@ def main(stdscr):
 			# display position calculation
 			continuous_position = max(0.0, estimated_position + time_adjust)
 			continuous_position = min(continuous_position, current_duration)
-			MARGIN = 0.01  # Allow 50ms tolerance
-			timing_list = [t for t, _ in lyrics if t is not None]
-			current_idx = bisect.bisect_right(timing_list, continuous_position + MARGIN) - 1
-			# current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], continuous_position) - 1
+			current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], continuous_position) - 1
 			adjusted_position = lyrics[current_idx][0] if 0 <= current_idx < len(lyrics) and lyrics[current_idx][0] else continuous_position
 
 			# input handling
