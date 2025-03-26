@@ -676,8 +676,6 @@ def get_player_info():
 
 	return None, (None, 0, None, None, 0, "stopped")
 
-
-
 def get_mpd_info():
 	"""Get current playback info from MPD, handling password authentication."""
 	client = MPDClient()
@@ -926,7 +924,7 @@ def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset,
 							manual_scroll_active, time_adjust, is_fetching)
 
 # Global executor for non-blocking lyric fetching
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 future_lyrics = None  # Holds the async result
 
 def fetch_lyrics_async(audio_file, directory, artist, title, duration):
@@ -974,8 +972,8 @@ def main(stdscr):
 	last_status = None
 	mpd_client = None  # Persistent MPD connection
 
-	# Time synchronization threshold
-	SYNC_THRESHOLD = 0.01
+	# Time synchronization threshold (0.1 seconds)
+	SYNC_THRESHOLD = 0.1
 
 	while True:
 		try:
@@ -986,14 +984,14 @@ def main(stdscr):
 			# Get player status (CMUS or MPD)
 			player_type, (audio_file, raw_position, artist, title, duration, status) = get_player_info()
 
-			# stopped state handling
-			if status == "stopped" and (current_audio_file is not None or lyrics):
-				current_audio_file = None
-				lyrics, errors = [], []
-				is_txt_format = is_a2_format = False
-				manual_offset = 0
-				needs_redraw = True
-				stdscr.clear()
+			# # stopped state handling
+			# if status == "stopped" and (current_audio_file is not None or lyrics):
+				# current_audio_file = None
+				# lyrics, errors = [], []
+				# is_txt_format = is_a2_format = False
+				# manual_offset = 0
+				# needs_redraw = True
+				# stdscr.clear()
 
 			# status normalization in naming
 			status_map = {
@@ -1105,21 +1103,47 @@ def main(stdscr):
 				finally:
 					future_lyrics = None
 
-			# Keep stopped state cleanup
-			if status != last_status and status == "stopped":
-				current_audio_file = None
-				lyrics, errors = [], []
-				is_txt_format = is_a2_format = False
-				manual_offset = 0
-				needs_redraw = True
-				stdscr.clear()
+			# # Keep stopped state cleanup
+			# if status != last_status and status == "stopped":
+				# current_audio_file = None
+				# lyrics, errors = [], []
+				# is_txt_format = is_a2_format = False
+				# manual_offset = 0
+				# needs_redraw = True
+				# stdscr.clear()
 
-			# display position calculation
+			# ======================
+			#  POSITION CALCULATION
+			# ======================
 			continuous_position = max(0.0, estimated_position + time_adjust)
 			continuous_position = min(continuous_position, current_duration)
-			current_idx = bisect.bisect_right([t for t, _ in lyrics if t is not None], continuous_position) - 1
-			adjusted_position = lyrics[current_idx][0] if 0 <= current_idx < len(lyrics) and lyrics[current_idx][0] else continuous_position
 
+			# Create direct timestamp-to-index mapping
+			timestamps = []
+			valid_indices = []
+			for idx, (t, _) in enumerate(lyrics):
+				if t is not None:
+					timestamps.append(t)
+					valid_indices.append(idx)
+
+			# Find the closest timestamp using binary search
+			bisect_idx = bisect.bisect_right(timestamps, continuous_position)
+			current_idx = valid_indices[bisect_idx - 1] if bisect_idx > 0 else -1
+
+			# Handle edge case for first line
+			if current_idx == -1 and len(lyrics) > 0:
+				current_idx = 0 if continuous_position >= lyrics[0][0] else -1
+
+			# Immediately highlight current position
+			adjusted_position = lyrics[current_idx][0] if 0 <= current_idx < len(lyrics) else continuous_position
+
+			# Force sync on any position change detection
+			if abs(position - last_player_position) > SYNC_THRESHOLD:
+				bisect_idx = bisect.bisect_right(timestamps, position)
+				current_idx = valid_indices[bisect_idx - 1] if bisect_idx > 0 else -1
+				last_player_position = position
+
+			
 			# input handling
 			key = stdscr.getch()
 			if key != -1:
