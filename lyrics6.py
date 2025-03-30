@@ -52,23 +52,12 @@ import json
 # ==============
 config_files = ["config.json", "config1.json", "config2.json"]
 
-try:
-    os.makedirs("logs", exist_ok=True)
-    print(f"Directory 'logs' created at: {os.path.abspath('logs')}")  # Debug path
-except Exception as e:
-    print(f"CRITICAL ERROR: Failed to create logs directory - {str(e)}")
-    raise SystemExit(1)  # Halt execution if directory can't be created
-
-# Verify directory exists
-if not os.path.exists("logs"):
-    print("FATAL: 'logs' directory missing after creation attempt")
-    raise SystemExit(1)
-
 def load_config():
 	"""Load and merge configuration from file and environment"""
 	default_config = {
 		"global": {
-			"lyrics_timeout_log": "logs/lyrics_timeouts.log",
+			"logs_dir": "logs",
+			"lyrics_timeout_log": "lyrics_timeouts.log",
 			"debug_log": "debug.log",
 			"log_retention_days": 10,
 			"max_debug_count": 100,
@@ -120,13 +109,15 @@ def load_config():
 			try:
 				with open(file) as f:
 					file_config = json.load(f).get("config", {})
+					if "global" in file_config and "logs_dir" not in file_config["global"]:
+						file_config["global"]["logs_dir"] = "logs"
 					for key in file_config:
 						if key in default_config:
 							default_config[key].update(file_config[key])
 						else:
 							default_config[key] = file_config[key]
 				print(f"Successfully loaded and merged config from {file}")
-				break  # Stop after the first valid config file is found
+				break 
 			except Exception as e:
 				pass
 		else:
@@ -154,7 +145,21 @@ CONFIG = load_config()
 # ==============
 #  INITIALIZATION
 # ==============
-os.makedirs("logs", exist_ok=True)
+LOG_DIR = CONFIG["global"]["logs_dir"]
+try:
+    created = not os.path.exists("logs")
+    os.makedirs("logs", exist_ok=True)
+    if created:
+        print(f"Directory 'logs' created at: {os.path.abspath('logs')}")
+
+except Exception as e:
+    print(f"CRITICAL ERROR: Failed to create logs directory - {str(e)}")
+    raise SystemExit(1)
+
+if not os.path.exists("logs"):
+    print("FATAL: 'logs' directory missing after creation attempt")
+    raise SystemExit(1)
+
 LYRICS_TIMEOUT_LOG = CONFIG["global"]["lyrics_timeout_log"]
 DEBUG_LOG = CONFIG["global"]["debug_log"]
 LOG_RETENTION_DAYS = CONFIG["global"]["log_retention_days"]
@@ -163,7 +168,7 @@ MAX_DEBUG_COUNT = CONFIG["global"]["max_debug_count"]
 ENABLE_DEBUG_LOGGING = CONFIG["global"]["enable_debug"]
 if ENABLE_DEBUG_LOGGING:
     debug_msg = "Debug logging ENABLED"
-    print(debug_msg)  
+    print(debug_msg)
     print("=== Application started ===")
     print(f"Loaded config: {json.dumps(CONFIG, indent=2)}")
 # else:
@@ -224,7 +229,7 @@ fetch_status = {
 	"done_time": None
 }
 
-TERMINAL_STATES = {'done', 'instrumental', 'time_out', 'failed', 'mpd', 'clear','cmus'}  # Ensure this is defined
+TERMINAL_STATES = {'done', 'instrumental', 'time_out', 'failed', 'mpd', 'clear','cmus'} 
 
 def update_fetch_status(step, lyrics_found=0):
 	with fetch_status_lock:
@@ -247,7 +252,6 @@ def get_current_status(e=None, current_e=None):
 			return None
 		
 
-		# Hide status after 2 seconds for terminal states
 		if step in TERMINAL_STATES and fetch_status['done_time']:
 			if time.time() - fetch_status['done_time'] > 2:
 				return ""
@@ -255,10 +259,8 @@ def get_current_status(e=None, current_e=None):
 		if step == 'clear':
 			return ""
 
-		# Return pre-defined message with elapsed time if applicable
 		base_msg = MESSAGES.get(step, step)
 		if fetch_status['start_time'] and step != 'done':
-			# Use done_time if available for terminal states
 			end_time = fetch_status['done_time'] or time.time()
 			elapsed = end_time - fetch_status['start_time']
 			return f"{base_msg} {elapsed:.1f}s"
@@ -301,17 +303,15 @@ async def fetch_lrclib_async(artist, title, duration=None, session=None):
 def clean_debug_log():
 	"""Maintain debug log size by keeping only last 100 entries"""
 	log_dir = os.path.join(os.getcwd(), "logs")
-	log_path = os.path.join(log_dir, DEBUG_LOG)
+	log_path = os.path.join(LOG_DIR, DEBUG_LOG)
 	
 	if not os.path.exists(log_path):
 		return
 
 	try:
-		# Read existing log contents
 		with open(log_path, 'r', encoding='utf-8') as f:
 			lines = f.readlines()
 		
-		# Trim if over 100 lines
 		if len(lines) > MAX_DEBUG_COUNT:
 			with open(log_path, 'w', encoding='utf-8') as f:
 				f.writelines(lines[-MAX_DEBUG_COUNT:])
@@ -324,14 +324,19 @@ def log_debug(message):
     if not ENABLE_DEBUG_LOGGING:
         return
 
-    log_dir = os.path.join(os.getcwd(), "logs")
+    log_dir = os.path.join(os.getcwd(), LOG_DIR) 
     log_path = os.path.join(log_dir, DEBUG_LOG)
     
+    # Verify paths
+    print(f"Attempting to log to: {log_path}") 
+    
     try:
+        # Force directory check
         if not os.path.exists(log_dir):
             os.makedirs(log_dir, exist_ok=True)
             print(f"Recreated logs directory at: {log_dir}")
 
+        # Write test entry
         with open(log_path, 'a', encoding='utf-8') as f:
             f.flush()
             
@@ -355,7 +360,7 @@ def log_debug(message):
 			f.write(log_entry)
 		clean_debug_log()
 	except Exception as e:
-		pass  
+		pass 
 
 def log_timeout(artist, title):
 	"""Record failed lyric lookup with duplicate prevention"""
@@ -363,9 +368,10 @@ def log_timeout(artist, title):
 	log_entry = f"{timestamp} | Artist: {artist or 'Unknown'} | Title: {title or 'Unknown'}\n"
 	
 	log_dir = os.path.join(os.getcwd(), "logs")
-	os.makedirs(log_dir, exist_ok=True)
-	log_path = os.path.join(log_dir, LYRICS_TIMEOUT_LOG)
+	os.makedirs(LOG_DIR, exist_ok=True)
+	log_path = os.path.join(LOG_DIR, LYRICS_TIMEOUT_LOG)
 
+	# Check for existing entry
 	entry_exists = False
 	if os.path.exists(log_path):
 		search_artist = artist or 'Unknown'
@@ -379,6 +385,7 @@ def log_timeout(artist, title):
 					entry_exists = True
 					break
 
+	# Add new entry if unique
 	if not entry_exists:
 		try:
 			with open(log_path, 'a', encoding='utf-8') as f:
@@ -406,16 +413,16 @@ def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
 		log_debug(f"LRCLIB sync error: {e}")
 		return None, None
 
-def parse_lrc_tags(lyrics):
-	"""Extract metadata tags from LRC lyrics"""
-	tags = {}
-	for line in lyrics.split('\n'):
-		match = re.match(r'^\[(ti|ar|al):(.+)\]$', line, re.IGNORECASE)
-		if match:
-			key = match.group(1).lower()
-			value = match.group(2).strip()
-			tags[key] = value
-	return tags
+# def parse_lrc_tags(lyrics):
+	# """Extract metadata tags from LRC lyrics"""
+	# tags = {}
+	# for line in lyrics.split('\n'):
+		# match = re.match(r'^\[(ti|ar|al):(.+)\]$', line, re.IGNORECASE)
+		# if match:
+			# key = match.group(1).lower()
+			# value = match.group(2).strip()
+			# tags[key] = value
+	# return tags
 
 def validate_lyrics(content, artist, title):
 	"""Basic validation that lyrics match track"""
@@ -1039,18 +1046,18 @@ def fetch_lyrics_async(audio_file, directory, artist, title, duration):
 		update_fetch_status('failed')
 		return ([], []), False, False
 
-def clean_lyrics(raw_lyrics):
-	"""Ensure lyrics have valid timestamps."""
-	cleaned = []
-	last_valid = 0.0
-	for t, text in raw_lyrics:
-		if t is None:
-			cleaned_t = last_valid  # Use last valid timestamp
-		else:
-			cleaned_t = max(0.0, float(t))
-			last_valid = cleaned_t
-		cleaned.append((cleaned_t, text))
-	return cleaned
+# def clean_lyrics(raw_lyrics):
+	# """Ensure lyrics have valid timestamps."""
+	# cleaned = []
+	# last_valid = 0.0
+	# for t, text in raw_lyrics:
+		# if t is None:
+			# cleaned_t = last_valid  # Use last valid timestamp
+		# else:
+			# cleaned_t = max(0.0, float(t))
+			# last_valid = cleaned_t
+		# cleaned.append((cleaned_t, text))
+	# return cleaned
 
 def sync_player_position(status, raw_position, last_position_time, time_adjust, duration):
 	"""Synchronize player position with system clock"""
@@ -1139,7 +1146,7 @@ def main(stdscr):
 			)
 			state.update({'last_raw_pos': raw_position, 'last_pos_time': new_pos_time})
 
-			current_idx = bisect.bisect_right(state['timestamps'], estimated_pos + 0.002) - 1
+			current_idx = bisect.bisect_right(state['timestamps'], estimated_pos + 0.001) - 1
 			current_idx = max(0, min(current_idx, len(state['timestamps']) - 1)) if state['timestamps'] else 0
 
 
@@ -1197,4 +1204,6 @@ if __name__ == "__main__":
 		except Exception as e:
 			log_debug(f"Fatal error: {str(e)}")
 			time.sleep(1)
+			continue
+
 			continue
