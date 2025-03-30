@@ -4,4 +4,4 @@ automatic lyrics fetcher
 supports wide range of lyric sources
 ncurses, scrollable
 
-do use lyrics4.py file
+do use lyrics8.py file
