@@ -48,6 +48,7 @@ from mpd import MPDClient  # MPD support
 import socket # used for listening for common mpd port 6600
 import json
 
+# I might try to implement more of these
 # log_trace("Starting request processing")
 # log_debug(f"Received payload: {payload}")
 # log_info("API request received")
