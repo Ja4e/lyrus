@@ -1247,296 +1247,296 @@ def subframe_interpolation(continuous_position, timestamps, index):
 	return index, fraction
 
 def main(stdscr):
-    # Initialize colors and UI
-    curses.start_color()
-    curses.init_pair(2, COLOR_MAP.get(CONFIG["ui"]["colors"]["active_line"], curses.COLOR_GREEN), curses.COLOR_BLACK)
-    curses.init_pair(3, COLOR_MAP.get(CONFIG["ui"]["colors"]["inactive_line"], curses.COLOR_WHITE), curses.COLOR_BLACK)
-    curses.curs_set(0)
-    stdscr.timeout(80)  # More frequent updates (80ms)
+	# Initialize colors and UI
+	curses.start_color()
+	curses.init_pair(2, COLOR_MAP.get(CONFIG["ui"]["colors"]["active_line"], curses.COLOR_GREEN), curses.COLOR_BLACK)
+	curses.init_pair(3, COLOR_MAP.get(CONFIG["ui"]["colors"]["inactive_line"], curses.COLOR_WHITE), curses.COLOR_BLACK)
+	curses.curs_set(0)
+	stdscr.timeout(80)  # More frequent updates (80ms)
 
-    state = {
-        'current_file': None,
-        'lyrics': [],
-        'errors': [],
-        'manual_offset': 0,
-        'last_input': 0,
-        'time_adjust': 0.0,
-        'last_raw_pos': 0.0,
-        'last_pos_time': time.time(),
-        'timestamps': [],
-        'valid_indices': [],
-        'paused': False,
-        'last_idx': -1,
-        'last_manual': False,
-        'force_redraw': False,
-        'last_start_screen_line': 0,
-        'is_txt': False,
-        'is_a2': False,
-        'window_size': stdscr.getmaxyx(),
-        'manual_timeout_handled': True,
-        'last_position': 0.0,
-        'lyrics_loaded_time': None,
-        'is_loading': False
-    }
+	state = {
+		'current_file': None,
+		'lyrics': [],
+		'errors': [],
+		'manual_offset': 0,
+		'last_input': 0,
+		'time_adjust': 0.0,
+		'last_raw_pos': 0.0,
+		'last_pos_time': time.time(),
+		'timestamps': [],
+		'valid_indices': [],
+		'paused': False,
+		'last_idx': -1,
+		'last_manual': False,
+		'force_redraw': False,
+		'last_start_screen_line': 0,
+		'is_txt': False,
+		'is_a2': False,
+		'window_size': stdscr.getmaxyx(),
+		'manual_timeout_handled': True,
+		'last_position': 0.0,
+		'lyrics_loaded_time': None,
+		'is_loading': False
+	}
 
-    executor = ThreadPoolExecutor(max_workers=4)
-    future_lyrics = None
+	executor = ThreadPoolExecutor(max_workers=4)
+	future_lyrics = None
 
-    # Playback tracking
-    last_cmus_position = 0
-    last_position_time = time.time()
-    estimated_position = 0
-    playback_paused = False
+	# Playback tracking
+	last_cmus_position = 0
+	last_position_time = time.time()
+	estimated_position = 0
+	playback_paused = False
 
-    while True:
-        try:
-            current_time = time.time()
-            needs_redraw = False
-            time_since_input = current_time - (state['last_input'] or 0)
+	while True:
+		try:
+			current_time = time.time()
+			needs_redraw = False
+			time_since_input = current_time - (state['last_input'] or 0)
 
-            # Handle manual scroll timeout
-            if state['last_input'] > 0:
-                if time_since_input >= SCROLL_TIMEOUT:
-                    if not state['manual_timeout_handled']:
-                        needs_redraw = True
-                        state['manual_timeout_handled'] = True
-                    if time_since_input >= SCROLL_TIMEOUT + 0.1:
-                        state['last_input'] = 0
-                else:
-                    state['manual_timeout_handled'] = False
+			# Handle manual scroll timeout
+			if state['last_input'] > 0:
+				if time_since_input >= SCROLL_TIMEOUT:
+					if not state['manual_timeout_handled']:
+						needs_redraw = True
+						state['manual_timeout_handled'] = True
+					if time_since_input >= SCROLL_TIMEOUT + 0.1:
+						state['last_input'] = 0
+				else:
+					state['manual_timeout_handled'] = False
 
-            manual_scroll = state['last_input'] > 0 and time_since_input < SCROLL_TIMEOUT
+			manual_scroll = state['last_input'] > 0 and time_since_input < SCROLL_TIMEOUT
 
-            # Window resize handling
-            current_window_size = stdscr.getmaxyx()
-            if current_window_size != state['window_size']:
-                old_h, _ = state['window_size']
-                new_h, _ = current_window_size
-                if state['lyrics']:
-                    state['manual_offset'] = int(state['manual_offset'] * (new_h / old_h))
-                state['window_size'] = current_window_size
-                needs_redraw = True
-                start_screen_line = update_display(
-                    stdscr, 
-                    state['lyrics'], 
-                    state['errors'], 
-                    state['last_position'], 
-                    state['current_file'],
-                    state['manual_offset'], 
-                    state['is_txt'],
-                    state['is_a2'],
-                    state['last_idx'], 
-                    manual_scroll,
-                    state['time_adjust'], 
-                    future_lyrics is not None
-                )
-                state['last_start_screen_line'] = start_screen_line
+			# Window resize handling
+			current_window_size = stdscr.getmaxyx()
+			if current_window_size != state['window_size']:
+				old_h, _ = state['window_size']
+				new_h, _ = current_window_size
+				if state['lyrics']:
+					state['manual_offset'] = int(state['manual_offset'] * (new_h / old_h))
+				state['window_size'] = current_window_size
+				needs_redraw = True
+				start_screen_line = update_display(
+					stdscr, 
+					state['lyrics'], 
+					state['errors'], 
+					state['last_position'], 
+					state['current_file'],
+					state['manual_offset'], 
+					state['is_txt'],
+					state['is_a2'],
+					state['last_idx'], 
+					manual_scroll,
+					state['time_adjust'], 
+					future_lyrics is not None
+				)
+				state['last_start_screen_line'] = start_screen_line
 
-            # Get playback info
-            player_type, (audio_file, raw_pos, artist, title, duration, status) = get_player_info()
-            raw_position = float(raw_pos or 0)
-            duration = float(duration or 0)
-            now = time.time()
+			# Get playback info
+			player_type, (audio_file, raw_pos, artist, title, duration, status) = get_player_info()
+			raw_position = float(raw_pos or 0)
+			duration = float(duration or 0)
+			now = time.time()
 
-            # Track change detection
-            if audio_file != state['current_file']:
-                state.update({
-                    'current_file': audio_file,
-                    'lyrics': [],
-                    'errors': [],
-                    'last_raw_pos': raw_position,
-                    'last_pos_time': now,
-                    'last_idx': -1,
-                    'force_redraw': True,
-                    'is_txt': False,
-                    'is_a2': False,
-                    'lyrics_loaded_time': None
-                })
-                if audio_file:
-                    future_lyrics = executor.submit(
-                        fetch_lyrics_async,
-                        audio_file,
-                        os.path.dirname(audio_file) if player_type == 'cmus' else "",
-                        artist or "Unknown",
-                        title or os.path.basename(audio_file),
-                        duration
-                    )
+			# Track change detection
+			if audio_file != state['current_file']:
+				state.update({
+					'current_file': audio_file,
+					'lyrics': [],
+					'errors': [],
+					'last_raw_pos': raw_position,
+					'last_pos_time': now,
+					'last_idx': -1,
+					'force_redraw': True,
+					'is_txt': False,
+					'is_a2': False,
+					'lyrics_loaded_time': None
+				})
+				if audio_file:
+					future_lyrics = executor.submit(
+						fetch_lyrics_async,
+						audio_file,
+						os.path.dirname(audio_file) if player_type == 'cmus' else "",
+						artist or "Unknown",
+						title or os.path.basename(audio_file),
+						duration
+					)
 
-            # Handle loaded lyrics
-            if future_lyrics and future_lyrics.done():
-                try:
-                    (new_lyrics, errors), is_txt, is_a2 = future_lyrics.result()
-                    state.update({
-                        'lyrics': new_lyrics,
-                        'errors': errors,
-                        'timestamps': sorted([t for t, _ in new_lyrics if t is not None]) if not (is_txt or is_a2) else [],
-                        'valid_indices': [i for i, (t, _) in enumerate(new_lyrics) if t is not None],
-                        'last_idx': -1,
-                        'force_redraw': True,
-                        'is_txt': is_txt,
-                        'is_a2': is_a2,
-                        'lyrics_loaded_time': time.time()
-                    })
-                    future_lyrics = None
-                except Exception as e:
-                    state.update({
-                        'errors': [f"Lyric load error: {str(e)}"],
-                        'force_redraw': True,
-                        'lyrics_loaded_time': time.time()
-                    })
-                    future_lyrics = None
+			# Handle loaded lyrics
+			if future_lyrics and future_lyrics.done():
+				try:
+					(new_lyrics, errors), is_txt, is_a2 = future_lyrics.result()
+					state.update({
+						'lyrics': new_lyrics,
+						'errors': errors,
+						'timestamps': sorted([t for t, _ in new_lyrics if t is not None]) if not (is_txt or is_a2) else [],
+						'valid_indices': [i for i, (t, _) in enumerate(new_lyrics) if t is not None],
+						'last_idx': -1,
+						'force_redraw': True,
+						'is_txt': is_txt,
+						'is_a2': is_a2,
+						'lyrics_loaded_time': time.time()
+					})
+					future_lyrics = None
+				except Exception as e:
+					state.update({
+						'errors': [f"Lyric load error: {str(e)}"],
+						'force_redraw': True,
+						'lyrics_loaded_time': time.time()
+					})
+					future_lyrics = None
 
-            # Delayed force redraw (2 seconds after lyrics load)
-            if state['lyrics_loaded_time'] and time.time() - state['lyrics_loaded_time'] >= 2:
-                state['force_redraw'] = True
-                state['lyrics_loaded_time'] = None
+			# Delayed force redraw (2 seconds after lyrics load)
+			if state['lyrics_loaded_time'] and time.time() - state['lyrics_loaded_time'] >= 2:
+				state['force_redraw'] = True
+				state['lyrics_loaded_time'] = None
 
-            # Update position estimation
-            if raw_position != last_cmus_position:
-                last_cmus_position = raw_position
-                last_position_time = now
-                estimated_position = raw_position
-                playback_paused = (status == "paused")
+			# Update position estimation
+			if raw_position != last_cmus_position:
+				last_cmus_position = raw_position
+				last_position_time = now
+				estimated_position = raw_position
+				playback_paused = (status == "paused")
 
-            if status == "playing" and not playback_paused:
-                elapsed = now - last_position_time
-                estimated_position = last_cmus_position + elapsed
-                estimated_position = max(0, min(estimated_position, duration))
-            elif status == "paused":
-                estimated_position = raw_position
-                last_position_time = now
+			if status == "playing" and not playback_paused:
+				elapsed = now - last_position_time
+				estimated_position = last_cmus_position + elapsed
+				estimated_position = max(0, min(estimated_position, duration))
+			elif status == "paused":
+				estimated_position = raw_position
+				last_position_time = now
 
-            continuous_position = max(0, estimated_position + state['time_adjust'])
-            continuous_position = min(continuous_position, duration)
+			continuous_position = max(0, estimated_position + state['time_adjust'])
+			continuous_position = min(continuous_position, duration)
 
-            # Improved synchronization logic
-            current_idx = -1
-            if state['timestamps'] and not state['is_txt']:
-                with ThreadPoolExecutor(max_workers=2) as sync_exec:
-                    bisect_future = sync_exec.submit(
-                        bisect_worker,
-                        continuous_position,
-                        state['timestamps'],
-                        CONFIG["ui"]["bisect_offset"]
-                    )
-                    proximity_future = sync_exec.submit(
-                        proximity_worker,
-                        continuous_position,
-                        state['timestamps'],
-                        CONFIG["ui"]["proximity_threshold"]
-                    )
-                    bisect_idx = bisect_future.result()
-                    proximity_idx = proximity_future.result()
+			# Improved synchronization logic
+			current_idx = -1
+			if state['timestamps'] and not state['is_txt']:
+				with ThreadPoolExecutor(max_workers=2) as sync_exec:
+					bisect_future = sync_exec.submit(
+						bisect_worker,
+						continuous_position,
+						state['timestamps'],
+						CONFIG["ui"]["bisect_offset"]
+					)
+					proximity_future = sync_exec.submit(
+						proximity_worker,
+						continuous_position,
+						state['timestamps'],
+						CONFIG["ui"]["proximity_threshold"]
+					)
+					bisect_idx = bisect_future.result()
+					proximity_idx = proximity_future.result()
 
-                # Conflict resolution: choose the index that is closest, or the lower one if nearly equal.
-                if abs(bisect_idx - proximity_idx) > 1:
-                    chosen_idx = bisect_idx
-                else:
-                    chosen_idx = min(bisect_idx, proximity_idx)
-                
-                current_idx = max(-1, min(chosen_idx, len(state['timestamps']) - 1))
-                
-                # Timestamp validation
-                if current_idx >= 0 and continuous_position < state['timestamps'][current_idx]:
-                    current_idx = max(-1, current_idx - 1)
-            else:
-                # For text (TXT or A2) files, compute a fractional line based on duration per line.
-                if (state['is_txt'] or state['is_a2']) and duration > 0 and len(state['lyrics']) > 0:
-                    time_per_line = duration / len(state['lyrics'])
-                    continuous_line = continuous_position / time_per_line
-                    current_idx = int(round(continuous_line))
-                    current_idx = max(0, min(current_idx, len(state['lyrics']) - 1))
-                else:
-                    current_idx = -1
+				# Conflict resolution: choose the index that is closest, or the lower one if nearly equal.
+				if abs(bisect_idx - proximity_idx) > 1:
+					chosen_idx = bisect_idx
+				else:
+					chosen_idx = min(bisect_idx, proximity_idx)
+				
+				current_idx = max(-1, min(chosen_idx, len(state['timestamps']) - 1))
+				
+				# Timestamp validation
+				if current_idx >= 0 and continuous_position < state['timestamps'][current_idx]:
+					current_idx = max(-1, current_idx - 1)
+			else:
+				# For text (TXT or A2) files, compute a fractional line based on duration per line.
+				if (state['is_txt'] or state['is_a2']) and duration > 0 and len(state['lyrics']) > 0:
+					time_per_line = duration / len(state['lyrics'])
+					continuous_line = continuous_position / time_per_line
+					current_idx = int(round(continuous_line))
+					current_idx = max(0, min(current_idx, len(state['lyrics']) - 1))
+				else:
+					current_idx = -1
 
-            # Automatic manual_offset update if no manual scroll is active
-            window_h = state['window_size'][0]
-            if not manual_scroll:
-                if not (state['is_txt'] or state['is_a2']):
-                    # For LRC files with timestamps, center the view on the current index.
-                    if current_idx != -1:
-                        target_offset = max(0, current_idx - window_h // 2)
-                        # Clamp to valid range.
-                        if state['lyrics']:
-                            target_offset = min(target_offset, len(state['lyrics']) - window_h)
-                        if target_offset != state['manual_offset']:
-                            state['manual_offset'] = target_offset
-                            needs_redraw = True
-                else:
-                    # For text files, target offset computed from fractional line.
-                    if len(state['lyrics']) > window_h:
-                        target_offset = current_idx - (window_h // 2)
-                        target_offset = max(0, min(target_offset, len(state['lyrics']) - window_h))
-                        if target_offset != state['manual_offset']:
-                            state['manual_offset'] = target_offset
-                            needs_redraw = True
-                    else:
-                        state['manual_offset'] = 0
+			# Automatic manual_offset update if no manual scroll is active
+			window_h = state['window_size'][0]
+			if not manual_scroll:
+				if not (state['is_txt'] or state['is_a2']):
+					# For LRC files with timestamps, center the view on the current index.
+					if current_idx != -1:
+						target_offset = max(0, current_idx - window_h // 2)
+						# Clamp to valid range.
+						if state['lyrics']:
+							target_offset = min(target_offset, len(state['lyrics']) - window_h)
+						if target_offset != state['manual_offset']:
+							state['manual_offset'] = target_offset
+							needs_redraw = True
+				else:
+					# For text files, target offset computed from fractional line.
+					if len(state['lyrics']) > window_h:
+						target_offset = current_idx - (window_h // 2)
+						target_offset = max(0, min(target_offset, len(state['lyrics']) - window_h))
+						if target_offset != state['manual_offset']:
+							state['manual_offset'] = target_offset
+							needs_redraw = True
+					else:
+						state['manual_offset'] = 0
 
-            # Update state for highlighting changes
-            highlight_changed = current_idx != state['last_idx']
-            state['last_idx'] = current_idx
+			# Update state for highlighting changes
+			highlight_changed = current_idx != state['last_idx']
+			state['last_idx'] = current_idx
 
-            # Input handling
-            key = stdscr.getch()
-            if key == ord('q'):
-                break
+			# Input handling
+			key = stdscr.getch()
+			if key == ord('q'):
+				break
 
-            new_input = key != -1
-            if new_input:
-                cont, new_manual_offset, last_input, needs_redraw_input, new_time_adjust = handle_scroll_input(
-                    key, state['manual_offset'], state['last_input'], needs_redraw, state['time_adjust']
-                )
-                # If manual scroll is active, apply bounds to the new offset.
-                if manual_scroll:
-                    if state['lyrics']:
-                        state['manual_offset'] = max(0, min(new_manual_offset, len(state['lyrics']) - 1))
-                    else:
-                        state['manual_offset'] = new_manual_offset
-                state['last_input'] = last_input
-                state['time_adjust'] = new_time_adjust
-                state['force_redraw'] = state['force_redraw'] or needs_redraw_input
-                if not cont:
-                    break
+			new_input = key != -1
+			if new_input:
+				cont, new_manual_offset, last_input, needs_redraw_input, new_time_adjust = handle_scroll_input(
+					key, state['manual_offset'], state['last_input'], needs_redraw, state['time_adjust']
+				)
+				# If manual scroll is active, apply bounds to the new offset.
+				if manual_scroll:
+					if state['lyrics']:
+						state['manual_offset'] = max(0, min(new_manual_offset, len(state['lyrics']) - 1))
+					else:
+						state['manual_offset'] = new_manual_offset
+				state['last_input'] = last_input
+				state['time_adjust'] = new_time_adjust
+				state['force_redraw'] = state['force_redraw'] or needs_redraw_input
+				if not cont:
+					break
 
-            # Update display if needed
-            if (manual_scroll and new_input) or (not manual_scroll and (highlight_changed or needs_redraw or state['force_redraw'])):
-                start_screen_line = update_display(
-                    stdscr, 
-                    state['lyrics'], 
-                    state['errors'], 
-                    continuous_position, 
-                    state['current_file'],
-                    state['manual_offset'], 
-                    state['is_txt'],
-                    state['is_a2'],
-                    current_idx,
-                    manual_scroll,
-                    state['time_adjust'], 
-                    future_lyrics is not None
-                )
-                state.update({
-                    'force_redraw': False,
-                    'last_manual': manual_scroll,
-                    'last_start_screen_line': start_screen_line
-                })
-                needs_redraw = False
+			# Update display if needed
+			if (manual_scroll and new_input) or (not manual_scroll and (highlight_changed or needs_redraw or state['force_redraw'])):
+				start_screen_line = update_display(
+					stdscr, 
+					state['lyrics'], 
+					state['errors'], 
+					continuous_position, 
+					state['current_file'],
+					state['manual_offset'], 
+					state['is_txt'],
+					state['is_a2'],
+					current_idx,
+					manual_scroll,
+					state['time_adjust'], 
+					future_lyrics is not None
+				)
+				state.update({
+					'force_redraw': False,
+					'last_manual': manual_scroll,
+					'last_start_screen_line': start_screen_line
+				})
+				needs_redraw = False
 
-            # Pause handling
-            if status == "paused":
-                time.sleep(0.1)
-            elif not manual_scroll:
-                time.sleep(0.02)
+			# Pause handling
+			if status == "paused":
+				time.sleep(0.1)
+			elif not manual_scroll:
+				time.sleep(0.02)
 
-        except Exception as e:
-            log_debug(f"Main loop error: {str(e)}")
+		except Exception as e:
+			log_debug(f"Main loop error: {str(e)}")
 
 if __name__ == "__main__":
-    while True:
-        try:
-            curses.wrapper(main)
-        except KeyboardInterrupt:
-            break
-        except Exception as e:
-            log_debug(f"Fatal error: {str(e)}")
-            time.sleep(1)
+	while True:
+		try:
+			curses.wrapper(main)
+		except KeyboardInterrupt:
+			break
+		except Exception as e:
+			log_debug(f"Fatal error: {str(e)}")
+			time.sleep(1)
