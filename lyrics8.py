@@ -116,16 +116,6 @@ def load_config():
 		}
 	}
 
-	# try:
-		# with open("config.json") as f:
-			# file_config = json.load(f).get("config", {})
-			# for key in file_config:
-				# if key in default_config:
-					# default_config[key].update(file_config[key])
-				# else:
-					# default_config[key] = file_config[key]
-	# except Exception as e:
-		# pass
 
 	for file in config_files:
 		if os.path.exists(file):
@@ -146,10 +136,9 @@ def load_config():
 				break  # Stop after the first valid config file is found
 			except Exception as e:
 				pass
-				#print(f"Error loading config from {file}: {e}")
 		else:
 			pass
-			#print(f"{file} not found, skipping.")
+
 
 
 	def resolve(item):
