@@ -1456,7 +1456,7 @@ def main(stdscr):
 					state['is_txt'],
 					state['is_a2'],
 					# current_idx if not manual_scroll else -1,
-					current_idx
+					current_idx,
 					manual_scroll,
 					state['time_adjust'], 
 					future_lyrics is not None
