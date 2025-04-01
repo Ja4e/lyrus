@@ -1245,8 +1245,9 @@ def main(stdscr):
 				old_h, _ = state['window_size']
 				new_h, _ = current_window_size
 				if state['lyrics']:
-					state['manual_offset'] = max(0, min(len(state['lyrics']) - 1, 
-						state['manual_offset'] + (new_h - old_h) // 2))
+					state['manual_offset'] = int(state['manual_offset'] * (new_h / old_h))
+					# state['manual_offset'] = max(0, min(len(state['lyrics']) - 1, 
+						# state['manual_offset'] + (new_h - old_h) // 2))
 				state['window_size'] = current_window_size
 				needs_redraw = True
 				start_screen_line = update_display(
@@ -1333,7 +1334,8 @@ def main(stdscr):
 
 			if status == "playing" and not playback_paused:
 				elapsed = now - last_position_time
-				estimated_position = last_cmus_position + elapsed
+				# estimated_position = last_cmus_position + elapsed
+				estimated_position = last_cmus_position + (elapsed * 0.95)
 				estimated_position = max(0, min(estimated_position, duration))
 			elif status == "paused":
 				estimated_position = raw_position
@@ -1342,7 +1344,7 @@ def main(stdscr):
 			continuous_position = max(0, estimated_position + state['time_adjust'])
 			continuous_position = min(continuous_position, duration)
 
-			# Improved synchronization logic
+			# Synchronization logic
 			current_idx = -1
 			if state['timestamps'] and not state['is_txt']:
 				with ThreadPoolExecutor(max_workers=2) as sync_exec:
@@ -1370,7 +1372,8 @@ def main(stdscr):
 				current_idx = max(-1, min(chosen_idx, len(state['timestamps']) - 1))
 				
 				# Timestamp validation
-				if current_idx >= 0 and continuous_position < state['timestamps'][current_idx]:compute_weighted_index
+				if current_idx >= 0 and continuous_position < state['timestamps'][current_idx]:
+					#compute_weighted_index
 					current_idx = max(-1, current_idx - 1)
 			else:
 				current_idx = -1
@@ -1394,7 +1397,6 @@ def main(stdscr):
 						if target_offset != state['manual_offset']:
 							state['manual_offset'] = target_offset
 							needs_redraw = True
-
 
 			# Update state
 			highlight_changed = current_idx != state['last_idx']
@@ -1444,7 +1446,7 @@ def main(stdscr):
 				})
 				needs_redraw = False
 
-			# CPUS destressor
+			# Pause handling
 			if status == "paused":
 				time.sleep(0.1)
 			elif not manual_scroll:
@@ -1462,3 +1464,4 @@ if __name__ == "__main__":
 		except Exception as e:
 			log_debug(f"Fatal error: {str(e)}")
 			time.sleep(1)
+			break
