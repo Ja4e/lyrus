@@ -26,7 +26,10 @@ Displays time-synced lyrics for cmus music player using multiple lyric sources
 #  DEPENDENCIES
 # ==============
 import curses  # Terminal UI framework
-import redis   # Caching
+try:  # Optional Redis import
+	import redis
+except ImportError:
+	redis = None
 import aiohttp  # Async HTTP client
 import threading # For tracking Status
 import concurrent.futures # For concurrent API requests
@@ -34,6 +37,7 @@ from concurrent.futures import ThreadPoolExecutor
 import subprocess  # For cmus interaction
 import re  # Regular expressions
 import os  # File system operations
+import sys
 import bisect  # For efficient list searching
 import time  # Timing functions
 import textwrap  # Text formatting
@@ -46,14 +50,6 @@ from datetime import datetime, timedelta  # Time handling for logs
 from mpd import MPDClient  # MPD support
 import socket # used for listening for common mpd port 6600
 import json
-
-# Will add more debugging parts
-# log_trace("Starting request processing")
-# log_debug(f"Received payload: {payload}")
-# log_info("API request received")
-# log_warn("Slow database response")
-# log_error("Failed to update record")
-# log_fatal("Unrecoverable database error")
 
 # ==============
 #  GLOBALS
@@ -82,7 +78,7 @@ def load_config():
 		"global": {
 			"logs_dir": "logs",
 			"log_file": "application.log",
-			"log_level": "INFO",
+			"log_level": "FATAL",
 			"lyrics_timeout_log": "lyrics_timeouts.log",
 			"debug_log": "debug.log",
 			"log_retention_days": 10,
@@ -100,7 +96,7 @@ def load_config():
 			}
 		},
 		"redis": {
-			"enabled": True,
+			"enabled": False,
 			"host": {"env": "REDIS_HOST", "default": "localhost"},
 			"port": {"env": "REDIS_PORT", "default": 6379}
 		},
@@ -125,15 +121,41 @@ def load_config():
 			"validation": {"title_match_length": 15, "artist_match_length": 15}
 		},
 		"ui": {
-			"colors": {"active_line": "green", "inactive_line": "white", "error": "red"},
+			"alignment": "center",  # Options: "left", "center", "right"
+			"colors": {
+				"txt": {
+					"active": {"env": "TXT_ACTIVE", "default": "white"},  # or 6
+					"inactive": {"env": "TXT_INACTIVE", "default": "white"}  # Dark gray
+				},
+				"lrc": {
+					"active": {"env": "LRC_ACTIVE", "default": "green"},     # Greenish
+					"inactive": {"env": "LRC_INACTIVE", "default": "white"} # Yellow
+				},
+				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
+			},
 			"scroll_timeout": 2,
 			"refresh_interval_ms": 50,
 			"wrap_width_percent": 90,
 			"bisect_offset": 0.01,  # Only used for bisect method
 			"proximity_threshold": 0.1  # Only used for proximity method (50ms)
-		}
+		},
+		"key_bindings": {
+			"quit": ["q", "Q"], # Set as "null" if you do not want it assigned
+			"refresh": "R",
+			"scroll_up": "KEY_UP",
+			"scroll_down": "KEY_DOWN",
+			"time_decrease": ["-", "_"],
+			"time_increase": ["=", "+"],
+			"time_reset": "0",
+			"align_cycle_forward": "a",
+			"align_cycle_backward": "A",
+			"align_left": "1",
+			"align_center": "2",
+			"align_right": "3"
+		}	
 	}
-
+	
+	# Merge with found config files
 	for file in config_files:
 		if os.path.exists(file):
 			try:
@@ -141,13 +163,11 @@ def load_config():
 					file_config = json.load(f).get("config", {})
 					if "global" in file_config and "logs_dir" not in file_config["global"]:
 						file_config["global"]["logs_dir"] = "logs"
-					# Merge the file configuration with the default configuration
+					# Deep merge strategy
 					for key in file_config:
 						if key in default_config:
-							# If the key exists in the default config, update it
 							default_config[key].update(file_config[key])
 						else:
-							# If the key doesn't exist, add it to the default config
 							default_config[key] = file_config[key]
 				print(f"Successfully loaded and merged config from {file}")
 				break 
@@ -162,7 +182,7 @@ def load_config():
 			return os.environ.get(item["env"], item.get("default"))
 		return item
 
-	for section in ["mpd"]:  # Only iterate through actual player subsections
+	for section in ["mpd"]:
 		for key in default_config["player"][section]:
 			default_config["player"][section][key] = resolve(default_config["player"][section][key])
 	
@@ -210,7 +230,7 @@ if ENABLE_DEBUG_LOGGING:
 	# print("Debug logging DISABLED")
 
 # Redis connection
-REDIS_ENABLED = CONFIG["redis"]["enabled"]
+REDIS_ENABLED = CONFIG["redis"]["enabled"] and redis is not None
 redis_client = None
 if REDIS_ENABLED:
 	try:
@@ -219,9 +239,13 @@ if REDIS_ENABLED:
 			port=CONFIG["redis"]["port"],
 			decode_responses=True
 		)
-		redis_client.ping()
+		redis_client.ping()  # Test connection
+		log_info("Redis connected successfully")
 	except Exception as e:
 		REDIS_ENABLED = False
+		print(f"Redis connection failed: {str(e)}. Disabling Redis features.")
+elif CONFIG["redis"]["enabled"]:  # Config enabled but module missing
+	print("Redis enabled in config but package not installed. Install with 'pip install redis'")
 
 # Player configuration
 MPD_HOST = CONFIG["player"]["mpd"]["host"] 
@@ -237,17 +261,50 @@ SEARCH_TIMEOUT = CONFIG["lyrics"]["search_timeout"]
 VALIDATION_LENGTHS = CONFIG["lyrics"]["validation"]
 
 # UI configuration
-COLOR_MAP = {
-	"black": curses.COLOR_BLACK,
-	"blue": curses.COLOR_BLUE,
-	"cyan": curses.COLOR_CYAN,
-	"green": curses.COLOR_GREEN,
-	"magenta": curses.COLOR_MAGENTA,
-	"red": curses.COLOR_RED,
-	"white": curses.COLOR_WHITE,
-	"yellow": curses.COLOR_YELLOW
+# COLOR_MAP = {
+	# "black": curses.COLOR_BLACK,
+	# "blue": curses.COLOR_BLUE,
+	# "cyan": curses.COLOR_CYAN,
+	# "green": curses.COLOR_GREEN,
+	# "magenta": curses.COLOR_MAGENTA,
+	# "red": curses.COLOR_RED,
+	# "white": curses.COLOR_WHITE,
+	# "yellow": curses.COLOR_YELLOW
+# }
+
+COLOR_NAMES = {
+	"black": 0, "red": 1, "green": 2, "yellow": 3,
+	"blue": 4, "magenta": 5, "cyan": 6, "white": 7
 }
 
+def get_color_value(color_input):
+	"""Convert color input to valid terminal color number (0-255)"""
+	# Get terminal capabilities first
+	curses.start_color()
+	max_colors = curses.COLORS if curses.COLORS > 8 else 8
+	
+	try:
+		# Handle numeric inputs (string or integer)
+		if isinstance(color_input, (int, str)) and str(color_input).isdigit():
+			return max(0, min(int(color_input), max_colors - 1))
+		
+		# Handle named colors
+		if isinstance(color_input, str):
+			color = color_input.lower()
+			return COLOR_NAMES.get(color, 7)  # Default to white
+			
+		return 7  # Fallback to white
+	except Exception:
+		return 7  # Fallback on any error
+
+def resolve_color(setting):
+	"""Resolve color from config with environment override"""
+	# Get value from environment or config
+	raw_value = os.environ.get(
+		setting["env"], 
+		setting.get("default", 7)
+	)
+	return get_color_value(raw_value)
 
 SCROLL_TIMEOUT = CONFIG["ui"]["scroll_timeout"]
 REFRESH_INTERVAL = CONFIG["ui"]["refresh_interval_ms"]
@@ -265,75 +322,6 @@ fetch_status = {
 }
 
 TERMINAL_STATES = {'done', 'instrumental', 'time_out', 'failed', 'mpd', 'clear','cmus'}  # Ensure this is defined
-
-def update_fetch_status(step, lyrics_found=0):
-	with fetch_status_lock:
-		fetch_status.update({
-			'current_step': step,
-			'lyric_count': lyrics_found,
-			'start_time': time.time() if step == 'start' else fetch_status['start_time'],
-			'done_time': time.time() if step in TERMINAL_STATES else None
-		})
-
-def get_current_status(e=None, current_e=None):
-	"""Return a formatted status message"""
-	current_e = e
-	with fetch_status_lock:
-		if current_e != e:
-			return e
-		
-		step = fetch_status['current_step']
-		if not step:
-			return None
-		
-
-		# Hide status after 2 seconds for terminal states
-		if step in TERMINAL_STATES and fetch_status['done_time']:
-			if time.time() - fetch_status['done_time'] > 2:
-				return ""
-
-		if step == 'clear':
-			return ""
-
-		# Return pre-defined message with elapsed time if applicable
-		base_msg = MESSAGES.get(step, step)
-		if fetch_status['start_time'] and step != 'done':
-			# Use done_time if available for terminal states
-			end_time = fetch_status['done_time'] or time.time()
-			elapsed = end_time - fetch_status['start_time']
-			return f"{base_msg} {elapsed:.1f}s"
-		
-		return base_msg
-		
-
-# ================
-#  ASYNC HELPERS
-# ================
-async def fetch_lrclib_async(artist, title, duration=None, session=None):
-	"""Async version of LRCLIB fetch using aiohttp"""
-	base_url = "https://lrclib.net/api/get"
-	params = {'artist_name': artist, 'track_name': title}
-	if duration:
-		params['duration'] = duration
-
-	try:
-		# Use existing session if provided, otherwise create one temporarily
-		async with (session or aiohttp.ClientSession()) as s:
-			async with s.get(base_url, params=params) as response:
-				if response.status == 200:
-					try:
-						data = await response.json(content_type=None)
-						if data.get('instrumental', False):
-							return None, None
-						return data.get('syncedLyrics') or data.get('plainLyrics'), bool(data.get('syncedLyrics'))
-					except aiohttp.ContentTypeError:
-						log_debug("LRCLIB async error: Invalid JSON response")
-				else:
-					log_debug(f"LRCLIB async error: HTTP {response.status}")
-	except aiohttp.ClientError as e:
-		log_debug(f"LRCLIB async error: {e}")
-	
-	return None, None
 
 
 # ================
@@ -358,7 +346,7 @@ def clean_debug_log():
 				f.writelines(lines[-MAX_DEBUG_COUNT:])
 				
 	except Exception as e:
-		log_debug(f"Error cleaning debug log: {e}")
+		print(f"Error cleaning debug log: {e}")
 
 def clean_log():
 	"""Maintain log size by rotating files"""
@@ -432,6 +420,79 @@ def log_debug(message: str):
 def log_trace(message: str):
 	log_message("TRACE", message)
 
+def update_fetch_status(step, lyrics_found=0):
+	with fetch_status_lock:
+		fetch_status.update({
+			'current_step': step,
+			'lyric_count': lyrics_found,
+			'start_time': time.time() if step == 'start' else fetch_status['start_time'],
+			'done_time': time.time() if step in TERMINAL_STATES else None
+		})
+
+def get_current_status(e=None, current_e=None):
+	"""Return a formatted status message"""
+	current_e = e
+	with fetch_status_lock:
+		if current_e != e:
+			return e
+		
+		step = fetch_status['current_step']
+		if not step:
+			return None
+		
+
+		# Hide status after 2 seconds for terminal states
+		if step in TERMINAL_STATES and fetch_status['done_time']:
+			if time.time() - fetch_status['done_time'] > 2:
+				return ""
+
+		if step == 'clear':
+			return ""
+
+		# Return pre-defined message with elapsed time if applicable
+		base_msg = MESSAGES.get(step, step)
+		if fetch_status['start_time'] and step != 'done':
+			# Use done_time if available for terminal states
+			end_time = fetch_status['done_time'] or time.time()
+			elapsed = end_time - fetch_status['start_time']
+			return f"{base_msg} {elapsed:.1f}s"
+		
+		return base_msg
+		
+
+# ================
+#  ASYNC HELPERS
+# ================
+async def fetch_lrclib_async(artist, title, duration=None, session=None):
+	"""Async version of LRCLIB fetch using aiohttp"""
+	base_url = "https://lrclib.net/api/get"
+	params = {'artist_name': artist, 'track_name': title}
+	if duration:
+		params['duration'] = duration
+
+	try:
+		# Use existing session if provided, otherwise create one temporarily
+		async with (session or aiohttp.ClientSession()) as s:
+			async with s.get(base_url, params=params) as response:
+				if response.status == 200:
+					try:
+						data = await response.json(content_type=None)
+						if data.get('instrumental', False):
+							return None, None
+						return data.get('syncedLyrics') or data.get('plainLyrics'), bool(data.get('syncedLyrics'))
+					except aiohttp.ContentTypeError:
+						log_debug("LRCLIB async error: Invalid JSON response")
+				else:
+					log_debug(f"LRCLIB async error: HTTP {response.status}")
+	except aiohttp.ClientError as e:
+		log_debug(f"LRCLIB async error: {e}")
+	
+	return None, None
+
+# Added comprehensive debug points throughout code
+log_trace("Initializing configuration manager")
+
+
 
 def log_timeout(artist, title):
 	"""Record failed lyric lookup with duplicate prevention"""
@@ -478,10 +539,15 @@ def sanitize_string(s):
 
 def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
 	"""Sync wrapper for async LRCLIB fetch"""
+	log_debug(f"Querying LRCLIB API: {artist_name} - {track_name}")
 	try:
 		return asyncio.run(fetch_lrclib_async(artist_name, track_name, duration))
+######################################################################################################
+		if result[0]:
+			log_info(f"LRCLIB returned {'synced' if result[1] else 'plain'} lyrics")
+######################################################################################################
 	except Exception as e:
-		log_debug(f"LRCLIB sync error: {e}")
+		log_error(f"LRCLIB fetch failed: {str(e)}")
 		return None, None
 
 # def parse_lrc_tags(lyrics):
@@ -495,32 +561,51 @@ def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
 			# tags[key] = value
 	# return tags
 
+# def validate_lyrics(content, artist, title): # Too Harsh
+	# """Basic validation that lyrics match track"""
+	# # Check for timing markers
+	# if re.search(r'\[\d+:\d+\.\d+\]', content):
+		# return True
+		
+	# # Check for instrumental markers
+	# if re.search(r'\b(instrumental)\b', content, re.IGNORECASE):
+		# return True
+
+	# # Normalize strings for comparison
+	# def normalize(s):
+		# return re.sub(r'[^\w]', '', str(s)).lower().replace(' ', '')[:15]
+
+	# norm_title = normalize(title)[:15]
+	# norm_artist = normalize(artist)[:15] if artist else ''
+	# norm_content = normalize(content)
+
+	# # Verify title/artist presence in lyrics
+	# return (norm_title in norm_content if norm_title else True) or \
+		   # (norm_artist in norm_content if norm_artist else True)
+
 def validate_lyrics(content, artist, title):
-	"""Basic validation that lyrics match track"""
-	# Check for timing markers
+	"""More lenient validation"""
+	# Always allow files with timestamps
 	if re.search(r'\[\d+:\d+\.\d+\]', content):
 		return True
 		
-	# Check for instrumental markers
-	if re.search(r'\b(instrumental)\b', content, re.IGNORECASE):
+	# Allow empty content for instrumental markers
+	if not content.strip():
 		return True
-
-	# Normalize strings for comparison
-	def normalize(s):
-		return re.sub(r'[^\w]', '', str(s)).lower().replace(' ', '')[:15]
-
-	norm_title = normalize(title)[:15]
-	norm_artist = normalize(artist)[:15] if artist else ''
-	norm_content = normalize(content)
-
-	# Verify title/artist presence in lyrics
-	return (norm_title in norm_content if norm_title else True) or \
-		   (norm_artist in norm_content if norm_artist else True)
+		
+	# Normalize comparison parameters
+	norm_content = sanitize_string(content)
+	
+	# log_warn(f"Lyrics validation warning for {artist} - {title}")
+	
+	return True  # Temporary accept all content
 
 def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15):
 	"""Fetch lyrics using syncedlyrics with a fallback"""
+	log_debug(f"Starting syncedlyrics search: {artist_name} - {track_name} ({duration}s)")
 	try:
 		def worker(result_dict, search_term, synced=True):
+			log_trace(f"Worker started: {'synced' if synced else 'plain'} search")
 			"""Async worker for lyric search"""
 			try:
 				result = syncedlyrics.search(search_term) if synced else \
@@ -533,6 +618,9 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 				result_dict["synced"] = False
 
 		search_term = f"{track_name} {artist_name}".strip()
+		log_trace(f"Formatted search term: '{search_term}'")
+		log_trace(f"Starting synced lyrics search for: {search_term}")
+		
 		if not search_term:
 			log_debug("Empty search term")
 			return None, None
@@ -547,7 +635,15 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 		process.join(timeout)
 
 		lyrics, is_synced = result_dict.get("lyrics"), result_dict.get("synced", False)
-
+################################################################################################################
+		if lyrics:
+			log_debug(f"Found {'synced' if is_synced else 'plain'} lyrics via syncedlyrics")
+			if not validate_lyrics(lyrics, artist_name, track_name):
+				log_warn("Lyrics validation failed but using anyway")
+			return lyrics, is_synced
+		else:
+			log_debug("No lyrics found in syncedlyrics primary search")
+################################################################################################################
 		# Check if lyrics are valid
 		if lyrics and validate_lyrics(lyrics, artist_name, track_name):
 			if is_synced and re.search(r'^\[\d+:\d+\.\d+\]', lyrics, re.MULTILINE):
@@ -562,7 +658,8 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 			log_debug("Synced lyrics search timed out")
 
 		# Fallback to plain lyrics
-		log_debug("Attempting plain lyrics after synced failed")
+		log_trace("Initiating plain lyrics fallback search")
+		log_info("Falling back to plain lyrics search")
 		process = multiprocessing.Process(target=worker, args=(result_dict, search_term, False))
 		process.start()
 		process.join(timeout)
@@ -598,9 +695,12 @@ def save_lyrics(lyrics, track_name, artist_name, extension):
 	try:
 		with open(file_path, "w", encoding="utf-8") as f:
 			f.write(lyrics)
+		log_info(f"Saved lyrics to: {file_path}")
+		log_trace(f"Lyrics content sample: {lyrics[:200]}...")
 		return file_path
 	except Exception as e:
 		log_debug(f"Lyric save error: {e}")
+		log_error(f"Failed to save lyrics: {str(e)}")
 		return None
 
 def get_cmus_info():
@@ -666,6 +766,7 @@ def is_lyrics_timed_out(artist_name, track_name):
 def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
 	"""Locate or fetch lyrics for current track"""
 	update_fetch_status('local')
+	log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
 	base_name, _ = os.path.splitext(os.path.basename(audio_file))
 	
 	local_files = [
@@ -682,10 +783,12 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 					content = f.read()
 				
 				if validate_lyrics(content, artist_name, track_name):
-					log_debug(f"Validated local {ext} file")
+					# log_debug(f"Validated local {ext} file")
+					log_info(f"Using validated lyrics file: {file_path}")
 					return file_path
 				else:
-					log_debug(f"Using unvalidated local {ext} file")
+					# log_debug(f"Using unvalidated local {ext} file")
+					log_info(f"Using unvalidated local {ext} file")
 					return file_path
 			except Exception as e:
 				log_debug(f"File read error: {file_path} - {e}")
@@ -741,17 +844,41 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 	update_fetch_status('synced')
 	# Fetch from syncedlyrics
 	log_debug("Fetching from syncedlyrics...")
+	search_start = time.time()
+	log_info(f"Searching online sources for: {artist_name} - {track_name}")
 	fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
 	if fetched_lyrics:
+		search_time = time.time() - search_start
+		log_debug(f"Online search completed in {search_time:.3f}s")
+		
+		log_info(f"Found {'synced' if is_synced else 'plain'} lyrics online")
 		# Add validation warning if needed
 		if not validate_lyrics(fetched_lyrics, artist_name, track_name):
 			log_debug("Validation warning - possible mismatch")
 			fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
 		
+		line_count = len(fetched_lyrics.split('\n'))
+		log_debug(f"Lyrics stats - Lines: {line_count}, "
+				 f"Chars: {len(fetched_lyrics)}, "
+				 f"Synced: {is_synced}")
+		
 		# Determine file format
 		is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) 
 						for line in fetched_lyrics.split('\n'))
-		extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
+		# extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
+		has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
+		# if is_enhanced:
+			# extension = 'a2'
+		# else:
+			# # Check if lyrics actually contain LRC timestamps
+			# has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
+			# extension = 'lrc' if (is_synced and has_lrc_timestamps) else 'txt'
+		if is_enhanced:
+			extension = 'a2'
+		elif is_synced and has_lrc_timestamps:
+			extension = 'lrc'
+		else:
+			extension = 'txt'
 		return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
 	
 	# Fallback to LRCLIB
@@ -759,6 +886,8 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 	log_debug("Fetching from LRCLIB...")
 	fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
 	if fetched_lyrics:
+		search_time = time.time() - search_start
+		log_debug(f"Online search completed in {search_time:.3f}s")
 		extension = 'lrc' if is_synced else 'txt'
 		return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
 	
@@ -792,65 +921,71 @@ def load_lyrics(file_path):
 	"""Parse lyric file into time-text pairs"""
 	lyrics = []
 	errors = []
-	
+	log_trace(f"Parsing lyrics file: {file_path}")
 	try:
-		with open(file_path, 'r', encoding="utf-8") as f:
-			lines = f.readlines()
-	except Exception as e:
-		errors.append(f"File open error: {str(e)}")
+		try:
+			with open(file_path, 'r', encoding="utf-8") as f:
+				lines = f.readlines()
+		except Exception as e:
+			errors.append(f"File open error: {str(e)}")
+			return lyrics, errors
+
+		# A2 Format Parsing
+		if file_path.endswith('.a2'):
+			current_line = []
+			line_pattern = re.compile(r'^\[(\d{2}:\d{2}\.\d{2})\](.*)')
+			word_pattern = re.compile(r'<(\d{2}:\d{2}\.\d{2})>(.*?)<(\d{2}:\d{2}\.\d{2})>')
+
+			for line in lines:
+				line = line.strip()
+				if not line:
+					continue
+
+				# Parse line timing
+				line_match = line_pattern.match(line)
+				if line_match:
+					line_time = parse_time_to_seconds(line_match.group(1))
+					lyrics.append((line_time, None))
+					content = line_match.group(2)
+					
+					# Parse word-level timing
+					words = word_pattern.findall(content)
+					for start_str, text, end_str in words:
+						start = parse_time_to_seconds(start_str)
+						end = parse_time_to_seconds(end_str)
+						clean_text = re.sub(r'<.*?>', '', text).strip()
+						if clean_text:
+							lyrics.append((start, (clean_text, end)))
+					
+					# Handle remaining text
+					remaining = re.sub(word_pattern, '', content).strip()
+					if remaining:
+						lyrics.append((line_time, (remaining, line_time)))
+					lyrics.append((line_time, None))
+
+		# Plain Text Format
+		elif file_path.endswith('.txt'):
+			for line in lines:
+				raw_line = line.rstrip('\n')
+				lyrics.append((None, raw_line))
+		# LRC Format
+		else:
+			for line in lines:
+				raw_line = line.rstrip('\n')
+				line_match = re.match(r'\[(\d+:\d+\.\d+)\](.*)', raw_line)
+				if line_match:
+					line_time = parse_time_to_seconds(line_match.group(1))
+					lyric_content = line_match.group(2).strip()
+					lyrics.append((line_time, lyric_content))
+				else:
+					lyrics.append((None, raw_line))
+		
 		return lyrics, errors
 
-	# A2 Format Parsing
-	if file_path.endswith('.a2'):
-		current_line = []
-		line_pattern = re.compile(r'^\[(\d{2}:\d{2}\.\d{2})\](.*)')
-		word_pattern = re.compile(r'<(\d{2}:\d{2}\.\d{2})>(.*?)<(\d{2}:\d{2}\.\d{2})>')
-
-		for line in lines:
-			line = line.strip()
-			if not line:
-				continue
-
-			# Parse line timing
-			line_match = line_pattern.match(line)
-			if line_match:
-				line_time = parse_time_to_seconds(line_match.group(1))
-				lyrics.append((line_time, None))
-				content = line_match.group(2)
-				
-				# Parse word-level timing
-				words = word_pattern.findall(content)
-				for start_str, text, end_str in words:
-					start = parse_time_to_seconds(start_str)
-					end = parse_time_to_seconds(end_str)
-					clean_text = re.sub(r'<.*?>', '', text).strip()
-					if clean_text:
-						lyrics.append((start, (clean_text, end)))
-				
-				# Handle remaining text
-				remaining = re.sub(word_pattern, '', content).strip()
-				if remaining:
-					lyrics.append((line_time, (remaining, line_time)))
-				lyrics.append((line_time, None))
-
-	# Plain Text Format
-	elif file_path.endswith('.txt'):
-		for line in lines:
-			raw_line = line.rstrip('\n')
-			lyrics.append((None, raw_line))
-	# LRC Format
-	else:
-		for line in lines:
-			raw_line = line.rstrip('\n')
-			line_match = re.match(r'\[(\d+:\d+\.\d+)\](.*)', raw_line)
-			if line_match:
-				line_time = parse_time_to_seconds(line_match.group(1))
-				lyric_content = line_match.group(2).strip()
-				lyrics.append((line_time, lyric_content))
-			else:
-				lyrics.append((None, raw_line))
-
-	return lyrics, errors
+	except Exception as e:
+		if errors:
+			log_warn(f"Found {len(errors)} parsing errors")
+		return lyrics, errors
 
 # ==============
 #  PLAYER DETECTION
@@ -865,14 +1000,17 @@ def get_player_info():
 	# Fallback to MPD
 	try:
 		mpd_info = get_mpd_info()
+		log_debug(f"CMUS status: {cmus_info[5]}, MPD status: {mpd_info[5]}")
 		if mpd_info[0] is not None:
 			return 'mpd', mpd_info
 	except (base.ConnectionError, socket.error) as e:
-		log_debug(f"MPD connection error: {str(e)}")
+		# log_debug(f"MPD connection error: {str(e)}")
+		log_error(f"MPD connection failed: {str(e)}")
 	except base.CommandError as e:
-		log_debug(f"MPD command error: {str(e)}")
+		log_error(f"MPD command error: {str(e)}")
 	except Exception as e:
-		log_debug(f"Unexpected MPD error: {str(e)}")
+		log_error(f"Unexpected MPD error: {str(e)}")
+		log_fatal("No active music player detected")
 
 	return None, (None, 0, None, None, 0, "stopped")
 
@@ -919,13 +1057,12 @@ def get_mpd_info():
 	update_fetch_status("mpd")
 	return (None, 0, None, None, 0, "stopped")
 
-
 # ==============
 #  UI RENDERING
 # ==============
 def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 				   is_txt_format, is_a2_format, current_idx, use_manual_offset, 
-				   time_adjust=0, is_fetching=False, subframe_fraction=0.0):
+				   time_adjust=0, is_fetching=False, subframe_fraction=0.0, alignment='center'):
 	"""Render lyrics in curses interface, with subframe_fraction added for smoother transitions."""
 	height, width = stdscr.getmaxyx()
 	start_screen_line = 0
@@ -967,7 +1104,12 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 				break
 			line = a2_lines[line_idx]
 			line_str = " ".join([text for _, (text, _) in line])
-			x_pos = max(0, (width - len(line_str)) // 2)
+			if alignment == 'left':
+				x_pos = 1  # One extra space on the left
+			elif alignment == 'right':
+				x_pos = max(0, width - len(line_str) - 1)  # One extra space on the right
+			else:
+				x_pos = max(0, (width - len(line_str)) // 2)
 			x_pos = min(x_pos, width - 1)
 			
 			# Render individual words
@@ -987,7 +1129,6 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 					break
 			current_y += 1
 			
-	# Standard Text/LRC Display
 	else:
 		available_lines = height - 3
 		wrap_width = width - 2
@@ -1000,7 +1141,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 				if lines:
 					wrapped_lines.append((orig_idx, lines[0]))
 					for line in lines[1:]:
-						wrapped_lines.append((orig_idx, " " + line))
+						wrapped_lines.append((orig_idx, line))
 			else:
 				wrapped_lines.append((orig_idx, ""))
 		
@@ -1015,8 +1156,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 			if indices:
 				center = (indices[0] + indices[-1]) // 2
 			else:
-				center = current_idx  # Default to current_idx if no wrapped line matches
-
+				center = current_idx
 			ideal_start = center - (available_lines // 2)
 			start_screen_line = max(0, min(ideal_start, max_start))
 
@@ -1024,24 +1164,33 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 		end_screen_line = start_screen_line + available_lines
 		stdscr.clear()
 		current_line_y = 1
+		
 		for idx, (orig_idx, line) in enumerate(wrapped_lines[start_screen_line:end_screen_line]):
 			if current_line_y >= height - 1:
 				break
 			trimmed_line = line.strip()
-			padding = max(0, (width - len(trimmed_line)) // 2)
-			centered_line = " " * padding + trimmed_line
-			color = curses.color_pair(2) if orig_idx == current_idx else curses.color_pair(3)
+			if alignment == 'left':
+				x_pos = 1  # One extra space on the left
+			elif alignment == 'right':
+				x_pos = max(0, width - len(trimmed_line) - 1)  # One extra space on the right
+			else:
+				x_pos = max(0, (width - len(trimmed_line)) // 2)
+			
+			# Modified color handling - no highlight for TXT files
+			if is_txt_format:
+				# color = curses.color_pair(3)
+				# Use TXT color pairs (4 and 5)
+				is_active = orig_idx == current_idx
+				color = curses.color_pair(4) if is_active else curses.color_pair(5)
+			else:
+				color = curses.color_pair(2) if orig_idx == current_idx else curses.color_pair(3)
 			
 			try:
-				stdscr.addstr(current_line_y, 0, centered_line, color)
+				stdscr.addstr(current_line_y, x_pos, trimmed_line, color)
 			except curses.error:
 				pass
 			current_line_y += 1
-
-		# Append subframe_fraction to the status message for debugging purposes
-		#if subframe_fraction:
-		#    status_msg += f" [{subframe_fraction*100:.1f}%]"
-
+		
 		if status_msg:
 			try:
 				y = height - 1
@@ -1049,8 +1198,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 				stdscr.addstr(y, x, status_msg)
 			except curses.error:
 				pass
-				
-		# Show time adjustment
+		
 		if time_adjust != 0:
 			offset_str = f" Offset: {time_adjust:+.1f}s "
 			offset_str = offset_str[:width-1]
@@ -1060,8 +1208,7 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 			except curses.error:
 				pass
 
-		# Status line
-		status_line = f"Line {current_idx+1}/{len(lyrics)}"
+		status_line = f" Line {current_idx+1}/{len(lyrics)}"
 		if time_adjust != 0:
 			status_line += "[Adj]"
 		status_line = status_line[:width-1]
@@ -1071,54 +1218,165 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 				stdscr.addstr(height-1, 0, status_line, curses.A_BOLD)
 			except curses.error:
 				pass
+				
+		if (current_idx is not None and 
+			current_idx == len(lyrics) - 1 and 
+			not is_txt_format and 
+			len(lyrics) > 1):
+			if height > 2:
+				stdscr.addstr(height-2, 0, " End of lyrics ", curses.A_BOLD)
 	stdscr.refresh()
 	return start_screen_line
-
+	
 # ================
 #  INPUT HANDLING
 # ================
-def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw, time_adjust):
-	"""Process user input events"""
-	if key == ord('r') or key == ord('R'):
-		return False, manual_offset, last_input_time, needs_redraw, time_adjust
-	elif key == curses.KEY_UP:
+def parse_key_config(key_config):
+	"""Convert key config strings to key codes"""
+	if isinstance(key_config, list):
+		return [parse_single_key(k) for k in key_config]
+	return [parse_single_key(key_config)]
+
+def parse_single_key(key_str):
+	"""Convert single key string to key code"""
+	if key_str.startswith("KEY_"):
+		return getattr(curses, key_str, None)
+	elif len(key_str) == 1:
+		return ord(key_str)
+	return None
+
+def load_key_bindings(config):
+	"""Load and parse key bindings from config with None handling"""
+	bindings = config.get("key_bindings", {})
+	parsed = {}
+	
+	for action, key_config in bindings.items():
+		# Filter out None values and invalid entries
+		keys = parse_key_config(key_config)
+		parsed[action] = [k for k in keys if k is not None]
+	
+	# Set defaults only if no valid config exists
+	defaults = {
+		"quit": [ord("q"), ord("Q")],
+		"refresh": [ord("R")],
+		"scroll_up": [curses.KEY_UP],
+		"scroll_down": [curses.KEY_DOWN],
+		"time_decrease": [ord("-"), ord("_")],
+		"time_increase": [ord("="), ord("+")],
+		"time_reset": [ord("0")],
+		"align_cycle_forward": [ord("a")],
+		"align_cycle_backward": [ord("A")],
+		"align_left": [ord("1")],
+		"align_center": [ord("2")],
+		"align_right": [ord("3")]
+	}
+	
+	for key, default in defaults.items():
+		parsed[key] = parsed.get(key, default) if key not in parsed or not parsed[key] else parsed[key]
+	
+	return parsed
+
+def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw, time_adjust, current_alignment, key_bindings):
+	"""Process user input events using configured key bindings"""
+	# Check quit first
+	if key in key_bindings["quit"]:
+		return False, manual_offset, last_input_time, needs_redraw, time_adjust, current_alignment
+
+	# Check refresh
+	if key in key_bindings["refresh"]:
+		return False, manual_offset, last_input_time, needs_redraw, time_adjust, current_alignment
+
+	new_alignment = current_alignment
+	input_processed = False
+	manual_input = False         # True if the key is a scroll movement
+	time_adjust_input = False    # True if the key is a time adjustment
+	alignment_input = False      # True if the key is an alignment change
+
+	# Handle movement keys (manual scroll)
+	if key in key_bindings["scroll_up"]:
 		manual_offset = max(0, manual_offset - 1)
-		last_input_time = time.time()
-		needs_redraw = True
-	elif key == curses.KEY_DOWN:
+		input_processed = True
+		manual_input = True
+	elif key in key_bindings["scroll_down"]:
 		manual_offset += 1
-		last_input_time = time.time()
-		needs_redraw = True
-	elif key == curses.KEY_RESIZE:
-		needs_redraw = True
-	elif key == ord('-'):
+		input_processed = True
+		manual_input = True
+
+	# Handle time adjustments 
+	elif key in key_bindings["time_decrease"]:
 		time_adjust -= 0.1
-		needs_redraw = True
-	elif key == ord('=') or key == ord('+'):
+		input_processed = True
+		time_adjust_input = True
+	elif key in key_bindings["time_increase"]:
 		time_adjust += 0.1
-		needs_redraw = True
-	elif key == ord('0'):
+		input_processed = True
+		time_adjust_input = True
+	elif key in key_bindings["time_reset"]:
 		time_adjust = 0.0
+		input_processed = True
+		time_adjust_input = True
+
+	# Handle direct alignment selection 
+	elif key in key_bindings["align_left"]:
+		new_alignment = "left"
+		input_processed = True
+		alignment_input = True
+	elif key in key_bindings["align_center"]:
+		new_alignment = "center"
+		input_processed = True
+		alignment_input = True
+	elif key in key_bindings["align_right"]:
+		new_alignment = "right"
+		input_processed = True
+		alignment_input = True
+
+	# Handle alignment cycling 
+	elif key in key_bindings["align_cycle_forward"]:
+		alignments = ['left', 'center', 'right']
+		current_index = alignments.index(current_alignment)
+		new_index = (current_index + 1) % 3
+		new_alignment = alignments[new_index]
+		input_processed = True
+		alignment_input = True
+	elif key in key_bindings["align_cycle_backward"]:
+		alignments = ['left', 'center', 'right']
+		current_index = alignments.index(current_alignment)
+		new_index = (current_index - 1) % 3
+		new_alignment = alignments[new_index]
+		input_processed = True
+		alignment_input = True
+
+	# Handle window resize
+	if key == curses.KEY_RESIZE:
 		needs_redraw = True
-	return True, manual_offset, last_input_time, needs_redraw, time_adjust
+	elif input_processed:
+		if manual_input:
+			last_input_time = time.time()
+		else:
+			last_input_time = 0
+		needs_redraw = True
+
+	return True, manual_offset, last_input_time, needs_redraw, time_adjust, new_alignment
+
 
 def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, 
 				   is_txt_format, is_a2_format, current_idx, manual_scroll_active, 
-				   time_adjust=0, is_fetching=False, subframe_fraction=0.0):
+				   time_adjust=0, is_fetching=False, subframe_fraction=0.0,alignment='center'):
 	"""Update display based on current state.
 	
 	Now includes subframe_fraction for fine-grained progress within a lyric line.
 	"""
+	# log_debug(f"Display params - Manual offset: {manual_offset}, Time adjust: {time_adjust}")
 	if is_txt_format:
 		return display_lyrics(stdscr, lyrics, errors, position, 
 							  os.path.basename(audio_file), manual_offset, 
 							  is_txt_format, is_a2_format, current_idx, True, 
-							  time_adjust, is_fetching, subframe_fraction)
+							  time_adjust, is_fetching, subframe_fraction, alignment)
 	else:
 		return display_lyrics(stdscr, lyrics, errors, position, 
 							  os.path.basename(audio_file), manual_offset, 
 							  is_txt_format, is_a2_format, current_idx, 
-							  manual_scroll_active, time_adjust, is_fetching, subframe_fraction)
+							  manual_scroll_active, time_adjust, is_fetching, subframe_fraction,alignment)
 
 
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
@@ -1140,6 +1398,7 @@ def fetch_lyrics_async(audio_file, directory, artist, title, duration):
 		log_debug(f"Async fetch error: {e}")
 		update_fetch_status('failed')
 		return ([], []), False, False
+		
 
 # def clean_lyrics(raw_lyrics):
 	# """Ensure lyrics have valid timestamps."""
@@ -1162,7 +1421,7 @@ def sync_player_position(status, raw_pos, last_time, time_adjust, duration):
 		estimated = raw_pos + elapsed + time_adjust
 	else:
 		estimated = raw_pos + time_adjust
-	
+	log_debug(f"Position sync - Raw: {raw_pos}, Adjusted: {estimated}")
 	return max(0.0, min(estimated, duration)), now
 
 def find_current_lyric_index(position, timestamps):
@@ -1246,11 +1505,38 @@ def subframe_interpolation(continuous_position, timestamps, index):
 	fraction = max(0.0, min(1.0, fraction))
 	return index, fraction
 
+
 def main(stdscr):
 	# Initialize colors and UI
+	log_info("Initializing colors and UI") 
 	curses.start_color()
-	curses.init_pair(2, COLOR_MAP.get(CONFIG["ui"]["colors"]["active_line"], curses.COLOR_GREEN), curses.COLOR_BLACK)
-	curses.init_pair(3, COLOR_MAP.get(CONFIG["ui"]["colors"]["inactive_line"], curses.COLOR_WHITE), curses.COLOR_BLACK)
+	max_colors = curses.COLORS
+	# Only use 256 colors if supported
+	use_256 = max_colors >= 256
+	# Define color pairs
+	color_config = CONFIG["ui"]["colors"]
+
+	# Resolve colors
+	error_color = resolve_color(color_config["error"])
+	txt_active = resolve_color(color_config["txt"]["active"])
+	txt_inactive = resolve_color(color_config["txt"]["inactive"])
+	lrc_active = resolve_color(color_config["lrc"]["active"])
+	lrc_inactive = resolve_color(color_config["lrc"]["inactive"])
+
+	# Initialize color pairs
+	curses.init_pair(1, error_color, curses.COLOR_BLACK)
+	curses.init_pair(2, lrc_active, curses.COLOR_BLACK)
+	curses.init_pair(3, lrc_inactive, curses.COLOR_BLACK)
+	curses.init_pair(4, txt_active, curses.COLOR_BLACK)
+	curses.init_pair(5, txt_inactive, curses.COLOR_BLACK)
+
+	# For 256-color terminals, try to preserve exact colors
+	if use_256:
+		if curses.can_change_color():
+			# Define custom colors if needed
+			pass
+
+	key_bindings = load_key_bindings(CONFIG)
 	curses.curs_set(0)
 	stdscr.timeout(80)  # More frequent updates (80ms)
 
@@ -1276,7 +1562,10 @@ def main(stdscr):
 		'manual_timeout_handled': True,
 		'last_position': 0.0,
 		'lyrics_loaded_time': None,
-		'is_loading': False
+		'is_loading': False,
+		'alignment': CONFIG["ui"].get("alignment", "center").lower(),
+		# 'last_alignment_change': 0,
+		'valid_alignments': ['left', 'center', 'right']
 	}
 
 	executor = ThreadPoolExecutor(max_workers=4)
@@ -1328,7 +1617,8 @@ def main(stdscr):
 					state['last_idx'], 
 					manual_scroll,
 					state['time_adjust'], 
-					future_lyrics is not None
+					future_lyrics is not None,
+					alignment=state['alignment']
 				)
 				state['last_start_screen_line'] = start_screen_line
 
@@ -1340,6 +1630,8 @@ def main(stdscr):
 
 			# Track change detection
 			if audio_file != state['current_file']:
+				log_info(f"New track detected: {os.path.basename(audio_file)}")
+				log_debug(f"Track metadata - Artist: {artist}, Title: {title}, Duration: {duration}s")
 				state.update({
 					'current_file': audio_file,
 					'lyrics': [],
@@ -1350,7 +1642,7 @@ def main(stdscr):
 					'force_redraw': True,
 					'is_txt': False,
 					'is_a2': False,
-					'lyrics_loaded_time': None
+					'lyrics_loaded_time': None,
 				})
 				if audio_file:
 					future_lyrics = executor.submit(
@@ -1378,6 +1670,10 @@ def main(stdscr):
 						'lyrics_loaded_time': time.time()
 					})
 					future_lyrics = None
+					log_info(f"Loaded {len(new_lyrics)} lyric entries")
+					if errors:
+						log_warn(f"Lyrics loaded with {len(errors)} errors")
+					
 				except Exception as e:
 					state.update({
 						'errors': [f"Lyric load error: {str(e)}"],
@@ -1385,6 +1681,7 @@ def main(stdscr):
 						'lyrics_loaded_time': time.time()
 					})
 					future_lyrics = None
+					log_error(f"Lyric loading failed: {str(e)}")
 
 			# Delayed force redraw (2 seconds after lyrics load)
 			if state['lyrics_loaded_time'] and time.time() - state['lyrics_loaded_time'] >= 2:
@@ -1427,7 +1724,9 @@ def main(stdscr):
 					)
 					bisect_idx = bisect_future.result()
 					proximity_idx = proximity_future.result()
-
+					
+					# log_debug(f"Bisect idx: {bisect_idx}, Proximity idx: {proximity_idx}")
+					
 				# Conflict resolution: choose the index that is closest, or the lower one if nearly equal.
 				if abs(bisect_idx - proximity_idx) > 1:
 					chosen_idx = bisect_idx
@@ -1440,12 +1739,15 @@ def main(stdscr):
 				if current_idx >= 0 and continuous_position < state['timestamps'][current_idx]:
 					current_idx = max(-1, current_idx - 1)
 			else:
-				# For text (TXT or A2) files, compute a fractional line based on duration per line.
+				# Ensure valid inputs before calculating
 				if (state['is_txt'] or state['is_a2']) and duration > 0 and len(state['lyrics']) > 0:
-					time_per_line = duration / len(state['lyrics'])
-					continuous_line = continuous_position / time_per_line
-					current_idx = int(round(continuous_line))
-					current_idx = max(0, min(current_idx, len(state['lyrics']) - 1))
+					num_lines = len(state['lyrics'])
+					
+					# Calculate exact target index based on song progress
+					target_idx = int((continuous_position / duration) * num_lines * 1.05)
+
+					# Clamp index to valid range
+					current_idx = max(0, min(target_idx, num_lines - 1))
 				else:
 					current_idx = -1
 
@@ -1484,15 +1786,27 @@ def main(stdscr):
 
 			new_input = key != -1
 			if new_input:
-				cont, new_manual_offset, last_input, needs_redraw_input, new_time_adjust = handle_scroll_input(
-					key, state['manual_offset'], state['last_input'], needs_redraw, state['time_adjust']
+				(cont, new_manual_offset, 
+				 last_input, needs_redraw_input, 
+				 new_time_adjust, new_alignment) = handle_scroll_input(
+					key, state['manual_offset'], 
+					state['last_input'], needs_redraw, 
+					state['time_adjust'], state['alignment'],
+					key_bindings
 				)
+				
+				# Update alignment if changed
+				if new_alignment != state['alignment']:
+					state['alignment'] = new_alignment
+					needs_redraw = True
+
 				# If manual scroll is active, apply bounds to the new offset.
 				if manual_scroll:
 					if state['lyrics']:
 						state['manual_offset'] = max(0, min(new_manual_offset, len(state['lyrics']) - 1))
 					else:
 						state['manual_offset'] = new_manual_offset
+				
 				state['last_input'] = last_input
 				state['time_adjust'] = new_time_adjust
 				state['force_redraw'] = state['force_redraw'] or needs_redraw_input
@@ -1513,7 +1827,8 @@ def main(stdscr):
 					current_idx,
 					manual_scroll,
 					state['time_adjust'], 
-					future_lyrics is not None
+					future_lyrics is not None,
+					alignment=state['alignment']
 				)
 				state.update({
 					'force_redraw': False,
@@ -1523,10 +1838,10 @@ def main(stdscr):
 				needs_redraw = False
 
 			# Pause handling
-			if status == "paused":
+			if status == "paused" and not manual_scroll:
 				time.sleep(0.1)
-			elif not manual_scroll:
-				time.sleep(0.02)
+			# elif not manual_scroll:
+				# time.sleep(0.02)
 
 		except Exception as e:
 			log_debug(f"Main loop error: {str(e)}")
