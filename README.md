@@ -7,6 +7,4 @@ ncurses, scrollable
 do use lyrics10.py file
 
 
-will implement customizable keybinding changes
-
-and adding more support in detecting players
+will add more support in detecting players
