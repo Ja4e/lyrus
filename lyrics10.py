@@ -1371,90 +1371,6 @@ def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw,
 	return True, manual_offset, last_input_time, needs_redraw, time_adjust, new_alignment
 
 
-
-# def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw, time_adjust, current_alignment, key_bindings):
-	# """Process user input events using configured key bindings"""
-	# # Check quit first
-	# if key in key_bindings["quit"]:
-		# return False, manual_offset, last_input_time, needs_redraw, time_adjust, current_alignment
-
-	# # Check refresh
-	# if key in key_bindings["refresh"]:
-		# return False, manual_offset, last_input_time, needs_redraw, time_adjust, current_alignment
-
-	# new_alignment = current_alignment
-	# input_processed = False
-	# manual_input = False         # True if the key is a scroll movement
-	# time_adjust_input = False    # True if the key is a time adjustment
-	# alignment_input = False      # True if the key is an alignment change
-
-	# # Handle movement keys (manual scroll)
-	# if key in key_bindings["scroll_up"]:
-		# manual_offset = max(0, manual_offset - 1)
-		# input_processed = True
-		# manual_input = True
-	# elif key in key_bindings["scroll_down"]:
-		# manual_offset += 1
-		# input_processed = True
-		# manual_input = True
-
-	# # Handle time adjustments 
-	# elif key in key_bindings["time_decrease"]:
-		# time_adjust -= 0.1
-		# input_processed = True
-		# time_adjust_input = True
-	# elif key in key_bindings["time_increase"]:
-		# time_adjust += 0.1
-		# input_processed = True
-		# time_adjust_input = True
-	# elif key in key_bindings["time_reset"]:
-		# time_adjust = 0.0
-		# input_processed = True
-		# time_adjust_input = True
-
-	# # Handle direct alignment selection 
-	# elif key in key_bindings["align_left"]:
-		# new_alignment = "left"
-		# input_processed = True
-		# alignment_input = True
-	# elif key in key_bindings["align_center"]:
-		# new_alignment = "center"
-		# input_processed = True
-		# alignment_input = True
-	# elif key in key_bindings["align_right"]:
-		# new_alignment = "right"
-		# input_processed = True
-		# alignment_input = True
-
-	# # Handle alignment cycling 
-	# elif key in key_bindings["align_cycle_forward"]:
-		# alignments = ['left', 'center', 'right']
-		# current_index = alignments.index(current_alignment)
-		# new_index = (current_index + 1) % 3
-		# new_alignment = alignments[new_index]
-		# input_processed = True
-		# alignment_input = True
-	# elif key in key_bindings["align_cycle_backward"]:
-		# alignments = ['left', 'center', 'right']
-		# current_index = alignments.index(current_alignment)
-		# new_index = (current_index - 1) % 3
-		# new_alignment = alignments[new_index]
-		# input_processed = True
-		# alignment_input = True
-
-	# # Handle window resize
-	# if key == curses.KEY_RESIZE:
-		# needs_redraw = True
-	# elif input_processed:
-		# if manual_input:
-			# last_input_time = time.time()
-		# else:
-			# last_input_time = 0
-		# needs_redraw = True
-
-	# return True, manual_offset, last_input_time, needs_redraw, time_adjust, new_alignment
-
-
 def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, 
 				   is_txt_format, is_a2_format, current_idx, manual_scroll_active, 
 				   time_adjust=0, is_fetching=False, subframe_fraction=0.0,alignment='center'):
@@ -1609,12 +1525,14 @@ def main(stdscr):
 	use_256 = max_colors >= 256
 	color_config = CONFIG["ui"]["colors"]
 
+	# Resolve color configurations
 	error_color = resolve_color(color_config["error"])
 	txt_active = resolve_color(color_config["txt"]["active"])
 	txt_inactive = resolve_color(color_config["txt"]["inactive"])
 	lrc_active = resolve_color(color_config["lrc"]["active"])
 	lrc_inactive = resolve_color(color_config["lrc"]["inactive"])
 
+	# Initialize color pairs
 	curses.init_pair(1, error_color, curses.COLOR_BLACK)
 	curses.init_pair(2, lrc_active, curses.COLOR_BLACK)
 	curses.init_pair(3, lrc_inactive, curses.COLOR_BLACK)
@@ -1626,16 +1544,18 @@ def main(stdscr):
 			# Define custom colors if needed
 			pass
 
+	# Load key bindings and configure UI
 	key_bindings = load_key_bindings(CONFIG)
 	curses.curs_set(0)
 	stdscr.timeout(80)  # More frequent updates (80ms)
 
+	# Initialize application state
 	state = {
 		'current_file': None,
 		'lyrics': [],
 		'errors': [],
 		'manual_offset': 0,
-		'last_input': 0,  # Timestamp for manual scroll updates (set in main loop)
+		'last_input': 0,  # Timestamp for manual scroll
 		'time_adjust': 0.0,
 		'last_raw_pos': 0.0,
 		'last_pos_time': time.time(),
@@ -1654,18 +1574,22 @@ def main(stdscr):
 		'lyrics_loaded_time': None,
 		'is_loading': False,
 		'alignment': CONFIG["ui"].get("alignment", "center").lower(),
-		'valid_alignments': ['left', 'center', 'right']
+		'valid_alignments': ['left', 'center', 'right'],
+		'wrapped_lines': [],       # Stores wrapped lines for TXT
+		'max_wrapped_offset': 0,   # Max scroll for wrapped content
+		'window_width': 0          # Track width for re-wrap checks
 	}
 
 	executor = ThreadPoolExecutor(max_workers=4)
 	future_lyrics = None
 
-	# Playback tracking
+	# Playback tracking variables
 	last_cmus_position = 0
 	last_position_time = time.time()
 	estimated_position = 0
 	playback_paused = False
 
+	# Main application loop
 	while True:
 		try:
 			current_time = time.time()
@@ -1683,7 +1607,7 @@ def main(stdscr):
 				else:
 					state['manual_timeout_handled'] = False
 
-			# Determine if a manual scroll is active
+			# Determine manual scroll state
 			manual_scroll = state['last_input'] > 0 and time_since_input < SCROLL_TIMEOUT
 
 			# Window resize handling
@@ -1695,35 +1619,16 @@ def main(stdscr):
 					state['manual_offset'] = int(state['manual_offset'] * (new_h / old_h))
 				state['window_size'] = current_window_size
 				needs_redraw = True
-				start_screen_line = update_display(
-					stdscr,
-					state['lyrics'],
-					state['errors'],
-					state['last_position'],
-					state['current_file'],
-					state['manual_offset'],
-					state['is_txt'],
-					state['is_a2'],
-					state['last_idx'],
-					manual_scroll,
-					state['time_adjust'],
-					future_lyrics is not None,
-					alignment=state['alignment']
-				)
-				# Synchronize the state with the clamped value.
-				state['manual_offset'] = start_screen_line
-				state['last_start_screen_line'] = start_screen_line
 
-			# Get playback info
+			# Get current playback information
 			player_type, (audio_file, raw_pos, artist, title, duration, status) = get_player_info()
 			raw_position = float(raw_pos or 0)
 			duration = float(duration or 0)
 			now = time.time()
 
-			# Track track change
+			# Handle track changes
 			if audio_file != state['current_file']:
 				log_info(f"New track detected: {os.path.basename(audio_file)}")
-				log_debug(f"Track metadata - Artist: {artist}, Title: {title}, Duration: {duration}s")
 				state.update({
 					'current_file': audio_file,
 					'lyrics': [],
@@ -1735,6 +1640,8 @@ def main(stdscr):
 					'is_txt': False,
 					'is_a2': False,
 					'lyrics_loaded_time': None,
+					'wrapped_lines': [],
+					'max_wrapped_offset': 0
 				})
 				if audio_file:
 					future_lyrics = executor.submit(
@@ -1759,7 +1666,9 @@ def main(stdscr):
 						'force_redraw': True,
 						'is_txt': is_txt,
 						'is_a2': is_a2,
-						'lyrics_loaded_time': time.time()
+						'lyrics_loaded_time': time.time(),
+						'wrapped_lines': [],
+						'max_wrapped_offset': 0
 					})
 					future_lyrics = None
 				except Exception as e:
@@ -1770,7 +1679,7 @@ def main(stdscr):
 					})
 					future_lyrics = None
 
-			# Delayed force redraw (2 seconds after lyrics load)
+			# Handle delayed redraw after lyric load
 			if state['lyrics_loaded_time'] and time.time() - state['lyrics_loaded_time'] >= 2:
 				state['force_redraw'] = True
 				state['lyrics_loaded_time'] = None
@@ -1790,27 +1699,43 @@ def main(stdscr):
 				estimated_position = raw_position
 				last_position_time = now
 
+			# Calculate continuous playback position
 			continuous_position = max(0, estimated_position + state['time_adjust'])
 			continuous_position = min(continuous_position, duration)
 
-			# Compute current lyric index (synchronization logic)
+			# Generate wrapped lines for TXT files
+			window_h, window_w = state['window_size']
+			if state['is_txt']:
+				if window_w != state['window_width'] or not state['wrapped_lines']:
+					wrap_width = max(10, window_w - 2)
+					wrapped = []
+					for orig_idx, (_, lyric) in enumerate(state['lyrics']):
+						if lyric.strip():
+							lines = textwrap.wrap(lyric, wrap_width, drop_whitespace=False)
+							wrapped.extend([(orig_idx, line) for line in lines])
+						else:
+							wrapped.append((orig_idx, ""))
+					state['wrapped_lines'] = wrapped
+					state['max_wrapped_offset'] = max(0, len(wrapped) - window_h)
+					state['window_width'] = window_w
+
+			# Calculate current lyric index
 			current_idx = -1
 			if state['timestamps'] and not state['is_txt']:
+				# LRC synchronization logic
 				with ThreadPoolExecutor(max_workers=2) as sync_exec:
-					bisect_future = sync_exec.submit(
+					bisect_idx = sync_exec.submit(
 						bisect_worker,
 						continuous_position,
 						state['timestamps'],
 						CONFIG["ui"]["bisect_offset"]
-					)
-					proximity_future = sync_exec.submit(
+					).result()
+					proximity_idx = sync_exec.submit(
 						proximity_worker,
 						continuous_position,
 						state['timestamps'],
 						CONFIG["ui"]["proximity_threshold"]
-					)
-					bisect_idx = bisect_future.result()
-					proximity_idx = proximity_future.result()
+					).result()
 
 				if abs(bisect_idx - proximity_idx) > 1:
 					chosen_idx = bisect_idx
@@ -1820,42 +1745,30 @@ def main(stdscr):
 				current_idx = max(-1, min(chosen_idx, len(state['timestamps']) - 1))
 				if current_idx >= 0 and continuous_position < state['timestamps'][current_idx]:
 					current_idx = max(-1, current_idx - 1)
-			else:
-				if (state['is_txt'] or state['is_a2']) and duration > 0 and len(state['lyrics']) > 0:
-					num_lines = len(state['lyrics'])
-					target_idx = int((continuous_position / duration) * num_lines * 1.05)
-					current_idx = max(0, min(target_idx, num_lines - 1))
-				else:
-					current_idx = -1
+			elif state['is_txt'] and state['wrapped_lines'] and duration > 0:
+				# TXT file synchronization
+				num_wrapped = len(state['wrapped_lines'])
+				target_idx = int((continuous_position / duration) * num_wrapped)
+				current_idx = max(0, min(target_idx, num_wrapped - 1))
 
-			# Auto-center if no recent manual scroll (i.e. last_input is zero)
-			# BUT if the user is scrolled near the bottom, don't override manual_offset.
-			window_h = state['window_size'][0]
-			max_offset = max(0, len(state['lyrics']) - window_h)
-			if state['last_input'] == 0:
-				if state['manual_offset'] < max_offset - 2:
-					if not (state['is_txt'] or state['is_a2']):
-						if current_idx != -1:
-							target_offset = max(0, current_idx - window_h // 2)
-							target_offset = min(target_offset, max_offset)
-							if target_offset != state['manual_offset']:
-								state['manual_offset'] = target_offset
-								needs_redraw = True
-					else:
-						if len(state['lyrics']) > window_h:
-							target_offset = current_idx - (window_h // 2)
-							target_offset = max(0, min(target_offset, max_offset))
-							if target_offset != state['manual_offset']:
-								state['manual_offset'] = target_offset
-								needs_redraw = True
-						else:
-							state['manual_offset'] = 0
+			# Auto-scroll logic
+			if state['last_input'] == 0 and not manual_scroll:
+				if state['is_txt'] and state['wrapped_lines']:
+					# TXT: Center current wrapped line only if offset changes
+					ideal_offset = current_idx - (window_h // 2)
+					new_offset = max(0, min(ideal_offset, state['max_wrapped_offset']))
+					if new_offset != state['manual_offset']:
+						state['manual_offset'] = new_offset
+						needs_redraw = True
+				elif not state['is_txt'] and state['lyrics']:
+					# LRC: Standard auto-center
+					max_offset = max(0, len(state['lyrics']) - window_h)
+					target_offset = min(current_idx, max_offset)
+					if target_offset != state['manual_offset']:
+						state['manual_offset'] = target_offset
+						needs_redraw = True
 
-			# Update state for highlighting changes
-			highlight_changed = current_idx != state['last_idx']
-			state['last_idx'] = current_idx
-
-			# Input handling
+			# Handle user input
 			key = stdscr.getch()
 			if key == ord('q'):
 				break
@@ -1871,22 +1784,29 @@ def main(stdscr):
 					state['alignment'] = new_alignment
 					needs_redraw = True
 
-				# If a manual scroll key was pressed, update the last_input timestamp.
+				# Update manual scroll timestamp
 				if key in key_bindings["scroll_up"] or key in key_bindings["scroll_down"]:
 					state['last_input'] = current_time
 
-				# Do not clamp new_manual_offset here; assign directly.
-				state['manual_offset'] = new_manual_offset
+				# Apply manual offset clamp
+				if state['is_txt']:
+					state['manual_offset'] = max(0, min(
+						new_manual_offset,
+						state['max_wrapped_offset']
+					))
+				else:
+					state['manual_offset'] = new_manual_offset
 
 				state['time_adjust'] = new_time_adjust
 				state['force_redraw'] = state['force_redraw'] or needs_redraw_input
 				if not cont:
 					break
 
-			if new_input or needs_redraw or state['force_redraw'] or highlight_changed:
+			# Update display if needed
+			if new_input or needs_redraw or state['force_redraw'] or (current_idx != state['last_idx']):
 				start_screen_line = update_display(
 					stdscr,
-					state['lyrics'],
+					state['wrapped_lines'] if state['is_txt'] else state['lyrics'],
 					state['errors'],
 					continuous_position,
 					state['current_file'],
@@ -1899,15 +1819,16 @@ def main(stdscr):
 					future_lyrics is not None,
 					alignment=state['alignment']
 				)
-				# Synchronize manual_offset to the clamped value returned.
+				# Synchronize actual offset used
 				state['manual_offset'] = start_screen_line
 				state.update({
 					'force_redraw': False,
 					'last_manual': manual_scroll,
-					'last_start_screen_line': start_screen_line
+					'last_start_screen_line': start_screen_line,
+					'last_idx': current_idx
 				})
-				needs_redraw = False
 
+			# Throttle updates when paused
 			if status == "paused" and not manual_scroll:
 				time.sleep(0.1)
 
@@ -1923,4 +1844,3 @@ if __name__ == "__main__":
 		except Exception as e:
 			log_debug(f"Fatal error: {str(e)}")
 			time.sleep(1)
-
