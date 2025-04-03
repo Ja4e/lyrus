@@ -1680,7 +1680,7 @@ def main(stdscr):
 					future_lyrics = None
 
 			# Handle delayed redraw after lyric load
-			if state['lyrics_loaded_time'] and time.time() - state['lyrics_loaded_time'] >= 2:
+			if state['lyrics_loaded_time'] and time.time() - state['lyrics_loaded_time'] >= SCROLL_TIMEOUT:
 				state['force_redraw'] = True
 				state['lyrics_loaded_time'] = None
 
