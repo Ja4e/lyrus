@@ -8,3 +8,4 @@ do use lyrics10.py file
 
 
 will add more support in detecting players
+will attempt to get a2 working
