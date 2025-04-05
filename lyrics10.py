@@ -135,7 +135,7 @@ def load_config():
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
 			"scroll_timeout": 2, # scroll timeout to auto scroll
-			"refresh_interval_ms": 50, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop
+			"refresh_interval_ms": 100, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings
 			"wrap_width_percent": 90,  # Just incase you need them
 			"bisect_offset": 0.01,  # Only used for bisect method
 			"proximity_threshold": 0.01  # Only used for proximity method (50ms) We will still going to use these two anyway but these keeps the lyrics snyced and less jumps, there is a mechanism that prevents rubber banding.
@@ -1064,13 +1064,14 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 	LYRICS_AREA_HEIGHT = height - STATUS_LINES  # Lines available for lyrics
 
 	# Minimum terminal size check.
-	if LYRICS_AREA_HEIGHT < 3 or width < 10:
-		try:
-			stdscr.addstr(0, 0, "Window too small", curses.color_pair(1))
-		except curses.error:
-			pass
-		stdscr.refresh()
-		return 0
+	# if LYRICS_AREA_HEIGHT < 3 or width < 10:
+		# try:
+			# stdscr.clear()
+			# stdscr.addstr(0, 0, "Window too small", curses.color_pair(1))
+		# except curses.error:
+			# pass
+		# stdscr.refresh()
+		# return 0
 
 	stdscr.clear()
 
@@ -1209,12 +1210,12 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 		except curses.error:
 			pass
 
-	if (current_idx is not None and 
-		current_idx == len(lyrics) - 1 and 
-		not is_txt_format and 
-		len(lyrics) > 1):
-		if height > 2:
-			stdscr.addstr(height-2, 0, " End of lyrics ", curses.A_BOLD)
+	# if (current_idx is not None and 
+		# current_idx == len(lyrics) - 1 and 
+		# not is_txt_format and 
+		# len(lyrics) > 1):
+		# if height > 2:
+			# stdscr.addstr(height-2, 0, " End of lyrics ", curses.A_BOLD)
 
 	# Render the time adjustment display (second-to-last line).
 	if time_adjust != 0:
@@ -1228,6 +1229,11 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 	# Render a line counter (bottom left).
 	try:
 		status_line = f" Line {min(current_idx+1, len(lyrics))}/{len(lyrics)}"
+		if (current_idx is not None and 
+			current_idx == len(lyrics) - 1 and 
+			not is_txt_format and 
+			len(lyrics) > 1):
+			status_line = " End of lyrics "
 		if time_adjust != 0:
 			status_line += "[Adj]"
 		status_line = status_line[:width-1]
@@ -1366,7 +1372,6 @@ def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw,
 		elif time_adjust_input or alignment_input:
 			last_input_time = 0  # Reset to enable auto-centering
 		needs_redraw = True
-
 	return True, manual_offset, last_input_time, needs_redraw, time_adjust, new_alignment
 
 
@@ -1519,6 +1524,7 @@ def subframe_interpolation(continuous_position, timestamps, index):
 def main(stdscr):
 	# Initialize colors and UI
 	log_info("Initializing colors and UI")
+
 	curses.start_color()
 	max_colors = curses.COLORS
 	use_256 = max_colors >= 256
@@ -1530,7 +1536,9 @@ def main(stdscr):
 	txt_inactive = resolve_color(color_config["txt"]["inactive"])
 	lrc_active = resolve_color(color_config["lrc"]["active"])
 	lrc_inactive = resolve_color(color_config["lrc"]["inactive"])
-
+	
+	refresh_interval = CONFIG["ui"]["refresh_interval_ms"] / 1000
+	
 	# Initialize color pairs
 	curses.init_pair(1, error_color, curses.COLOR_BLACK)
 	curses.init_pair(2, lrc_active, curses.COLOR_BLACK)
@@ -1576,7 +1584,8 @@ def main(stdscr):
 		'valid_alignments': ['left', 'center', 'right'],
 		'wrapped_lines': [],       # Stores wrapped lines for TXT
 		'max_wrapped_offset': 0,   # Max scroll for wrapped content
-		'window_width': 0          # Track width for re-wrap checks
+		'window_width': 0,          # Track width for re-wrap checks
+		'status': 'stopped'  # Initial value
 	}
 
 	executor = ThreadPoolExecutor(max_workers=4)
@@ -1587,6 +1596,8 @@ def main(stdscr):
 	last_position_time = time.time()
 	estimated_position = 0
 	playback_paused = False
+	
+	state['last_player_update'] = 0  # Timestamp for last player info fetch
 
 	# Main application loop
 	while True:
@@ -1601,14 +1612,14 @@ def main(stdscr):
 					if not state['manual_timeout_handled']:
 						needs_redraw = True
 						state['manual_timeout_handled'] = True
-					if time_since_input >= SCROLL_TIMEOUT + 0.1:
+					if time_since_input >= SCROLL_TIMEOUT:
 						state['last_input'] = 0
 				else:
 					state['manual_timeout_handled'] = False
 
 			# Determine manual scroll state
 			manual_scroll = state['last_input'] > 0 and time_since_input < SCROLL_TIMEOUT
-
+			
 			# Window resize handling
 			current_window_size = stdscr.getmaxyx()
 			if current_window_size != state['window_size']:
@@ -1618,13 +1629,32 @@ def main(stdscr):
 					state['manual_offset'] = int(state['manual_offset'] * (new_h / old_h))
 				state['window_size'] = current_window_size
 				needs_redraw = True
-
+				
 			# Get current playback information
-			player_type, (audio_file, raw_pos, artist, title, duration, status) = get_player_info()
+			# player_type, (audio_file, raw_pos, artist, title, duration, status) = get_player_info()
+
+			# Only fetch player info if interval elapsed
+			if (current_time - state['last_player_update']) >= refresh_interval:
+				player_type, (audio_file, raw_pos, artist, title, duration, status) = get_player_info()
+				state['status'] = status 
+				state['last_player_update'] = current_time
+				state['last_raw_pos'] = raw_pos
+				state['last_pos_time'] = current_time
+			else:
+				# Estimate position using last known data
+				if state['status'] == "playing":  # <-- Use persisted status
+					elapsed = current_time - state['last_pos_time']
+					raw_pos = state['last_raw_pos'] + elapsed
+					raw_pos = min(max(raw_pos, 0), duration)  # Prevent negative/overflow
+				else:
+					raw_pos = state['last_raw_pos']
+					raw_pos = min(max(raw_pos, 0), duration)  # Prevent negative/overflow
+
 			raw_position = float(raw_pos or 0)
 			duration = float(duration or 0)
 			now = time.time()
-
+			# Before the "Update display if needed" section
+				
 			# Handle track changes
 			if audio_file != state['current_file']:
 				log_info(f"New track detected: {os.path.basename(audio_file)}")
@@ -1759,11 +1789,12 @@ def main(stdscr):
 					if new_offset != state['manual_offset']:
 						state['manual_offset'] = new_offset
 						needs_redraw = True
-				elif not state['is_txt'] and state['lyrics']:
+
+				elif not state['is_txt'] and state['wrapped_lines']:
 					# LRC: Standard auto-center
-					max_offset = max(0, len(state['lyrics']) - window_h)
-					target_offset = min(current_idx, max_offset)
-					if target_offset != state['manual_offset']:
+					ideal_offset = current_idx - (window_h // 2)
+					target_offset = max(0, min(ideal_offset, state['max_wrapped_offset']))
+					if new_offset != state['manual_offset']:
 						state['manual_offset'] = target_offset
 						needs_redraw = True
 
@@ -1781,7 +1812,8 @@ def main(stdscr):
 
 				if new_alignment != state['alignment']:
 					state['alignment'] = new_alignment
-					needs_redraw = True
+					needs_redraw = True # checked
+					log_debug("culprit4")
 
 				# Update manual scroll timestamp
 				if key in key_bindings["scroll_up"] or key in key_bindings["scroll_down"]:
@@ -1800,10 +1832,10 @@ def main(stdscr):
 				state['force_redraw'] = state['force_redraw'] or needs_redraw_input
 				if not cont:
 					break
-
+			
 			# Update display if needed
 			if new_input or needs_redraw or state['force_redraw'] or (current_idx != state['last_idx']):
-				start_screen_line = update_display(
+				start_screen_line = update_display(	
 					stdscr,
 					state['wrapped_lines'] if state['is_txt'] else state['lyrics'],
 					state['errors'],
@@ -1827,9 +1859,17 @@ def main(stdscr):
 					'last_idx': current_idx
 				})
 
-			# Throttle updates when paused
-			if status == "paused" and not manual_scroll:
-				time.sleep(0.1)
+			#cpu destressor
+			if status == "paused" and not manual_scroll and not state['current_file']:
+				time_since_input = current_time - state['last_input']
+				if time_since_input > 5.0:
+					sleep_time = 0.5
+				elif time_since_input > 2.0:
+					sleep_time = 0.2
+				else:
+					sleep_time = 0.1
+				time.sleep(sleep_time)
+			
 
 		except Exception as e:
 			log_debug(f"Main loop error: {str(e)}")
