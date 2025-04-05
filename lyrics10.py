@@ -79,30 +79,29 @@ def load_config():
 	default_config = {
 		"global": {
 			"logs_dir": "logs",
-			"log_file": "application.log",
-			"log_level": "FATAL",
-			"lyrics_timeout_log": "lyrics_timeouts.log",
-			"debug_log": "debug.log",
-			"log_retention_days": 10,
-			"max_debug_count": 100,
-			"enable_debug": {"env": "DEBUG", "default": "0"}
-
+			"log_file": "application.log", # useless line but incase i decided to update the code
+			"log_level": "FATAL", # a list of log levels shown above in LOG_LEVELS dictionary
+			"lyrics_timeout_log": "lyrics_timeouts.log", # stored under that logs_dir
+			"debug_log": "debug.log", # stored under that logs_dir
+			"log_retention_days": 10, # resets the songs that in timedout log in days
+			"max_debug_count": 100, # just incase the log fire gets abdnormally big.
+			"enable_debug": {"env": "DEBUG", "default": "0"}  # debug environment can be enabled through terminal:  DEBUG=1 python lyrics.py very useful for ease of debugging
 		},
 		"player": {
-			"prioritize_cmus": True,
-			"mpd": {
+			"prioritize_cmus": True, # Highly customizable 
+			"mpd": { # just incase you need to change them by default it should work
 				"host": {"env": "MPD_HOST", "default": "localhost"},
 				"port": {"env": "MPD_PORT", "default": 6600},
 				"password": {"env": "MPD_PASSWORD", "default": None},
 				"timeout": 10
 			}
 		},
-		"redis": {
+		"redis": { # need to implement more robust system for this for now just ignore
 			"enabled": False,
 			"host": {"env": "REDIS_HOST", "default": "localhost"},
 			"port": {"env": "REDIS_PORT", "default": 6379}
 		},
-		"status_messages": {
+		"status_messages": { # ignore these but if you wanted custom msg there you go then
 			"start": "Starting lyric search...",
 			"local": "Checking local files",
 			"synced": "Searching online sources",
@@ -115,18 +114,18 @@ def load_config():
 			"done": "Loaded",
 			"clear": ""
 		},
-		"terminal_states": ["done", "instrumental", "time_out", "failed", "mpd", "clear", "cmus"],
-		"lyrics": {
+		"terminal_states": ["done", "instrumental", "time_out", "failed", "mpd", "clear", "cmus"], # ignore these too
+		"lyrics": { # possible tweakings for poor networks
 			"search_timeout": 15,
 			"cache_dir": "synced_lyrics",
-			"local_extensions": ["a2", "lrc", "txt"],
+			"local_extensions": ["a2", "lrc", "txt"], # a2 currently broken dont use that yet
 			"validation": {"title_match_length": 15, "artist_match_length": 15}
 		},
 		"ui": {
-			"alignment": "center",  # Options: "left", "center", "right"
+			"alignment": "center",  # Options: "left", "center", "right" you get thee idea
 			"colors": {
 				"txt": {
-					"active": {"env": "TXT_ACTIVE", "default": "white"},  # or 6
+					"active": {"env": "TXT_ACTIVE", "default": "white"},  # or 6w
 					"inactive": {"env": "TXT_INACTIVE", "default": "white"}  # Dark gray
 				},
 				"lrc": {
@@ -135,14 +134,14 @@ def load_config():
 				},
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
-			"scroll_timeout": 2,
-			"refresh_interval_ms": 50,
-			"wrap_width_percent": 90,
+			"scroll_timeout": 2, # scroll timeout to auto scroll
+			"refresh_interval_ms": 50, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop
+			"wrap_width_percent": 90,  # Just incase you need them
 			"bisect_offset": 0.01,  # Only used for bisect method
-			"proximity_threshold": 0.01  # Only used for proximity method (50ms)
+			"proximity_threshold": 0.01  # Only used for proximity method (50ms) We will still going to use these two anyway but these keeps the lyrics snyced and less jumps, there is a mechanism that prevents rubber banding.
 		},
-		"key_bindings": {
-			"quit": ["q", "Q"], # Set as "null" if you do not want it assigned
+		"key_bindings": { # Set as "null" if you do not want it assigned
+			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
 			"refresh": "R",
 			"scroll_up": "KEY_UP",
 			"scroll_down": "KEY_DOWN",
@@ -1680,7 +1679,7 @@ def main(stdscr):
 					future_lyrics = None
 
 			# Handle delayed redraw after lyric load
-			if state['lyrics_loaded_time'] and time.time() - state['lyrics_loaded_time'] >= SCROLL_TIMEOUT:
+			if state['lyrics_loaded_time'] and time.time() - state['lyrics_loaded_time'] >= 2:
 				state['force_redraw'] = True
 				state['lyrics_loaded_time'] = None
 
