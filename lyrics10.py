@@ -135,10 +135,15 @@ def load_config():
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
 			"scroll_timeout": 2, # scroll timeout to auto scroll
-			"refresh_interval_ms": 10, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings should reduce lots of cpu stress for mpd situations
+			"refresh_interval_ms": 10, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings should reduce lots of cpu stress when playing mpd. I found then increasing it slightly could result in late next line switching somewhere +0.7, it needed to be fixed or else for now keep at somewhere 10ms or 100ms, mpd... yeah need more testing
 			"wrap_width_percent": 90,  # Just incase you need them
-			"bisect_offset": 0.01,  # Only used for bisect method
-			"proximity_threshold": 0.01  # Only used for proximity method (50ms) We will still going to use these two anyway but these keeps the lyrics snyced and less jumps, there is a mechanism that prevents rubber banding.
+			"bisect_offset": 0.00,  # Time offset (in seconds) added to the current position before bisecting.
+									# Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
+									# Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps.
+
+			"proximity_threshold": 0.05,  # Fractional threshold used to determine when to switch to the next timestamp line.
+										  # If more than 99% of the current line duration has passed, it allows switching early.
+										  # Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker.
 		},
 		"key_bindings": { # Set as "null" if you do not want it assigned
 			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
@@ -1562,7 +1567,7 @@ def main(stdscr):
 		'lyrics': [],
 		'errors': [],
 		'manual_offset': 0,
-		'last_input': 0,  # Timestamp for manual scroll
+		'last_input': 0.0,  # Timestamp for manual scroll
 		'time_adjust': 0.0,
 		'last_raw_pos': 0.0,
 		# last_pos_time': time.time(),
@@ -1674,9 +1679,7 @@ def main(stdscr):
 
 			raw_position = float(raw_pos or 0) # required
 			duration = float(duration or 0) # required
-			 
-			# # Directly use the compensated raw_position for estimated_position
-			# estimated_position = raw_position
+			
 
 			# now = time.time()
 			now = time.perf_counter()
