@@ -135,10 +135,10 @@ def load_config():
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
 			"scroll_timeout": 2, # scroll timeout to auto scroll
-			"refresh_interval_ms": 100, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings
+			"refresh_interval_ms": 1000, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings
 			"wrap_width_percent": 90,  # Just incase you need them
-			"bisect_offset": 0.01,  # Only used for bisect method
-			"proximity_threshold": 0.01  # Only used for proximity method (50ms) We will still going to use these two anyway but these keeps the lyrics snyced and less jumps, there is a mechanism that prevents rubber banding.
+			"bisect_offset": 0.00,  # Only used for bisect method
+			"proximity_threshold": 0.00  # Only used for proximity method (50ms) We will still going to use these two anyway but these keeps the lyrics snyced and less jumps, there is a mechanism that prevents rubber banding.
 		},
 		"key_bindings": { # Set as "null" if you do not want it assigned
 			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
@@ -1565,7 +1565,8 @@ def main(stdscr):
 		'last_input': 0,  # Timestamp for manual scroll
 		'time_adjust': 0.0,
 		'last_raw_pos': 0.0,
-		'last_pos_time': time.time(),
+		# last_pos_time': time.time(),
+		'last_pos_time': time.perf_counter(),
 		'timestamps': [],
 		'valid_indices': [],
 		'paused': False,
@@ -1585,7 +1586,9 @@ def main(stdscr):
 		'wrapped_lines': [],       # Stores wrapped lines for TXT
 		'max_wrapped_offset': 0,   # Max scroll for wrapped content
 		'window_width': 0,          # Track width for re-wrap checks
-		'status': 'stopped'  # Initial value
+		'last_player_update': 0,   # Timestamp for last player info fetch
+		'status': 'stopped',  # Initial value
+		'player_info': (None, (None, 0, None, None, 0, "stopped"))	
 	}
 
 	executor = ThreadPoolExecutor(max_workers=4)
@@ -1596,13 +1599,12 @@ def main(stdscr):
 	last_position_time = time.time()
 	estimated_position = 0
 	playback_paused = False
-	
-	state['last_player_update'] = 0  # Timestamp for last player info fetch
 
 	# Main application loop
 	while True:
 		try:
-			current_time = time.time()
+			# current_time = time.time()
+			current_time = time.perf_counter()
 			needs_redraw = False
 			time_since_input = current_time - (state['last_input'] or 0)
 
@@ -1633,26 +1635,51 @@ def main(stdscr):
 			# Get current playback information
 			# player_type, (audio_file, raw_pos, artist, title, duration, status) = get_player_info()
 
-			# Only fetch player info if interval elapsed
-			if (current_time - state['last_player_update']) >= refresh_interval:
-				player_type, (audio_file, raw_pos, artist, title, duration, status) = get_player_info()
-				state['status'] = status 
-				state['last_player_update'] = current_time
-				state['last_raw_pos'] = raw_pos
-				state['last_pos_time'] = current_time
-			else:
-				# Estimate position using last known data
-				if state['status'] == "playing":  # <-- Use persisted status
-					elapsed = current_time - state['last_pos_time']
-					raw_pos = state['last_raw_pos'] + elapsed
-					raw_pos = min(max(raw_pos, 0), duration)  # Prevent negative/overflow
-				else:
-					raw_pos = state['last_raw_pos']
-					raw_pos = min(max(raw_pos, 0), duration)  # Prevent negative/overflow
+			# --- Refresh Player Info Based on refresh_interval ---
+			# if current_time - state['last_player_update'] >= refresh_interval:
+				# try:
+					# # Update the player info and store it in state
+					# player_info = get_player_info()
+					# state["player_info"] = player_info
+				# except Exception as e:
+					# log_debug("Error getting player info: " + str(e))
+				# state['last_player_update'] = current_time
 
-			raw_position = float(raw_pos or 0)
-			duration = float(duration or 0)
-			now = time.time()
+			# # Unpack the (possibly cached) player info from state
+			# player_type, (audio_file, raw_pos, artist, title, duration, status) = state["player_info"]
+
+			
+			TEMPORARY_REFRESH_SEC = 3
+
+			# Determine temporary refresh interval triggered right after the paused state.
+			# Ensure that elsewhere in your code, when transitioning from paused to non-paused,
+			# you set: state['resume_trigger_time'] = time.time()
+			if state.get('resume_trigger_time') and (time.time() - state['resume_trigger_time'] <= TEMPORARY_REFRESH_SEC) and (status != "paused"):
+				temp_refresh_interval = 0
+			else:
+				temp_refresh_interval = refresh_interval
+
+			# --- Refresh Player Info Based on temp_refresh_interval ---
+			if current_time - state['last_player_update'] >= temp_refresh_interval:
+				try:
+					# Update the player info and store it in state
+					player_info = get_player_info()
+					state["player_info"] = player_info
+				except Exception as e:
+					log_debug("Error getting player info: " + str(e))
+				state['last_player_update'] = current_time
+
+			# Unpack the (possibly cached) player info from state
+			player_type, (audio_file, raw_pos, artist, title, duration, status) = state["player_info"]
+
+			raw_position = float(raw_pos or 0) # required
+			duration = float(duration or 0) # required
+			 
+			# # Directly use the compensated raw_position for estimated_position
+			# estimated_position = raw_position
+
+			# now = time.time()
+			now = time.perf_counter()
 			# Before the "Update display if needed" section
 				
 			# Handle track changes
