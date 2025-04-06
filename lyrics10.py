@@ -137,8 +137,8 @@ def load_config():
 			"scroll_timeout": 2, # scroll timeout to auto scroll
 			"refresh_interval_ms": 0, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings, anyway um this program is very efficient so setting it to 0 makes no difference in cpu utilization
 			"wrap_width_percent": 90,  # Just incase you need them
-			"bisect_offset": 0.00,  # Only used for bisect method
-			"proximity_threshold": 0.00  # Only used for proximity method (50ms) We will still going to use these two anyway but these keeps the lyrics snyced and less jumps, there is a mechanism that prevents rubber banding.
+			"bisect_offset": 0.01,  # Only used for bisect method
+			"proximity_threshold": 0.01  # Only used for proximity method (50ms) We will still going to use these two anyway but these keeps the lyrics snyced and less jumps, there is a mechanism that prevents rubber banding.
 		},
 		"key_bindings": { # Set as "null" if you do not want it assigned
 			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
