@@ -72,7 +72,7 @@ LOG_LEVELS = {
 # ==============
 #  CONFIGURATION
 # ==============
-config_files = ["config.json", "config1.json", "config2.json"]
+config_files = ["config.json", "config1.json", "config2.json"] # change the configuration name if you wanted, just make sure you sture them in the same directory of this project
 
 def load_config():
 	"""Load and merge configuration from file and environment"""
@@ -148,8 +148,8 @@ def load_config():
 		"key_bindings": { # Set as "null" if you do not want it assigned
 			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
 			"refresh": "R",
-			"scroll_up": "KEY_UP",
-			"scroll_down": "KEY_DOWN",
+			"scroll_up": "KEY_UP", # keep it the same or you wanted it customized
+			"scroll_down": "KEY_DOWN", #same for this too
 			"time_decrease": ["-", "_"],
 			"time_increase": ["=", "+"],
 			"time_reset": "0",
@@ -232,8 +232,6 @@ if ENABLE_DEBUG_LOGGING:
 	print(debug_msg)  # Confirm in console
 	print("=== Application started ===")
 	print(f"Loaded config: {json.dumps(CONFIG, indent=2)}")
-# else:
-	# print("Debug logging DISABLED")
 
 # Redis connection
 REDIS_ENABLED = CONFIG["redis"]["enabled"] and redis is not None
@@ -1311,6 +1309,7 @@ def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw,
 
 	# Quit handling
 	if key in key_bindings["quit"]:
+		sys.exit('Exiting')
 		return False, manual_offset, last_input_time, needs_redraw, time_adjust, current_alignment
 
 	# Scroll up with boundary check
@@ -1830,9 +1829,6 @@ def main(stdscr):
 
 			# Handle user input
 			key = stdscr.getch()
-			if key == ord('q'):
-				break
-
 			new_input = key != -1
 			if new_input:
 				(cont, new_manual_offset, dummy_last_input, needs_redraw_input,
