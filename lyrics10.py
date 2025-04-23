@@ -122,7 +122,7 @@ def load_config():
 			"validation": {"title_match_length": 15, "artist_match_length": 15}
 		},
 		"ui": {
-			"alignment": "center",  # Options: "left", "center", "right" you get thee idea
+			"alignment": "left",  # Options: "left", "center", "right" you get thee idea
 			"colors": {
 				"txt": {
 					"active": {"env": "TXT_ACTIVE", "default": "white"},  # or 6w
@@ -135,13 +135,13 @@ def load_config():
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
 			"scroll_timeout": 2, # scroll timeout to auto scroll
-			"refresh_interval_ms": 10, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings should reduce lots of cpu stress when playing mpd. I found then increasing it slightly could result in late next line switching somewhere +0.7, it needed to be fixed or else for now keep at somewhere 10ms or 100ms, mpd... yeah need more testing
+			"refresh_interval_ms": 500, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings should reduce lots of cpu stress when playing mpd. I found then increasing it slightly could result in late next line switching somewhere +0.7, it needed to be fixed or else for now keep at somewhere 10ms or 100ms, mpd... yeah need more testing
 			"wrap_width_percent": 90,  # Just incase you need them
 			"bisect_offset": 0.00,  # Time offset (in seconds) added to the current position before bisecting.
 									# Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
 									# Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps.
 
-			"proximity_threshold": 0.05,  # Fractional threshold used to determine when to switch to the next timestamp line.
+			"proximity_threshold": 0.00,  # Fractional threshold used to determine when to switch to the next timestamp line.
 										  # If more than 99% of the current line duration has passed, it allows switching early.
 										  # Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker.
 		},
@@ -463,24 +463,57 @@ async def fetch_lrclib_async(artist, title, duration=None, session=None):
 	if duration:
 		params['duration'] = duration
 
+	# Create a new session only if one isn't passed
+	own_session = False
+	if session is None:
+		session = aiohttp.ClientSession()
+		own_session = True
+
 	try:
-		# Use existing session if provided, otherwise create one temporarily
-		async with (session or aiohttp.ClientSession()) as s:
-			async with s.get(base_url, params=params) as response:
-				if response.status == 200:
-					try:
-						data = await response.json(content_type=None)
-						if data.get('instrumental', False):
-							return None, None
-						return data.get('syncedLyrics') or data.get('plainLyrics'), bool(data.get('syncedLyrics'))
-					except aiohttp.ContentTypeError:
-						log_debug("LRCLIB async error: Invalid JSON response")
-				else:
-					log_debug(f"LRCLIB async error: HTTP {response.status}")
+		async with session.get(base_url, params=params, timeout=aiohttp.ClientTimeout(total=15)) as response:
+			if response.status == 200:
+				try:
+					data = await response.json(content_type=None)
+					if data.get('instrumental', False):
+						return None, None
+					return data.get('syncedLyrics') or data.get('plainLyrics'), bool(data.get('syncedLyrics'))
+				except aiohttp.ContentTypeError:
+					content = await response.text()
+					log_debug(f"LRCLIB async error: Invalid JSON. Raw response: {content[:200]}")
+			else:
+				log_debug(f"LRCLIB async error: HTTP {response.status}")
 	except aiohttp.ClientError as e:
 		log_debug(f"LRCLIB async error: {e}")
-	
+	finally:
+		if own_session:
+			await session.close()
+
 	return None, None
+# async def fetch_lrclib_async(artist, title, duration=None, session=None):
+	# """Async version of LRCLIB fetch using aiohttp"""
+	# base_url = "https://lrclib.net/api/get"
+	# params = {'artist_name': artist, 'track_name': title}
+	# if duration:
+		# params['duration'] = duration
+
+	# try:
+		# # Use existing session if provided, otherwise create one temporarily
+		# async with (session or aiohttp.ClientSession()) as s:
+			# async with s.get(base_url, params=params) as response:
+				# if response.status == 200:
+					# try:
+						# data = await response.json(content_type=None)
+						# if data.get('instrumental', False):
+							# return None, None
+						# return data.get('syncedLyrics') or data.get('plainLyrics'), bool(data.get('syncedLyrics'))
+					# except aiohttp.ContentTypeError:
+						# log_debug("LRCLIB async error: Invalid JSON response")
+				# else:
+					# log_debug(f"LRCLIB async error: HTTP {response.status}")
+	# except aiohttp.ClientError as e:
+		# log_debug(f"LRCLIB async error: {e}")
+	
+	# return None, None
 
 # Added comprehensive debug points throughout code
 log_trace("Initializing configuration manager")
@@ -515,7 +548,8 @@ def log_timeout(artist, title):
 		try:
 			with open(log_path, 'a', encoding='utf-8') as f:
 				f.write(log_entry)
-			clean_old_timeouts()
+			# clean_old_timeouts()
+			clean_log()
 		except Exception as e:
 			log_debug(f"Failed to write timeout log: {e}")
 
@@ -530,18 +564,31 @@ def sanitize_string(s):
 	"""Normalize strings for comparison"""
 	return re.sub(r'[^a-zA-Z0-9]', '', str(s)).lower()
 
+# def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
+	# """Sync wrapper for async LRCLIB fetch"""
+	# log_debug(f"Querying LRCLIB API: {artist_name} - {track_name}")
+	# try:
+		# return asyncio.run(fetch_lrclib_async(artist_name, track_name, duration))
+# ######################################################################################################
+		# if result[0]:
+			# log_info(f"LRCLIB returned {'synced' if result[1] else 'plain'} lyrics")
+# ######################################################################################################
+	# except Exception as e:
+		# log_error(f"LRCLIB fetch failed: {str(e)}")
+		# return None, None
+
 def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
 	"""Sync wrapper for async LRCLIB fetch"""
 	log_debug(f"Querying LRCLIB API: {artist_name} - {track_name}")
 	try:
-		return asyncio.run(fetch_lrclib_async(artist_name, track_name, duration))
-######################################################################################################
+		result = asyncio.run(fetch_lrclib_async(artist_name, track_name, duration))
 		if result[0]:
 			log_info(f"LRCLIB returned {'synced' if result[1] else 'plain'} lyrics")
-######################################################################################################
+		return result
 	except Exception as e:
 		log_error(f"LRCLIB fetch failed: {str(e)}")
 		return None, None
+
 
 # def parse_lrc_tags(lyrics):
 	# """Extract metadata tags from LRC lyrics"""
@@ -993,7 +1040,7 @@ def get_player_info():
 	# Fallback to MPD
 	try:
 		mpd_info = get_mpd_info()
-		log_debug(f"CMUS status: {cmus_info[5]}, MPD status: {mpd_info[5]}")
+		#log_debug(f"CMUS status: {cmus_info[5]}, MPD status: {mpd_info[5]}")
 		if mpd_info[0] is not None:
 			return 'mpd', mpd_info
 	except (base.ConnectionError, socket.error) as e:
@@ -1064,8 +1111,9 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 	STATUS_LINES = 2  
 	MAIN_STATUS_LINE = height - 1
 	TIME_ADJUST_LINE = height - 2
-	LYRICS_AREA_HEIGHT = height - STATUS_LINES  # Lines available for lyrics
-
+	# LYRICS_AREA_HEIGHT = height - STATUS_LINES  # Lines available for lyrics
+	LYRICS_AREA_HEIGHT = height - STATUS_LINES - 1
+	
 	# Minimum terminal size check.
 	# if LYRICS_AREA_HEIGHT < 3 or width < 10:
 		# try:
@@ -1213,12 +1261,12 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 		except curses.error:
 			pass
 
-	# if (current_idx is not None and 
-		# current_idx == len(lyrics) - 1 and 
-		# not is_txt_format and 
-		# len(lyrics) > 1):
-		# if height > 2:
-			# stdscr.addstr(height-2, 0, " End of lyrics ", curses.A_BOLD)
+	if (current_idx is not None and 
+		current_idx == len(lyrics) - 1 and 
+		not is_txt_format and 
+		len(lyrics) > 1):
+		if height > 2:
+			stdscr.addstr(height-2, 0, " End of lyrics ", curses.A_BOLD)
 
 	# Render the time adjustment display (second-to-last line).
 	if time_adjust != 0:
@@ -1232,11 +1280,11 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 	# Render a line counter (bottom left).
 	try:
 		status_line = f" Line {min(current_idx+1, len(lyrics))}/{len(lyrics)}"
-		if (current_idx is not None and 
-			current_idx == len(lyrics) - 1 and 
-			not is_txt_format and 
-			len(lyrics) > 1):
-			status_line = " End of lyrics "
+		# if (current_idx is not None and 
+			# current_idx == len(lyrics) - 1 and 
+			# not is_txt_format and 
+			# len(lyrics) > 1):
+			# status_line = " End of lyrics "
 		if time_adjust != 0:
 			status_line += "[Adj]"
 		status_line = status_line[:width-1]
@@ -1523,7 +1571,7 @@ def subframe_interpolation(continuous_position, timestamps, index):
 		return index, 0.0
 	fraction = (continuous_position - start) / (end - start)
 	fraction = max(0.0, min(1.0, fraction))
-	return index, fraction
+	# return index, fraction
 
 def main(stdscr):
 	# Initialize colors and UI
@@ -1558,7 +1606,7 @@ def main(stdscr):
 	# Load key bindings and configure UI
 	key_bindings = load_key_bindings(CONFIG)
 	curses.curs_set(0)
-	stdscr.timeout(80)  # More frequent updates (80ms)
+	#stdscr.timeout(80)  # More frequent updates (80ms)
 
 	# Initialize application state
 	state = {
@@ -1636,39 +1684,47 @@ def main(stdscr):
 				state['window_size'] = current_window_size
 				needs_redraw = True
 				
-			# Get current playback information
-			# player_type, (audio_file, raw_pos, artist, title, duration, status) = get_player_info()
 
-			# --- Refresh Player Info Based on refresh_interval ---
-			# if current_time - state['last_player_update'] >= refresh_interval:
+			TEMPORARY_REFRESH_SEC = 3
+
+			# Determine temporary refresh interval triggered right after the paused state.
+			if (state.get('resume_trigger_time')) and (time.perf_counter() - state['resume_trigger_time']) <= TEMPORARY_REFRESH_SEC and  (status == "playing") and  state['lyrics']:
+				temp_refresh_interval = 0.00
+				stdscr.timeout(10)
+				#log_debug("temp_refresh_interval triggered")
+			else:
+				temp_refresh_interval = refresh_interval
+				stdscr.timeout(80)
+
+			# # --- Refresh Player Info Based on temp_refresh_interval ---
+			# if current_time - state['last_player_update'] >= temp_refresh_interval:
 				# try:
 					# # Update the player info and store it in state
+					# previous_status = state["player_info"][1][5]  # Get previous status
 					# player_info = get_player_info()
 					# state["player_info"] = player_info
+					
+					# # Set resume trigger time when transitioning FROM paused TO playing
+					# if previous_status == "paused" and player_info[1][5] == "playing":
+						# state['resume_trigger_time'] = time.perf_counter()
+						
 				# except Exception as e:
 					# log_debug("Error getting player info: " + str(e))
 				# state['last_player_update'] = current_time
 
-			# # Unpack the (possibly cached) player info from state
-			# player_type, (audio_file, raw_pos, artist, title, duration, status) = state["player_info"]
-
-			
-			TEMPORARY_REFRESH_SEC = 3
-
-			# Determine temporary refresh interval triggered right after the paused state.
-			# Ensure that elsewhere in your code, when transitioning from paused to non-paused,
-			# you set: state['resume_trigger_time'] = time.time()
-			if state.get('resume_trigger_time') and (time.time() - state['resume_trigger_time'] <= TEMPORARY_REFRESH_SEC) and (status != "paused"):
-				temp_refresh_interval = 0
-			else:
-				temp_refresh_interval = refresh_interval
-
-			# --- Refresh Player Info Based on temp_refresh_interval ---
+			# In the player info update section:
 			if current_time - state['last_player_update'] >= temp_refresh_interval:
 				try:
 					# Update the player info and store it in state
+					previous_status = state["player_info"][1][5]  # Get previous status
 					player_info = get_player_info()
 					state["player_info"] = player_info
+					
+					# Set resume trigger time when transitioning FROM paused TO playing
+					if previous_status == "paused" and player_info[1][5] == "playing":
+						state['resume_trigger_time'] = time.perf_counter()
+						log_debug("Temporary refresh triggered by pause->play transition")
+						
 				except Exception as e:
 					log_debug("Error getting player info: " + str(e))
 				state['last_player_update'] = current_time
@@ -1682,7 +1738,6 @@ def main(stdscr):
 
 			# now = time.time()
 			now = time.perf_counter()
-			# Before the "Update display if needed" section
 				
 			# Handle track changes
 			if audio_file != state['current_file']:
@@ -1710,8 +1765,8 @@ def main(stdscr):
 						title or os.path.basename(audio_file),
 						duration
 					)
-
-			# Handle loaded lyrics
+					
+			# In the main loop, after handling loaded lyrics:
 			if future_lyrics and future_lyrics.done():
 				try:
 					(new_lyrics, errors), is_txt, is_a2 = future_lyrics.result()
@@ -1724,21 +1779,25 @@ def main(stdscr):
 						'force_redraw': True,
 						'is_txt': is_txt,
 						'is_a2': is_a2,
-						'lyrics_loaded_time': time.time(),
+						'lyrics_loaded_time': time.perf_counter(),
 						'wrapped_lines': [],
 						'max_wrapped_offset': 0
 					})
+					# NEW: Trigger temporary refresh when lyrics load AND player is playing
+					if status == "playing":
+						state['resume_trigger_time'] = time.perf_counter()
+						log_debug("Temporary refresh triggered by new lyrics loading")
 					future_lyrics = None
 				except Exception as e:
 					state.update({
 						'errors': [f"Lyric load error: {str(e)}"],
 						'force_redraw': True,
-						'lyrics_loaded_time': time.time()
+						'lyrics_loaded_time': time.perf_counter()
 					})
 					future_lyrics = None
 
 			# Handle delayed redraw after lyric load
-			if state['lyrics_loaded_time'] and time.time() - state['lyrics_loaded_time'] >= 2:
+			if state['lyrics_loaded_time'] and time.perf_counter() - state['lyrics_loaded_time'] >= 2:
 				state['force_redraw'] = True
 				state['lyrics_loaded_time'] = None
 
@@ -1761,6 +1820,12 @@ def main(stdscr):
 			continuous_position = max(0, estimated_position + state['time_adjust'])
 			continuous_position = min(continuous_position, duration)
 
+
+			# ─── Log continuous position for debugging ───────────────────────────────────
+			# log_debug(f"Continuous position = {continuous_position:.6f} seconds")
+			# ────────────────────────────────────────────────────────────────────────────────
+
+
 			# Generate wrapped lines for TXT files
 			window_h, window_w = state['window_size']
 			if state['is_txt']:
@@ -1779,41 +1844,72 @@ def main(stdscr):
 
 			# Calculate current lyric index
 			current_idx = -1
+			# if state['timestamps'] and not state['is_txt']:
+				# # LRC synchronization logic
+				# with ThreadPoolExecutor(max_workers=2) as sync_exec:
+					# bisect_idx = sync_exec.submit(
+						# bisect_worker,
+						# continuous_position,
+						# state['timestamps'],
+						# CONFIG["ui"]["bisect_offset"]
+					# ).result()
+					# proximity_idx = sync_exec.submit(
+						# proximity_worker,
+						# continuous_position,
+						# state['timestamps'],
+						# CONFIG["ui"]["proximity_threshold"]
+					# ).result()
+
+				# if abs(bisect_idx - proximity_idx) > 1:
+					# chosen_idx = bisect_idx
+				# else:
+					# chosen_idx = min(bisect_idx, proximity_idx)
+
+				# current_idx = max(-1, min(chosen_idx, len(state['timestamps']) - 1))
+				# if current_idx >= 0 and continuous_position < state['timestamps'][current_idx]:
+					# current_idx = max(-1, current_idx - 1)
+
+			# elif state['is_txt'] and state['wrapped_lines'] and duration > 0:
+				# # TXT file synchronization (unchanged)
+				# num_wrapped = len(state['wrapped_lines'])
+				# target_idx = int((continuous_position / duration) * num_wrapped)
+				# current_idx = max(0, min(target_idx, num_wrapped - 1))
+
+			# else:
+				# current_idx = -1
+
+			# ─── Calculate current lyric index ────────────────────────────────────────────
 			if state['timestamps'] and not state['is_txt']:
-				# LRC synchronization logic
-				with ThreadPoolExecutor(max_workers=2) as sync_exec:
-					bisect_idx = sync_exec.submit(
-						bisect_worker,
-						continuous_position,
-						state['timestamps'],
-						CONFIG["ui"]["bisect_offset"]
-					).result()
-					proximity_idx = sync_exec.submit(
-						proximity_worker,
-						continuous_position,
-						state['timestamps'],
-						CONFIG["ui"]["proximity_threshold"]
-					).result()
+				stdscr.timeout(10)
+				ts = state['timestamps']
+				pos = continuous_position
+				# Find the last timestamp ≤ your current position:
+				idx = bisect.bisect_right(ts, pos) - 1
 
-				if abs(bisect_idx - proximity_idx) > 1:
-					chosen_idx = bisect_idx
+				if idx >= 0:
+					# Snap your position exactly to that timestamp
+					continuous_position = ts[idx]
+					current_idx = idx
 				else:
-					chosen_idx = min(bisect_idx, proximity_idx)
+					# Haven’t reached the first timestamp yet
+					current_idx = -1
 
-				current_idx = max(-1, min(chosen_idx, len(state['timestamps']) - 1))
-				if current_idx >= 0 and continuous_position < state['timestamps'][current_idx]:
-					current_idx = max(-1, current_idx - 1)
 			elif state['is_txt'] and state['wrapped_lines'] and duration > 0:
-				# TXT file synchronization
+				# TXT fallback (unchanged)
 				num_wrapped = len(state['wrapped_lines'])
 				target_idx = int((continuous_position / duration) * num_wrapped)
 				current_idx = max(0, min(target_idx, num_wrapped - 1))
+
+			else:
+				current_idx = -1
+			# ────────────────────────────────────────────────────────────────────────────────
 
 			# Auto-scroll logic
 			if state['last_input'] == 0 and not manual_scroll:
 				if state['is_txt'] and state['wrapped_lines']:
 					# TXT: Center current wrapped line only if offset changes
 					ideal_offset = current_idx - (window_h // 2)
+					# ideal_offset = current_idx - (LYRICS_AREA_HEIGHT // 2)
 					new_offset = max(0, min(ideal_offset, state['max_wrapped_offset']))
 					if new_offset != state['manual_offset']:
 						state['manual_offset'] = new_offset
@@ -1839,7 +1935,7 @@ def main(stdscr):
 				if new_alignment != state['alignment']:
 					state['alignment'] = new_alignment
 					needs_redraw = True # checked
-					log_debug("culprit4")
+					#log_debug("culprit4")
 
 				# Update manual scroll timestamp
 				if key in key_bindings["scroll_up"] or key in key_bindings["scroll_down"]:
@@ -1861,6 +1957,7 @@ def main(stdscr):
 			
 			# Update display if needed
 			if new_input or needs_redraw or state['force_redraw'] or (current_idx != state['last_idx']):
+				stdscr.timeout(0)
 				start_screen_line = update_display(	
 					stdscr,
 					state['wrapped_lines'] if state['is_txt'] else state['lyrics'],
@@ -1890,10 +1987,13 @@ def main(stdscr):
 				time_since_input = current_time - state['last_input']
 				if time_since_input > 5.0:
 					sleep_time = 0.5
+					stdscr.timeout(200)
 				elif time_since_input > 2.0:
 					sleep_time = 0.2
+					stdscr.timeout(150)
 				else:
 					sleep_time = 0.1
+					stdscr.timeout(100)
 				time.sleep(sleep_time)
 			
 
