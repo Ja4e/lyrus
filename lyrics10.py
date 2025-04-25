@@ -69,6 +69,10 @@ LOG_LEVELS = {
 	"DEBUG": 1,
 	"TRACE": 0
 }
+
+# Constants
+SCROLL_TIMEOUT = 2.0  # seconds for manual scroll timeout
+
 # ==============
 #  CONFIGURATION
 # ==============
@@ -125,7 +129,7 @@ def load_config():
 			"alignment": "left",  # Options: "left", "center", "right" you get thee idea
 			"colors": {
 				"txt": {
-					"active": {"env": "TXT_ACTIVE", "default": "white"},  # or 6w
+					"active": {"env": "TXT_ACTIVE", "default": "white"},  # or in numbers ranging from 0-256 will add support for hex color
 					"inactive": {"env": "TXT_INACTIVE", "default": "white"}  # Dark gray
 				},
 				"lrc": {
@@ -135,15 +139,16 @@ def load_config():
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
 			"scroll_timeout": 2, # scroll timeout to auto scroll
-			"refresh_interval_ms": 500, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings should reduce lots of cpu stress when playing mpd. I found then increasing it slightly could result in late next line switching somewhere +0.7, it needed to be fixed or else for now keep at somewhere 10ms or 100ms, mpd... yeah need more testing
+			"refresh_interval_ms": 1000, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings should reduce lots of cpu stress when playing mpd. I found then increasing it slightly could result in late next line switching somewhere +0.7, it needed to be fixed or else for now keep at somewhere 10ms or 100ms, mpd... yeah need more testing... MM fixed a lot now this part no longer an issue you could set whatever you wanted now, I wouldnt choose odd numbered refresh interval, it may cause rubber bandings uding threaded tracking will cause certain delays you may not want
 			"wrap_width_percent": 90,  # Just incase you need them
 			"bisect_offset": 0.00,  # Time offset (in seconds) added to the current position before bisecting.
 									# Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
 									# Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps.
 
-			"proximity_threshold": 0.00,  # Fractional threshold used to determine when to switch to the next timestamp line.
+			"proximity_threshold": 0.10,  # Fractional threshold used to determine when to switch to the next timestamp line.
 										  # If more than 99% of the current line duration has passed, it allows switching early.
 										  # Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker.
+			"jump_threshold_sec": 1.0, # I should try implement more predictive auto refresh if the position almost the end of the music so it doesnt be late switching with abnormally large refresh interval ms
 		},
 		"key_bindings": { # Set as "null" if you do not want it assigned
 			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
@@ -1058,7 +1063,7 @@ def get_mpd_info():
 	"""Get current playback info from MPD, handling password authentication."""
 	client = MPDClient()
 	client.timeout = MPD_TIMEOUT
-
+	
 	try:
 		client.connect(MPD_HOST, MPD_PORT)
 		
@@ -1590,6 +1595,8 @@ def main(stdscr):
 	lrc_inactive = resolve_color(color_config["lrc"]["inactive"])
 	
 	refresh_interval = CONFIG["ui"]["refresh_interval_ms"] / 1000
+	# Threshold to detect playback jumps (in seconds)  # ADDED FROM ORIGINAL
+	JUMP_THRESHOLD = CONFIG["ui"].get("jump_threshold_sec", 1.0)  # ADDED FROM ORIGINAL
 	
 	# Initialize color pairs
 	curses.init_pair(1, error_color, curses.COLOR_BLACK)
@@ -1687,44 +1694,47 @@ def main(stdscr):
 
 			TEMPORARY_REFRESH_SEC = 3
 
-			# Determine temporary refresh interval triggered right after the paused state.
-			if (state.get('resume_trigger_time')) and (time.perf_counter() - state['resume_trigger_time']) <= TEMPORARY_REFRESH_SEC and  (status == "playing") and  state['lyrics']:
-				temp_refresh_interval = 0.00
-				stdscr.timeout(10)
-				#log_debug("temp_refresh_interval triggered")
+			# --- TEMPORARY HIGH-FREQUENCY REFRESH LOGIC FROM ORIGINAL ---
+			# Temporary high-frequency refresh after resume or jump
+			# if (state.get('resume_trigger_time') and
+				# (current_time - state['resume_trigger_time']) <= TEMPORARY_REFRESH_SEC and
+				# state['player_info'][1][5] == "playing" and state['lyrics']):  # Modified to use state
+			if (state['player_info'][0] == 'cmus' and  # <-- ADD THIS CHECK
+				state.get('resume_trigger_time') and
+				(current_time - state['resume_trigger_time']) <= TEMPORARY_REFRESH_SEC and
+				state['player_info'][1][5] == "playing" and 
+				state['lyrics']):
+				stdscr.timeout(0)
 			else:
-				temp_refresh_interval = refresh_interval
 				stdscr.timeout(80)
 
-			# # --- Refresh Player Info Based on temp_refresh_interval ---
-			# if current_time - state['last_player_update'] >= temp_refresh_interval:
-				# try:
-					# # Update the player info and store it in state
-					# previous_status = state["player_info"][1][5]  # Get previous status
-					# player_info = get_player_info()
-					# state["player_info"] = player_info
-					
-					# # Set resume trigger time when transitioning FROM paused TO playing
-					# if previous_status == "paused" and player_info[1][5] == "playing":
-						# state['resume_trigger_time'] = time.perf_counter()
-						
-				# except Exception as e:
-					# log_debug("Error getting player info: " + str(e))
-				# state['last_player_update'] = current_time
-
-			# In the player info update section:
-			if current_time - state['last_player_update'] >= temp_refresh_interval:
+			# --- JUMP DETECTION AND PLAYER INFO UPDATE FROM ORIGINAL ---
+			# Refresh player info
+			interval = (0.01 if state.get('resume_trigger_time') and
+						(current_time - state['resume_trigger_time']) <= TEMPORARY_REFRESH_SEC
+						else refresh_interval)
+			if current_time - state['last_player_update'] >= interval:
 				try:
-					# Update the player info and store it in state
-					previous_status = state["player_info"][1][5]  # Get previous status
+					previous_status = state['player_info'][1][5]
 					player_info = get_player_info()
-					state["player_info"] = player_info
-					
-					# Set resume trigger time when transitioning FROM paused TO playing
-					if previous_status == "paused" and player_info[1][5] == "playing":
+					state['player_info'] = player_info
+
+					# Detect sudden jump in playback
+					_, (_, raw_pos_val, _, _, _, status_val) = player_info
+					new_raw_pos = float(raw_pos_val or 0)
+					drift = abs(new_raw_pos - estimated_position)
+					if drift > JUMP_THRESHOLD:
+						state['resume_trigger_time'] = time.perf_counter()
+						log_debug(f"Jump detected: drift={drift:.3f}s, triggering refresh")
+
+					# Trigger refresh on resume from pause
+					# if previous_status == "paused" and status_val == "playing":
+					if (player_type == "cmus" and 
+						previous_status == "paused" and 
+						status_val == "playing"):
 						state['resume_trigger_time'] = time.perf_counter()
 						log_debug("Temporary refresh triggered by pause->play transition")
-						
+
 				except Exception as e:
 					log_debug("Error getting player info: " + str(e))
 				state['last_player_update'] = current_time
@@ -1735,7 +1745,8 @@ def main(stdscr):
 			raw_position = float(raw_pos or 0) # required
 			duration = float(duration or 0) # required
 			
-
+			estimated_position = raw_position  # Default for MPD
+			
 			# now = time.time()
 			now = time.perf_counter()
 				
@@ -1784,9 +1795,9 @@ def main(stdscr):
 						'max_wrapped_offset': 0
 					})
 					# NEW: Trigger temporary refresh when lyrics load AND player is playing
-					if status == "playing":
+					if status == "playing" and player_type == "cmus":
 						state['resume_trigger_time'] = time.perf_counter()
-						log_debug("Temporary refresh triggered by new lyrics loading")
+						# log_debug("Temporary refresh triggered by new lyrics loading")
 					future_lyrics = None
 				except Exception as e:
 					state.update({
@@ -1807,22 +1818,41 @@ def main(stdscr):
 				last_position_time = now
 				estimated_position = raw_position
 				playback_paused = (status == "paused")
+			
+			# if status == "playing" and not playback_paused:
+				# elapsed = now - last_position_time
+				# estimated_position = last_cmus_position + elapsed
+				# estimated_position = max(0, min(estimated_position, duration))
+			# elif status == "paused":
+				# estimated_position = raw_position
+				# last_position_time = now
 
-			if status == "playing" and not playback_paused:
-				elapsed = now - last_position_time
-				estimated_position = last_cmus_position + elapsed
+			# Player-specific position handling
+			if player_type == "cmus":
+				# CMUS needs estimation between updates
+				if raw_position != last_cmus_position:
+					last_cmus_position = raw_position
+					last_position_time = now
+					estimated_position = raw_position
+
+				if status == "playing":
+					elapsed = now - last_position_time
+					estimated_position = raw_position + elapsed
+				elif status == "paused":
+					estimated_position = raw_position
+
 				estimated_position = max(0, min(estimated_position, duration))
-			elif status == "paused":
+			else:  # MPD
+				# Use MPD's precise position directly - no estimation needed
 				estimated_position = raw_position
-				last_position_time = now
+				playback_paused = (status == "pause")  # MPD uses "pause" state
 
 			# Calculate continuous playback position
 			continuous_position = max(0, estimated_position + state['time_adjust'])
 			continuous_position = min(continuous_position, duration)
-
-
+			
 			# ─── Log continuous position for debugging ───────────────────────────────────
-			# log_debug(f"Continuous position = {continuous_position:.6f} seconds")
+			#log_debug(f"Continuous position = {continuous_position:.6f} seconds")
 			# ────────────────────────────────────────────────────────────────────────────────
 
 
@@ -1839,7 +1869,11 @@ def main(stdscr):
 						else:
 							wrapped.append((orig_idx, ""))
 					state['wrapped_lines'] = wrapped
-					state['max_wrapped_offset'] = max(0, len(wrapped) - window_h)
+					
+					# Calculate lyrics area height (window height - status lines - buffer)
+					lyrics_area_height = window_h - 3  # STATUS_LINES=2 + 1 buffer line
+					state['max_wrapped_offset'] = max(0, len(wrapped) - lyrics_area_height)
+					
 					state['window_width'] = window_w
 
 			# Calculate current lyric index
@@ -1904,12 +1938,11 @@ def main(stdscr):
 				current_idx = -1
 			# ────────────────────────────────────────────────────────────────────────────────
 
-			# Auto-scroll logic
+			# # Auto-scroll logic
 			if state['last_input'] == 0 and not manual_scroll:
 				if state['is_txt'] and state['wrapped_lines']:
-					# TXT: Center current wrapped line only if offset changes
-					ideal_offset = current_idx - (window_h // 2)
-					# ideal_offset = current_idx - (LYRICS_AREA_HEIGHT // 2)
+					lyrics_area_height = window_h - 3
+					ideal_offset = current_idx - (lyrics_area_height // 2)
 					new_offset = max(0, min(ideal_offset, state['max_wrapped_offset']))
 					if new_offset != state['manual_offset']:
 						state['manual_offset'] = new_offset
@@ -1935,7 +1968,6 @@ def main(stdscr):
 				if new_alignment != state['alignment']:
 					state['alignment'] = new_alignment
 					needs_redraw = True # checked
-					#log_debug("culprit4")
 
 				# Update manual scroll timestamp
 				if key in key_bindings["scroll_up"] or key in key_bindings["scroll_down"]:
@@ -1956,8 +1988,9 @@ def main(stdscr):
 					break
 			
 			# Update display if needed
+			stdscr.timeout(0)
 			if new_input or needs_redraw or state['force_redraw'] or (current_idx != state['last_idx']):
-				stdscr.timeout(0)
+				# stdscr.timeout(0)
 				start_screen_line = update_display(	
 					stdscr,
 					state['wrapped_lines'] if state['is_txt'] else state['lyrics'],
@@ -1999,6 +2032,7 @@ def main(stdscr):
 
 		except Exception as e:
 			log_debug(f"Main loop error: {str(e)}")
+			time.sleep(1)
 
 if __name__ == "__main__":
 	while True:
