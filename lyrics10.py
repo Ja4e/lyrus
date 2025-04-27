@@ -139,7 +139,7 @@ def load_config():
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
 			"scroll_timeout": 2, # scroll timeout to auto scroll
-			"refresh_interval_ms": 1000, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings should reduce lots of cpu stress when playing mpd. I found then increasing it slightly could result in late next line switching somewhere +0.7, it needed to be fixed or else for now keep at somewhere 10ms or 100ms, mpd... yeah need more testing... MM fixed a lot now this part no longer an issue you could set whatever you wanted now, I wouldnt choose odd numbered refresh interval, it may cause rubber bandings uding threaded tracking will cause certain delays you may not want
+			"refresh_interval_ms": 2000, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings should reduce lots of cpu stress when playing mpd. I found then increasing it slightly could result in late next line switching somewhere +0.7, it needed to be fixed or else for now keep at somewhere 10ms or 100ms, mpd... yeah need more testing... MM fixed a lot now this part no longer an issue you could set whatever you wanted now, I wouldnt choose odd numbered refresh interval, it may cause rubber bandings uding threaded tracking will cause certain delays you may not want, FUCK THIS ISSUE IS BACK 
 			"wrap_width_percent": 90,  # Just incase you need them
 			"bisect_offset": 0.00,  # Time offset (in seconds) added to the current position before bisecting.
 									# Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
@@ -149,6 +149,9 @@ def load_config():
 										  # If more than 99% of the current line duration has passed, it allows switching early.
 										  # Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker.
 			"jump_threshold_sec": 1.0, # I should try implement more predictive auto refresh if the position almost the end of the music so it doesnt be late switching with abnormally large refresh interval ms
+										# Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most
+			# "sync_offset_sec": 0.02, # just incase you needed to compensate the high refresh interval ms at a certain situation, i prefer setting it around 0.1 
+			"sync_offset_sec": 0.62, # duh just use this anyway
 		},
 		"key_bindings": { # Set as "null" if you do not want it assigned
 			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
@@ -1578,6 +1581,7 @@ def subframe_interpolation(continuous_position, timestamps, index):
 	fraction = max(0.0, min(1.0, fraction))
 	# return index, fraction
 
+
 def main(stdscr):
 	# Initialize colors and UI
 	log_info("Initializing colors and UI")
@@ -1658,6 +1662,7 @@ def main(stdscr):
 	last_position_time = time.time()
 	estimated_position = 0
 	playback_paused = False
+	end_threshold = 0.3  # 100ms threshold
 
 	# Main application loop
 	while True:
@@ -1692,7 +1697,7 @@ def main(stdscr):
 				needs_redraw = True
 				
 
-			TEMPORARY_REFRESH_SEC = 3
+			TEMPORARY_REFRESH_SEC = 1
 
 			# --- TEMPORARY HIGH-FREQUENCY REFRESH LOGIC FROM ORIGINAL ---
 			# Temporary high-frequency refresh after resume or jump
@@ -1704,13 +1709,13 @@ def main(stdscr):
 				(current_time - state['resume_trigger_time']) <= TEMPORARY_REFRESH_SEC and
 				state['player_info'][1][5] == "playing" and 
 				state['lyrics']):
-				stdscr.timeout(0)
+				stdscr.timeout(10)
 			else:
 				stdscr.timeout(80)
 
 			# --- JUMP DETECTION AND PLAYER INFO UPDATE FROM ORIGINAL ---
 			# Refresh player info
-			interval = (0.01 if state.get('resume_trigger_time') and
+			interval = (0.00 if state.get('resume_trigger_time') and
 						(current_time - state['resume_trigger_time']) <= TEMPORARY_REFRESH_SEC
 						else refresh_interval)
 			if current_time - state['last_player_update'] >= interval:
@@ -1851,6 +1856,19 @@ def main(stdscr):
 			continuous_position = max(0, estimated_position + state['time_adjust'])
 			continuous_position = min(continuous_position, duration)
 			
+			end_gap = duration - continuous_position
+
+			# Trigger refresh when approaching end
+			if 0 < end_gap <= end_threshold:
+				state['resume_trigger_time'] = time.perf_counter()
+				# log_debug(f"Nearing track end: {end_gap:.3f}s remaining, triggering refresh")
+
+			if duration > 0:  # Ensure valid duration
+				end_gap = duration - continuous_position
+				if 0 < end_gap <= 3:
+					state['resume_trigger_time'] = time.perf_counter()
+					# log_debug(f"End proximity: {end_gap:.3f}s remaining")
+
 			# ─── Log continuous position for debugging ───────────────────────────────────
 			#log_debug(f"Continuous position = {continuous_position:.6f} seconds")
 			# ────────────────────────────────────────────────────────────────────────────────
@@ -1914,11 +1932,14 @@ def main(stdscr):
 
 			# ─── Calculate current lyric index ────────────────────────────────────────────
 			if state['timestamps'] and not state['is_txt']:
-				stdscr.timeout(10)
+				# stdscr.timeout(10)
 				ts = state['timestamps']
-				pos = continuous_position
+				#pos = continuous_position
+				offset = CONFIG["ui"].get("sync_offset_sec", 0)
 				# Find the last timestamp ≤ your current position:
-				idx = bisect.bisect_right(ts, pos) - 1
+				#idx = bisect.bisect_right(ts, pos) - 
+				idx    = bisect.bisect_right(ts, continuous_position + offset) - 1
+				
 
 				if idx >= 0:
 					# Snap your position exactly to that timestamp
@@ -1988,9 +2009,8 @@ def main(stdscr):
 					break
 			
 			# Update display if needed
-			stdscr.timeout(0)
 			if new_input or needs_redraw or state['force_redraw'] or (current_idx != state['last_idx']):
-				# stdscr.timeout(0)
+				#stdscr.timeout(0)
 				start_screen_line = update_display(	
 					stdscr,
 					state['wrapped_lines'] if state['is_txt'] else state['lyrics'],
@@ -2014,7 +2034,8 @@ def main(stdscr):
 					'last_start_screen_line': start_screen_line,
 					'last_idx': current_idx
 				})
-
+				#stdscr.timeout(80)
+				
 			#cpu destressor
 			if status == "paused" and not manual_scroll and not state['current_file']:
 				time_since_input = current_time - state['last_input']
@@ -2029,7 +2050,6 @@ def main(stdscr):
 					stdscr.timeout(100)
 				time.sleep(sleep_time)
 			
-
 		except Exception as e:
 			log_debug(f"Main loop error: {str(e)}")
 			time.sleep(1)
@@ -2043,3 +2063,4 @@ if __name__ == "__main__":
 		except Exception as e:
 			log_debug(f"Fatal error: {str(e)}")
 			time.sleep(1)
+			
