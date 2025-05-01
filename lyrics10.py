@@ -135,7 +135,7 @@ def load_config():
 				},
 				"lrc": {
 					"active": {"env": "LRC_ACTIVE", "default": "green"},     # Greenish
-					"inactive": {"env": "LRC_INACTIVE", "default": "250"} # Yellow
+					"inactive": {"env": "LRC_INACTIVE", "default": "250"} # Yellow changed to grey
 				},
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
@@ -143,7 +143,7 @@ def load_config():
 			"refresh_interval_ms": 0, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth
 			"coolcpu_ms": 100, #cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it
 			"wrap_width_percent": 90,  # Just incase you need them need better implementations
-			"smart-tracking": 1, # incase you need to enable it, it will certainly lock to the next early but accurate
+			"smart-tracking": 0, # incase you need to enable it, it will certainly lock to the next early but accurate
 			"bisect_offset": 0,  # Time offset (in seconds) added to the current position before bisecting.
 									# Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
 									# Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps.
@@ -157,8 +157,7 @@ def load_config():
 
 			"jump_threshold_sec": 1,
 										# Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most
-			"sync_offset_sec": 0.12, # just incase you needed to compensate the high refresh interval ms at a certain situation, i prefer setting it around 0.1 
-			#"sync_offset_sec": 0.62, # duh just use this anyway use this if the refresh interval ms is above 1000ms...
+			"sync_offset_sec": 0.225, # perfect? maybe should be good enough anyway but bewarned the high coolcpu ms may not work properly for fast paced lyrics
 		},
 		"key_bindings": { # Set as "null" if you do not want it assigned 
 			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
@@ -1727,7 +1726,7 @@ def main(stdscr):
 				(current_time - state['resume_trigger_time']) <= TEMPORARY_REFRESH_SEC and
 				state['player_info'][1][5] == "playing" and 
 				state['lyrics']):
-				stdscr.timeout(10)
+				stdscr.timeout(smart_refresh_interval)
 				#last_position_time = now 
 				last_cmus_position = raw_position
 				last_position_time = now
@@ -2055,7 +2054,7 @@ def main(stdscr):
 			
 			# Update display if needed
 			if new_input or needs_redraw or state['force_redraw'] or (current_idx != state['last_idx']):
-				#stdscr.timeout(0)
+				stdscr.timeout(smart_refresh_interval)
 				start_screen_line = update_display(	
 					stdscr,	
 					state['wrapped_lines'] if state['is_txt'] else state['lyrics'],
@@ -2081,7 +2080,9 @@ def main(stdscr):
 				})
 				#stdscr.timeout(80)
 				log_debug("Triggered redraw")
-				
+			else:
+				stdscr.timeout(refresh_interval_2)
+			
 			#cpu destressor
 			if status == "paused" and not manual_scroll and not state['current_file']:
 				time_since_input = current_time - state['last_input']
