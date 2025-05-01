@@ -52,6 +52,7 @@ from datetime import datetime, timedelta  # Time handling for logs
 from mpd import MPDClient  # MPD support
 import socket # used for listening for common mpd port 6600
 import json
+from functools import partial
 
 # ==============
 #  GLOBALS
@@ -139,21 +140,26 @@ def load_config():
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
 			"scroll_timeout": 2, # scroll timeout to auto scroll
-			"refresh_interval_ms": 1000, # delays on fetching player infos, good on battery life situations, this will be running in the main while loop using time.time() compensating these late trackings should reduce lots of cpu stress when playing mpd. I found then increasing it slightly could result in late next line switching somewhere +0.7, it needed to be fixed or else for now keep at somewhere 10ms or 100ms, mpd... yeah need more testing... MM fixed a lot now this part no longer an issue you could set whatever you wanted now, I wouldnt choose odd numbered refresh interval, it may cause rubber bandings uding threaded tracking will cause certain delays you may not want, FUCK THIS ISSUE IS BACK , hmmm small tweaks...
-			"wrap_width_percent": 90,  # Just incase you need them
-			"bisect_offset": 0.00,  # Time offset (in seconds) added to the current position before bisecting.
+			"refresh_interval_ms": 0, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs
+			"coolcpu": 120, #cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it
+			"wrap_width_percent": 90,  # Just incase you need them need better implementations
+			"smart-tracking": 0, # incase you need to enable it, it will certainly lock to the next early but accurate
+			"bisect_offset": 0,  # Time offset (in seconds) added to the current position before bisecting.
 									# Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
 									# Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps.
 
-			"proximity_threshold": 0.10,  # Fractional threshold used to determine when to switch to the next timestamp line.
+			"proximity_threshold": 0,  # Fractional threshold used to determine when to switch to the next timestamp line.
 										  # If more than 99% of the current line duration has passed, it allows switching early.
-										  # Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker.
-			"jump_threshold_sec": 1.0, # I should try implement more predictive auto refresh if the position almost the end of the music so it doesnt be late switching with abnormally large refresh interval ms
+										  # Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker. Not implemented yet can be changed over if needed
+										  
+			"smart_fresh_duration": 1,
+			"smart_coolcpu": 10,
+			"jump_threshold_sec": 1,
 										# Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most
-			"sync_offset_sec": 0.02, # just incase you needed to compensate the high refresh interval ms at a certain situation, i prefer setting it around 0.1 
+			"sync_offset_sec": 0.20, # just incase you needed to compensate the high refresh interval ms at a certain situation, i prefer setting it around 0.1 
 			#"sync_offset_sec": 0.62, # duh just use this anyway use this if the refresh interval ms is above 1000ms...
 		},
-		"key_bindings": { # Set as "null" if you do not want it assigned
+		"key_bindings": { # Set as "null" if you do not want it assigned 
 			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
 			"refresh": "R",
 			"scroll_up": "KEY_UP", # keep it the same or you wanted it customized
@@ -1598,7 +1604,8 @@ def main(stdscr):
 	lrc_active = resolve_color(color_config["lrc"]["active"])
 	lrc_inactive = resolve_color(color_config["lrc"]["inactive"])
 	
-	refresh_interval = CONFIG["ui"]["refresh_interval_ms"] / 1000
+	refresh_interval  = CONFIG["ui"]["refresh_interval_ms"] / 1000
+	refresh_interval_2 = CONFIG["ui"]["coolcpu"]  # NEW,
 	# Threshold to detect playback jumps (in seconds)  # ADDED FROM ORIGINAL
 	JUMP_THRESHOLD = CONFIG["ui"].get("jump_threshold_sec", 1.0)  # ADDED FROM ORIGINAL
 	
@@ -1617,7 +1624,9 @@ def main(stdscr):
 	# Load key bindings and configure UI
 	key_bindings = load_key_bindings(CONFIG)
 	curses.curs_set(0)
-	#stdscr.timeout(80)  # More frequent updates (80ms)
+	stdscr.nodelay(True)  # do not block on getch() 
+
+	stdscr.timeout(refresh_interval_2)  # More frequent updates (80ms)
 
 	# Initialize application state
 	state = {
@@ -1651,7 +1660,9 @@ def main(stdscr):
 		'window_width': 0,          # Track width for re-wrap checks
 		'last_player_update': 0,   # Timestamp for last player info fetch
 		'status': 'stopped',  # Initial value
-		'player_info': (None, (None, 0, None, None, 0, "stopped"))	
+		'player_info': (None, (None, 0, None, None, 0, "stopped")),
+		'resume_trigger_time': None,  # NEW
+		'smart_tracking': CONFIG["ui"].get("smart-tracking"),
 	}
 
 	executor = ThreadPoolExecutor(max_workers=4)
@@ -1659,15 +1670,18 @@ def main(stdscr):
 
 	# Playback tracking variables
 	last_cmus_position = 0
-	last_position_time = time.time()
+	JUMP_THRESHOLD = CONFIG["ui"].get("jump_threshold_sec", 1.0)
+	# last_position_time = time.time()
+	# last_position_time = time.perf_counter()
 	estimated_position = 0
 	playback_paused = False
-	end_threshold = 0.3  # 100ms threshold
+	end_threshold = 0.2  # 200ms threshold
+
 
 	# Main application loop
 	while True:
 		try:
-			# current_time = time.time()
+			# current_time = time.time()playback_paused 
 			current_time = time.perf_counter()
 			needs_redraw = False
 			time_since_input = current_time - (state['last_input'] or 0)
@@ -1682,7 +1696,7 @@ def main(stdscr):
 						state['last_input'] = 0
 				else:
 					state['manual_timeout_handled'] = False
-
+					
 			# Determine manual scroll state
 			manual_scroll = state['last_input'] > 0 and time_since_input < SCROLL_TIMEOUT
 			
@@ -1697,7 +1711,7 @@ def main(stdscr):
 				needs_redraw = True
 				
 
-			TEMPORARY_REFRESH_SEC = 3
+			TEMPORARY_REFRESH_SEC = 1
 
 			# --- TEMPORARY HIGH-FREQUENCY REFRESH LOGIC FROM ORIGINAL ---
 			# Temporary high-frequency refresh after resume or jump
@@ -1709,9 +1723,13 @@ def main(stdscr):
 				(current_time - state['resume_trigger_time']) <= TEMPORARY_REFRESH_SEC and
 				state['player_info'][1][5] == "playing" and 
 				state['lyrics']):
-				stdscr.timeout(0)
+				stdscr.timeout(10)
+				#last_position_time = now 
+				last_cmus_position = raw_position
+				last_position_time = now
+				estimated_position = raw_position
 			else:
-				stdscr.timeout(80)
+				stdscr.timeout(refresh_interval_2)
 
 			# --- JUMP DETECTION AND PLAYER INFO UPDATE FROM ORIGINAL ---
 			# Refresh player info
@@ -1724,26 +1742,34 @@ def main(stdscr):
 					player_info = get_player_info()
 					state['player_info'] = player_info
 
+					# Correctly unpack player_type and player_data
+					current_player_type, current_player_data = player_info
+					_, raw_pos_val, _, _, _, status_val = current_player_data
+
 					# Detect sudden jump in playback
-					_, (_, raw_pos_val, _, _, _, status_val) = player_info
 					new_raw_pos = float(raw_pos_val or 0)
 					drift = abs(new_raw_pos - estimated_position)
 					if drift > JUMP_THRESHOLD:
 						state['resume_trigger_time'] = time.perf_counter()
 						log_debug(f"Jump detected: drift={drift:.3f}s, triggering refresh")
-
-					# Trigger refresh on resume from pause
-					# if previous_status == "paused" and status_val == "playing":
-					if (player_type == "cmus" and 
+						last_cmus_position = raw_position
+						last_position_time = now
+						estimated_position = raw_position
+					
+					# Trigger refresh on resume from pause using the unpacked player_type
+					if (current_player_type == "cmus" and 
 						previous_status == "paused" and 
 						status_val == "playing"):
 						state['resume_trigger_time'] = time.perf_counter()
 						log_debug("Temporary refresh triggered by pause->play transition")
 
+					
+
 				except Exception as e:
 					log_debug("Error getting player info: " + str(e))
-				state['last_player_update'] = current_time
 
+				state['last_player_update'] = current_time
+			
 			# Unpack the (possibly cached) player info from state
 			player_type, (audio_file, raw_pos, artist, title, duration, status) = state["player_info"]
 
@@ -1781,7 +1807,10 @@ def main(stdscr):
 						title or os.path.basename(audio_file),
 						duration
 					)
-					
+				last_cmus_position = raw_position
+				last_position_time = now
+				estimated_position = raw_position
+				
 			# In the main loop, after handling loaded lyrics:
 			if future_lyrics and future_lyrics.done():
 				try:
@@ -1802,7 +1831,10 @@ def main(stdscr):
 					# NEW: Trigger temporary refresh when lyrics load AND player is playing
 					if status == "playing" and player_type == "cmus":
 						state['resume_trigger_time'] = time.perf_counter()
-						# log_debug("Temporary refresh triggered by new lyrics loading")
+						log_debug("Temporary refresh triggered by new lyrics loading")
+					last_cmus_position = raw_position
+					last_position_time = now  # Reset timer to prevent residual elapsed time
+					estimated_position = raw_position
 					future_lyrics = None
 				except Exception as e:
 					state.update({
@@ -1823,14 +1855,6 @@ def main(stdscr):
 				last_position_time = now
 				estimated_position = raw_position
 				playback_paused = (status == "paused")
-			
-			# if status == "playing" and not playback_paused:
-				# elapsed = now - last_position_time
-				# estimated_position = last_cmus_position + elapsed
-				# estimated_position = max(0, min(estimated_position, duration))
-			# elif status == "paused":
-				# estimated_position = raw_position
-				# last_position_time = now
 
 			# Player-specific position handling
 			if player_type == "cmus":
@@ -1845,8 +1869,13 @@ def main(stdscr):
 					estimated_position = raw_position + elapsed
 				elif status == "paused":
 					estimated_position = raw_position
+					last_position_time = now  # Reset timer to prevent residual elapsed time
+					last_cmus_position = raw_position
 
 				estimated_position = max(0, min(estimated_position, duration))
+				if duration > 0 and abs(duration - estimated_position) < 0.1:
+					estimated_position = duration  # Prevent end-of-track overflow
+					
 			else:  # MPD
 				# Use MPD's precise position directly - no estimation needed
 				estimated_position = raw_position
@@ -1859,14 +1888,14 @@ def main(stdscr):
 			end_gap = duration - continuous_position
 
 			# Trigger refresh when approaching end
-			# if 0 < end_gap <= end_threshold:
-				# state['resume_trigger_time'] = time.perf_counter()
-				# log_debug(f"Nearing track end: {end_gap:.3f}s remaining, triggering refresh")
+			if 0 < end_gap <= end_threshold:
+				state['resume_trigger_time'] = time.perf_counter()
+				log_debug(f"Nearing track end: {end_gap:.3f}s remaining, triggering refresh")
 
-			if duration > 0:  # Ensure valid duration
-				end_gap = duration - continuous_position
-				if 0 < end_gap <= 3:
-					state['resume_trigger_time'] = time.perf_counter()
+			# if duration > 0:  # Ensure valid duration
+				# end_gap = duration - continuous_position
+				# if 0 < end_gap <= 0.2:
+					# state['resume_trigger_time'] = time.perf_counter()
 					# log_debug(f"End proximity: {end_gap:.3f}s remaining")
 
 			# ─── Log continuous position for debugging ───────────────────────────────────
@@ -1895,69 +1924,80 @@ def main(stdscr):
 					state['window_width'] = window_w
 
 			# Calculate current lyric index
-			current_idx = -1
-			# if state['timestamps'] and not state['is_txt']:
-				# # LRC synchronization logic
-				# with ThreadPoolExecutor(max_workers=2) as sync_exec:
-					# bisect_idx = sync_exec.submit(
-						# bisect_worker,
-						# continuous_position,
-						# state['timestamps'],
-						# CONFIG["ui"]["bisect_offset"]
-					# ).result()
-					# proximity_idx = sync_exec.submit(
-						# proximity_worker,
-						# continuous_position,
-						# state['timestamps'],
-						# CONFIG["ui"]["proximity_threshold"]
-					# ).result()
-
-				# if abs(bisect_idx - proximity_idx) > 1:
-					# chosen_idx = bisect_idx
-				# else:
-					# chosen_idx = min(bisect_idx, proximity_idx)
-
-				# current_idx = max(-1, min(chosen_idx, len(state['timestamps']) - 1))
-				# if current_idx >= 0 and continuous_position < state['timestamps'][current_idx]:
-					# current_idx = max(-1, current_idx - 1)
-
-			# elif state['is_txt'] and state['wrapped_lines'] and duration > 0:
-				# # TXT file synchronization (unchanged)
-				# num_wrapped = len(state['wrapped_lines'])
-				# target_idx = int((continuous_position / duration) * num_wrapped)
-				# current_idx = max(0, min(target_idx, num_wrapped - 1))
-
-			# else:
-				# current_idx = -1
-
-			# ─── Calculate current lyric index ────────────────────────────────────────────
-			if state['timestamps'] and not state['is_txt']:
-				stdscr.timeout(10)
-				# stdscr.timeout(10)
-				ts = state['timestamps']
-				#pos = continuous_position
-				offset = CONFIG["ui"].get("sync_offset_sec", 0)
-				# Find the last timestamp ≤ your current position:
-				#idx = bisect.bisect_right(ts, pos) - 
-				idx    = bisect.bisect_right(ts, continuous_position + offset) - 1
-				
-
-				if idx >= 0:
-					# Snap your position exactly to that timestamp
-					continuous_position = ts[idx]
-					current_idx = idx
-				else:
-					# Haven’t reached the first timestamp yet
-					current_idx = -1
-
-			elif state['is_txt'] and state['wrapped_lines'] and duration > 0:
-				# TXT fallback (unchanged)
-				num_wrapped = len(state['wrapped_lines'])
-				target_idx = int((continuous_position / duration) * num_wrapped)
-				current_idx = max(0, min(target_idx, num_wrapped - 1))
-
-			else:
+			if state['smart_tracking'] == 1:
 				current_idx = -1
+				if state['timestamps'] and not state['is_txt']:
+					# LRC synchronization logic
+					with ThreadPoolExecutor(max_workers=2) as sync_exec:
+						bisect_idx = sync_exec.submit(
+							bisect_worker,
+							continuous_position,
+							state['timestamps'],
+							CONFIG["ui"]["bisect_offset"]
+						).result()
+						proximity_idx = sync_exec.submit(
+							proximity_worker,
+							continuous_position,
+							state['timestamps'],
+							CONFIG["ui"]["proximity_threshold"]
+						).result()
+
+					if abs(bisect_idx - proximity_idx) > 1:
+						chosen_idx = bisect_idx
+					else:
+						chosen_idx = min(bisect_idx, proximity_idx)
+
+					current_idx = max(-1, min(chosen_idx, len(state['timestamps']) - 1))
+					if current_idx >= 0 and continuous_position < state['timestamps'][current_idx]:
+						current_idx = max(-1, current_idx - 1)
+						last_position_time = now  # Reset timer to prevent residual elapsed time
+
+				elif state['is_txt'] and state['wrapped_lines'] and duration > 0:
+					# TXT file synchronization (unchanged)
+					num_wrapped = len(state['wrapped_lines'])
+					target_idx = int((continuous_position / duration) * num_wrapped)
+					current_idx = max(0, min(target_idx, num_wrapped - 1))
+					last_position_time = now  # Reset timer to prevent residual elapsed time
+
+				else:
+					current_idx = -1
+					last_position_time = now  # Reset timer to prevent residual elapsed time
+
+			# ─── Calculate current lyric index ──────────────────────────────────────────── # Not Triiggered
+			else:
+				if state['timestamps'] and not state['is_txt']:
+					# stdscr.timeout(10)
+					ts = state['timestamps']
+					#pos = continuous_position
+					offset = CONFIG["ui"].get("sync_offset_sec", 0)
+					# Find the last timestamp ≤ your current position:
+					#idx = bisect.bisect_right(ts, pos) - 
+					idx    = bisect.bisect_right(ts, continuous_position + offset) -1 
+
+					if idx >= 0:
+						# Snap your position exactly to that timestamp
+						# continuous_position = ts[idx]
+						current_idx = idx
+						continuous_position = ts[idx]
+						if status == "paused" and not manual_scroll and not state['current_file']:
+							time_since_input = current_time - state['last_input']
+							continuous_position = continuous_position 
+							last_position_time = now  # Reset timer to prevent residual elapsed time
+							
+						#log_debug(f"triggered position to {idx}")
+					else:
+						# Haven’t reached the first timestamp yet
+						current_idx = -1
+
+				elif state['is_txt'] and state['wrapped_lines'] and duration > 0:
+					# TXT fallback (unchanged)
+					num_wrapped = len(state['wrapped_lines'])
+					target_idx = int((continuous_position / duration) * num_wrapped)
+					current_idx = max(0, min(target_idx, num_wrapped - 1))
+
+				else:
+					current_idx = -1
+					last_position_time = now  # Reset timer to prevent residual elapsed time
 			# ────────────────────────────────────────────────────────────────────────────────
 
 			# # Auto-scroll logic
@@ -1972,7 +2012,7 @@ def main(stdscr):
 
 				elif not state['is_txt'] and state['wrapped_lines']:
 					# LRC: Standard auto-center
-					ideal_offset = current_idx - (window_h // 2)
+					ideal_offset = current_idx - ((window_h-3) // 2)
 					target_offset = max(0, min(ideal_offset, state['max_wrapped_offset']))
 					if new_offset != state['manual_offset']:
 						state['manual_offset'] = target_offset
@@ -2013,7 +2053,7 @@ def main(stdscr):
 			if new_input or needs_redraw or state['force_redraw'] or (current_idx != state['last_idx']):
 				#stdscr.timeout(0)
 				start_screen_line = update_display(	
-					stdscr,
+					stdscr,	
 					state['wrapped_lines'] if state['is_txt'] else state['lyrics'],
 					state['errors'],
 					continuous_position,
@@ -2036,23 +2076,27 @@ def main(stdscr):
 					'last_idx': current_idx
 				})
 				#stdscr.timeout(80)
+				log_debug("Triggered redraw")
 				
 			#cpu destressor
 			if status == "paused" and not manual_scroll and not state['current_file']:
 				time_since_input = current_time - state['last_input']
 				if time_since_input > 5.0:
 					sleep_time = 0.5
-					stdscr.timeout(200)
+					stdscr.timeout(400)
 				elif time_since_input > 2.0:
 					sleep_time = 0.2
-					stdscr.timeout(150)
+					stdscr.timeout(300)
 				else:
 					sleep_time = 0.1
-					stdscr.timeout(100)
+					stdscr.timeout(250)
 				time.sleep(sleep_time)
+			else:
+				stdscr.timeout(refresh_interval_2)
 			
 		except Exception as e:
 			log_debug(f"Main loop error: {str(e)}")
+			
 			time.sleep(1)
 
 if __name__ == "__main__":
@@ -2060,8 +2104,8 @@ if __name__ == "__main__":
 		try:
 			curses.wrapper(main)
 		except KeyboardInterrupt:
-			break
+			raise KeyboardInterrupt
 		except Exception as e:
 			log_debug(f"Fatal error: {str(e)}")
 			time.sleep(1)
-			
+		
