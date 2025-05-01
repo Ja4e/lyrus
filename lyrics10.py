@@ -130,20 +130,20 @@ def load_config():
 			"alignment": "left",  # Options: "left", "center", "right" you get thee idea
 			"colors": {
 				"txt": {
-					"active": {"env": "TXT_ACTIVE", "default": "white"},  # or in numbers ranging from 0-256 will add support for hex color
+					"active": {"env": "TXT_ACTIVE", "default": "254"},  # or in numbers ranging from 0-256 will add support for hex color
 					"inactive": {"env": "TXT_INACTIVE", "default": "white"}  # Dark gray
 				},
 				"lrc": {
 					"active": {"env": "LRC_ACTIVE", "default": "green"},     # Greenish
-					"inactive": {"env": "LRC_INACTIVE", "default": "white"} # Yellow
+					"inactive": {"env": "LRC_INACTIVE", "default": "250"} # Yellow
 				},
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
 			"scroll_timeout": 2, # scroll timeout to auto scroll
-			"refresh_interval_ms": 0, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs
-			"coolcpu": 120, #cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it
+			"refresh_interval_ms": 0, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth
+			"coolcpu_ms": 100, #cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it
 			"wrap_width_percent": 90,  # Just incase you need them need better implementations
-			"smart-tracking": 0, # incase you need to enable it, it will certainly lock to the next early but accurate
+			"smart-tracking": 1, # incase you need to enable it, it will certainly lock to the next early but accurate
 			"bisect_offset": 0,  # Time offset (in seconds) added to the current position before bisecting.
 									# Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
 									# Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps.
@@ -152,11 +152,12 @@ def load_config():
 										  # If more than 99% of the current line duration has passed, it allows switching early.
 										  # Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker. Not implemented yet can be changed over if needed
 										  
-			"smart_fresh_duration": 1,
-			"smart_coolcpu": 10,
+			"smart_refresh_duration": 1, # in second
+			"smart_coolcpu_ms": 10, 
+
 			"jump_threshold_sec": 1,
 										# Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most
-			"sync_offset_sec": 0.20, # just incase you needed to compensate the high refresh interval ms at a certain situation, i prefer setting it around 0.1 
+			"sync_offset_sec": 0.12, # just incase you needed to compensate the high refresh interval ms at a certain situation, i prefer setting it around 0.1 
 			#"sync_offset_sec": 0.62, # duh just use this anyway use this if the refresh interval ms is above 1000ms...
 		},
 		"key_bindings": { # Set as "null" if you do not want it assigned 
@@ -1585,7 +1586,8 @@ def subframe_interpolation(continuous_position, timestamps, index):
 		return index, 0.0
 	fraction = (continuous_position - start) / (end - start)
 	fraction = max(0.0, min(1.0, fraction))
-	# return index, fraction
+	return index, fraction
+
 
 
 def main(stdscr):
@@ -1605,7 +1607,9 @@ def main(stdscr):
 	lrc_inactive = resolve_color(color_config["lrc"]["inactive"])
 	
 	refresh_interval  = CONFIG["ui"]["refresh_interval_ms"] / 1000
-	refresh_interval_2 = CONFIG["ui"]["coolcpu"]  # NEW,
+	refresh_interval_2 = CONFIG["ui"]["coolcpu_ms"]  # NEW,
+	smart_refresh_duration = CONFIG["ui"]["smart_refresh_duration"]
+	smart_refresh_interval = CONFIG["ui"]["smart_coolcpu_ms"]
 	# Threshold to detect playback jumps (in seconds)  # ADDED FROM ORIGINAL
 	JUMP_THRESHOLD = CONFIG["ui"].get("jump_threshold_sec", 1.0)  # ADDED FROM ORIGINAL
 	
