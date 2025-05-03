@@ -13,3 +13,10 @@ best cmus simple lyrics player out there
 
 will add more support in detecting players
 will attempt to get a2 working
+
+Scrollable lyrics btw 
+
+also has inbuilt txt auto scroller (might need to revamp it to be more dynamic to wrapped line count but still very useable)
+very customizeable
+
+![image](https://github.com/user-attachments/assets/5d5fdbc5-7d4b-4b38-b2db-0cee5722806f)
