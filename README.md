@@ -6,6 +6,9 @@ ncurses, scrollable
 
 do use lyrics10.py file
 
+cmus mainly and it works flawlessly mind you there uhh can be small bugs because of external library used
+
+I will implement dynamic refresh so you dont need to adjust that annoying delays whatsover
 
 will add more support in detecting players
 will attempt to get a2 working
