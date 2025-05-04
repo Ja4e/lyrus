@@ -128,6 +128,7 @@ def load_config():
 		},
 		"ui": {
 			"alignment": "left",  # Options: "left", "center", "right" you get thee idea
+			"name": False, # Do false if you wanted to hide the song name whatsover
 			"colors": {
 				"txt": {
 					"active": {"env": "TXT_ACTIVE", "default": "254"},  # or in numbers ranging from 0-256 will add support for hex color
@@ -140,10 +141,11 @@ def load_config():
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
 			"scroll_timeout": 2, # scroll timeout to auto scroll
-			"refresh_interval_ms": 0, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth
-			"coolcpu_ms": 100, #cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it
+			"refresh_interval_ms": 0, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth #100 or 0
+			"coolcpu_ms": 100, #cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it #10 or 100
 			"wrap_width_percent": 90,  # Just incase you need them need better implementations
-			"smart-tracking": 0, # incase you need to enable it, it will certainly lock to the next early but accurate
+			"proximity_threshold_percent": 0.001,
+			"smart-tracking": 1, # incase you need to enable it, it will certainly lock to the next early but accurate
 			"bisect_offset": 0,  # Time offset (in seconds) added to the current position before bisecting.
 									# Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
 									# Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps.
@@ -153,11 +155,16 @@ def load_config():
 										  # Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker. Not implemented yet can be changed over if needed
 										  
 			"smart_refresh_duration": 1, # in second
-			"smart_coolcpu_ms": 10, 
-
+			
+			#"smart_refresh_interval": 80,
+			"smart_coolcpu_ms": 0, # used by triggers and proximity to keep the lyrics sync to patch stupid issue with long refresh interval ms and cmus's 1ms interval updates
+			"smart-proximity": False, # turns the proximity on just to keep up the next line being sync regardless of speed of the lyrics it will use the smart coolcpu ms freq
 			"jump_threshold_sec": 1,
 										# Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most
-			"sync_offset_sec": 0.225, # perfect? maybe should be good enough anyway but bewarned the high coolcpu ms may not work properly for fast paced lyrics
+			#"sync_offset_sec": 0.1050,
+			"sync_offset_sec": 0.0,
+			#"sync_offset_sec": 0.1050,
+			# "sync_offset_sec": 0.225, # perfect? maybe should be good enough anyway but bewarned the high coolcpu ms may not work properly for fast paced lyrics
 		},
 		"key_bindings": { # Set as "null" if you do not want it assigned 
 			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
@@ -283,6 +290,8 @@ COLOR_NAMES = {
 	"black": 0, "red": 1, "green": 2, "yellow": 3,
 	"blue": 4, "magenta": 5, "cyan": 6, "white": 7
 }
+
+DISPLAY_NAME = CONFIG["ui"]["name"]
 
 def get_color_value(color_input):
 	"""Convert color input to valid terminal color number (0-255)"""
@@ -1116,7 +1125,7 @@ def get_mpd_info():
 # ==============
 def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
 				   is_txt_format, is_a2_format, current_idx, use_manual_offset, 
-				   time_adjust=0, is_fetching=False, subframe_fraction=0.0, alignment='center'):
+				   time_adjust=0, is_fetching=False, subframe_fraction=0.0, alignment='center', player_info=None):
 	"""Render lyrics in curses interface with guaranteed bottom scroll capability"""
 	height, width = stdscr.getmaxyx()
 	status_msg = get_current_status()
@@ -1267,20 +1276,12 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 				pass
 			current_line_y += 1
 
-	# Render the status message (bottom line).
-	if status_msg:
-		try:
-			status_line = status_msg[:width-1]
-			stdscr.addstr(MAIN_STATUS_LINE, max(0, (width - len(status_line)) // 2), status_line)
-		except curses.error:
-			pass
-
 	if (current_idx is not None and 
 		current_idx == len(lyrics) - 1 and 
 		not is_txt_format and 
 		len(lyrics) > 1):
 		if height > 2:
-			stdscr.addstr(height-2, 0, " End of lyrics ", curses.A_BOLD)
+			stdscr.addstr(height-2, 0, " End of lyrics ", curses.color_pair(2) | curses.A_BOLD)
 
 	# Render the time adjustment display (second-to-last line).
 	if time_adjust != 0:
@@ -1290,22 +1291,100 @@ def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset,
 						  adj_str, curses.color_pair(2) | curses.A_BOLD)
 		except curses.error:
 			pass
-
-	# Render a line counter (bottom left).
+	# Render combined status line (bottom left)
 	try:
-		status_line = f" Line {min(current_idx+1, len(lyrics))}/{len(lyrics)}"
-		# if (current_idx is not None and 
-			# current_idx == len(lyrics) - 1 and 
-			# not is_txt_format and 
-			# len(lyrics) > 1):
-			# status_line = " End of lyrics "
-		if time_adjust != 0:
-			status_line += "[Adj]"
-		status_line = status_line[:width-1]
-		stdscr.addstr(MAIN_STATUS_LINE, 0, status_line, curses.A_BOLD)
+		if DISPLAY_NAME == True:
+			player_status = ""
+			is_instrumental = False
+
+			# Detect player info and fallback
+			if player_info:
+				player_type, data = player_info
+				status = data[5]
+				artist = data[2] or "Unknown Artist"
+				title = data[3] or (os.path.basename(data[0]) if data[0] else "Unknown Track")
+
+				# Instrumental detection (basic heuristics)
+				title_lower = title.lower()
+				if "instrumental" in title_lower or "karaoke" in title_lower:
+					is_instrumental = True
+
+				player_status = f"{title} - {artist}"
+
+			else:
+				player_status = "No track"
+				title = ""
+				artist = ""
+
+			# Core status items
+			current_line = min(current_idx + 1, len(lyrics)) if lyrics else 0
+			total_lines = len(lyrics) if lyrics else 0
+			line_counter = f"Line {current_line}/{total_lines}"
+
+			adj_indicator = "" if is_instrumental else ("[Adj] " if time_adjust != 0 else " ")
+			icon = " 🎵 " if not is_fetching else " ⏳ "
+
+			# === Display logic ===
+			max_length = width - 1
+			right_text = f"{line_counter}{adj_indicator}"
+
+			left_text = ""
+			spacer = " • "
+			right_mode = False
+
+			# Calculate room for left text
+			if player_status:
+				left_space = max_length - len(icon) - len(spacer) - len(right_text)
+
+				if left_space >= 10:
+					player_text = player_status
+					if len(player_text) > left_space:
+						player_text = player_text[:left_space - 3] + "..."
+					left_text = f"{icon}{player_text}{spacer}"
+				else:
+					# Too tight, use only icon, right-align line info
+					left_text = f"{icon}"
+					right_mode = True
+			else:
+				left_text = f"{icon}"
+				right_mode = True
+
+			if right_mode:
+				# Tight layout: right-align counter/adj
+				spacing = max_length - len(left_text) - len(right_text)
+				if spacing < 0:
+					spacing = 0
+				full_status = left_text + (" " * spacing) + right_text
+			else:
+				# Inline layout: just append right_text
+				full_status = f"{left_text}{right_text}"
+
+			stdscr.addstr(MAIN_STATUS_LINE, 0, full_status[:max_length], curses.color_pair(5) | curses.A_BOLD) # you might wanted to customize this color ... ill add them options in configs laters
+		else:
+			status_line = f" Line {min(current_idx+1, len(lyrics))}/{len(lyrics)}"
+			# if (current_idx is not None and 
+				# current_idx == len(lyrics) - 1 and 
+				# not is_txt_format and 
+				# len(lyrics) > 1):
+				# status_line = " End of lyrics "
+			if time_adjust != 0:
+				status_line += "[Adj]"
+			status_line = status_line[:width-1]
+			stdscr.addstr(MAIN_STATUS_LINE, 0, status_line, curses.A_BOLD)
+
 	except curses.error:
 		pass
 
+
+	# Render the status message (bottom line).
+	if status_msg:
+		try:
+			status_line = status_msg[:width-1]
+			status_line = f"  [{status_line}]  "
+			stdscr.addstr(MAIN_STATUS_LINE, max(0, (width - len(status_line)) // 2), status_line, curses.color_pair(2) | curses.A_BOLD)
+		except curses.error:
+			pass
+			
 	stdscr.refresh()
 	return start_screen_line
 
@@ -1443,7 +1522,7 @@ def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw,
 
 def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, 
 				   is_txt_format, is_a2_format, current_idx, manual_scroll_active, 
-				   time_adjust=0, is_fetching=False, subframe_fraction=0.0,alignment='center'):
+				   time_adjust=0, is_fetching=False, subframe_fraction=0.0,alignment='center', player_info = None):
 	"""Update display based on current state.
 	
 	Now includes subframe_fraction for fine-grained progress within a lyric line.
@@ -1453,12 +1532,12 @@ def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset,
 		return display_lyrics(stdscr, lyrics, errors, position, 
 							  os.path.basename(audio_file), manual_offset, 
 							  is_txt_format, is_a2_format, current_idx, True, 
-							  time_adjust, is_fetching, subframe_fraction, alignment)
+							  time_adjust, is_fetching, subframe_fraction, alignment, player_info)
 	else:
 		return display_lyrics(stdscr, lyrics, errors, position, 
 							  os.path.basename(audio_file), manual_offset, 
 							  is_txt_format, is_a2_format, current_idx, 
-							  manual_scroll_active, time_adjust, is_fetching, subframe_fraction,alignment)
+							  manual_scroll_active, time_adjust, is_fetching, subframe_fraction, alignment, player_info)
 
 
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
@@ -1629,8 +1708,8 @@ def main(stdscr):
 	curses.curs_set(0)
 	stdscr.nodelay(True)  # do not block on getch() 
 
-	stdscr.timeout(refresh_interval_2)  # More frequent updates (80ms)
-
+	#stdscr.timeout(refresh_interval_2)  # More frequent updates (80ms)
+	stdscr.timeout(0)  # More frequent updates (80ms)
 	# Initialize application state
 	state = {
 		'current_file': None,
@@ -1666,11 +1745,20 @@ def main(stdscr):
 		'player_info': (None, (None, 0, None, None, 0, "stopped")),
 		'resume_trigger_time': None,  # NEW
 		'smart_tracking': CONFIG["ui"].get("smart-tracking"),
+		"smart_proximity": CONFIG["ui"].get("smart-proximity", False),
 	}
+
+	PROXIMITY_THRESHOLD_SEC     = CONFIG["ui"].get("proximity_threshold_sec", 0.05)
+	PROXIMITY_THRESHOLD_PERCENT = CONFIG["ui"].get("proximity_threshold_percent", 0.05)
+
+	# Minimum time before we bother switching into high‑freq updates (seconds)
+	PROXIMITY_MIN_THRESHOLD_SEC = CONFIG["ui"].get("proximity_min_threshold_sec", 0.01)
+	# Maximum window beyond which we never switch (seconds)
+	PROXIMITY_MAX_THRESHOLD_SEC = CONFIG["ui"].get("proximity_max_threshold_sec", 1)
 
 	executor = ThreadPoolExecutor(max_workers=4)
 	future_lyrics = None
-
+	state['proximity_trigger_time'] = None
 	# Playback tracking variables
 	last_cmus_position = 0
 	JUMP_THRESHOLD = CONFIG["ui"].get("jump_threshold_sec", 1.0)
@@ -1688,7 +1776,7 @@ def main(stdscr):
 			current_time = time.perf_counter()
 			needs_redraw = False
 			time_since_input = current_time - (state['last_input'] or 0)
-
+			
 			# Handle manual scroll timeout
 			if state['last_input'] > 0:
 				if time_since_input >= SCROLL_TIMEOUT:
@@ -1712,7 +1800,6 @@ def main(stdscr):
 					state['manual_offset'] = int(state['manual_offset'] * (new_h / old_h))
 				state['window_size'] = current_window_size
 				needs_redraw = True
-				
 
 			TEMPORARY_REFRESH_SEC = 1
 
@@ -1890,16 +1977,57 @@ def main(stdscr):
 			
 			end_gap = duration - continuous_position
 
-			# Trigger refresh when approaching end
-			if 0 < end_gap <= end_threshold:
-				state['resume_trigger_time'] = time.perf_counter()
-				log_debug(f"Nearing track end: {end_gap:.3f}s remaining, triggering refresh")
+			# Proximity refresh
+			if (not manual_scroll
+				and state['smart_proximity']
+				and state['timestamps']
+				and not state['is_txt']
+				and current_idx >= 0
+				and current_idx + 1 < len(state['timestamps'])
+				and not playback_paused):
 
-			# if duration > 0:  # Ensure valid duration
-				# end_gap = duration - continuous_position
-				# if 0 < end_gap <= 0.2:
-					# state['resume_trigger_time'] = time.perf_counter()
-					# log_debug(f"End proximity: {end_gap:.3f}s remaining")
+				current_ts    = state['timestamps'][current_idx]
+				next_ts       = state['timestamps'][current_idx + 1]
+				line_duration = next_ts - current_ts
+
+				# 1) Compute raw threshold from percent/absolute logic
+				percent_thresh = line_duration * PROXIMITY_THRESHOLD_PERCENT
+				abs_thresh     = PROXIMITY_THRESHOLD_SEC
+				raw_thresh     = max(percent_thresh, abs_thresh)
+
+				# 2) Clamp it between your CONFIG’d min/max and the line duration
+				threshold = min(
+					max(raw_thresh, PROXIMITY_MIN_THRESHOLD_SEC),
+					min(PROXIMITY_MAX_THRESHOLD_SEC, line_duration)
+				)
+
+				# 3) Compute time_to_next, clamped to [0, line_duration]
+				raw_delta     = next_ts - continuous_position
+				time_to_next  = min(line_duration, max(0.0, raw_delta))
+
+				now = time.perf_counter()
+
+				# 4) Only switch into high‑freq if we're within [min, threshold]
+				if PROXIMITY_MIN_THRESHOLD_SEC <= time_to_next <= threshold:
+					state['proximity_trigger_time'] = now
+					stdscr.timeout(smart_refresh_interval)
+					log_debug(
+						f"Proximity TRIG: time_to_next={time_to_next:.3f}s "
+						f"within [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]"
+					)
+
+				# 5) Reset back to normal once we're outside that window *and* we’d previously triggered
+				elif (state['proximity_trigger_time'] is not None
+					  and (time_to_next < PROXIMITY_MIN_THRESHOLD_SEC
+						   or time_to_next > threshold
+						   or now - state['proximity_trigger_time'] > threshold)):
+					stdscr.timeout(refresh_interval_2)
+					state['proximity_trigger_time'] = None
+					log_debug(
+						f"Proximity RESET: time_to_next={time_to_next:.3f}s "
+						f"outside [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]"
+					)
+
 
 			# ─── Log continuous position for debugging ───────────────────────────────────
 			#log_debug(f"Continuous position = {continuous_position:.6f} seconds")
@@ -2003,6 +2131,8 @@ def main(stdscr):
 					last_position_time = now  # Reset timer to prevent residual elapsed time
 			# ────────────────────────────────────────────────────────────────────────────────
 
+
+
 			# # Auto-scroll logic
 			if state['last_input'] == 0 and not manual_scroll:
 				if state['is_txt'] and state['wrapped_lines']:
@@ -2068,7 +2198,8 @@ def main(stdscr):
 					manual_scroll,
 					state['time_adjust'],
 					future_lyrics is not None,
-					alignment=state['alignment']
+					alignment=state['alignment'],
+					player_info=state["player_info"],
 				)
 				# Synchronize actual offset used
 				state['manual_offset'] = start_screen_line
@@ -2080,8 +2211,6 @@ def main(stdscr):
 				})
 				#stdscr.timeout(80)
 				log_debug("Triggered redraw")
-			else:
-				stdscr.timeout(refresh_interval_2)
 			
 			#cpu destressor
 			if status == "paused" and not manual_scroll and not state['current_file']:
@@ -2109,8 +2238,12 @@ if __name__ == "__main__":
 		try:
 			curses.wrapper(main)
 		except KeyboardInterrupt:
-			raise KeyboardInterrupt
+			print("Exited by user (Ctrl+C).")
+			exit() # Please do not delete this
+			# raise KeyboardInterrupt
 		except Exception as e:
 			log_debug(f"Fatal error: {str(e)}")
 			time.sleep(1)
 		
+
+
