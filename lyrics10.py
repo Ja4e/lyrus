@@ -71,8 +71,6 @@ LOG_LEVELS = {
 	"TRACE": 0
 }
 
-# Constants
-SCROLL_TIMEOUT = 2.0  # seconds for manual scroll timeout
 
 # ==============
 #  CONFIGURATION
@@ -128,7 +126,7 @@ def load_config():
 		},
 		"ui": {
 			"alignment": "left",  # Options: "left", "center", "right" you get thee idea
-			"name": False, # Do false if you wanted to hide the song name whatsover
+			"name": True, # Do false if you wanted to hide the song name whatsover
 			"colors": {
 				"txt": {
 					"active": {"env": "TXT_ACTIVE", "default": "254"},  # or in numbers ranging from 0-256 will add support for hex color
@@ -141,11 +139,11 @@ def load_config():
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
 			"scroll_timeout": 2, # scroll timeout to auto scroll
-			"refresh_interval_ms": 0, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth #100 or 0
-			"coolcpu_ms": 100, #cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it #10 or 100
-			"wrap_width_percent": 90,  # Just incase you need them need better implementations
-			"proximity_threshold_percent": 0.001,
-			"smart-tracking": 1, # incase you need to enable it, it will certainly lock to the next early but accurate
+			"refresh_interval_ms": 100, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth #100 or 0, I would recommend you to include this ms latency into that snyc offset sec
+			"coolcpu_ms": 100, # cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it #10 or 100
+			
+			
+			"smart-tracking": 0, # incase you need to enable it, it will certainly lock to the next early but accurate This is not in boolean format because i will implement more sophiscated ones in future
 			"bisect_offset": 0,  # Time offset (in seconds) added to the current position before bisecting.
 									# Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
 									# Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps.
@@ -154,17 +152,23 @@ def load_config():
 										  # If more than 99% of the current line duration has passed, it allows switching early.
 										  # Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker. Not implemented yet can be changed over if needed
 										  
-			"smart_refresh_duration": 1, # in second
+		
+		
+			"wrap_width_percent": 90,  # Just incase you need them need better implementations not yet implemented
+			"smart_refresh_duration": 1, # in second hmmm not implemented yet just leave this alone
+			
 			
 			#"smart_refresh_interval": 80,
-			"smart_coolcpu_ms": 0, # used by triggers and proximity to keep the lyrics sync to patch stupid issue with long refresh interval ms and cmus's 1ms interval updates
-			"smart-proximity": False, # turns the proximity on just to keep up the next line being sync regardless of speed of the lyrics it will use the smart coolcpu ms freq
-			"jump_threshold_sec": 1,
-										# Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most
-			#"sync_offset_sec": 0.1050,
-			"sync_offset_sec": 0.0,
-			#"sync_offset_sec": 0.1050,
-			# "sync_offset_sec": 0.225, # perfect? maybe should be good enough anyway but bewarned the high coolcpu ms may not work properly for fast paced lyrics
+			"smart_coolcpu_ms": 0, # used by triggers
+			"smart_coolcpu_ms_v2": 50, # used by proximity to keep the lyrics sync to patch stupid issue with long refresh interval ms and cmus's 1ms interval updates
+			"smart-proximity": True, # turns the proximity on just to keep up the next line being sync regardless of speed of the lyrics it will use the smart coolcpu ms freq if you wanted it separate mmm you could ill have to make separate variables
+			"proximity_threshold_percent": 0.001,
+			
+			"jump_threshold_sec": 1, # Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most, cmus updates in seconds 
+
+			#"sync_offset_sec": 0.105,
+
+			 "sync_offset_sec": 0.225, # perfect? maybe should be good enough anyway but bewarned the high coolcpu ms may not work properly for fast paced lyrics
 		},
 		"key_bindings": { # Set as "null" if you do not want it assigned 
 			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
@@ -1123,270 +1127,531 @@ def get_mpd_info():
 # ==============
 #  UI RENDERING
 # ==============
-def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
-				   is_txt_format, is_a2_format, current_idx, use_manual_offset, 
-				   time_adjust=0, is_fetching=False, subframe_fraction=0.0, alignment='center', player_info=None):
-	"""Render lyrics in curses interface with guaranteed bottom scroll capability"""
-	height, width = stdscr.getmaxyx()
-	status_msg = get_current_status()
+# def display_lyrics(stdscr, lyrics, errors, position, track_info, manual_offset, 
+				   # is_txt_format, is_a2_format, current_idx, use_manual_offset, 
+				   # time_adjust=0, is_fetching=False, subframe_fraction=0.0, alignment='center', player_info=None):
+	# """Render lyrics in curses interface with guaranteed bottom scroll capability"""
+	# height, width = stdscr.getmaxyx()
+	# status_msg = get_current_status()
 	
-	# Status bar configuration: reserve two lines for time adjustment and main status.
-	STATUS_LINES = 2  
-	MAIN_STATUS_LINE = height - 1
-	TIME_ADJUST_LINE = height - 2
-	# LYRICS_AREA_HEIGHT = height - STATUS_LINES  # Lines available for lyrics
-	LYRICS_AREA_HEIGHT = height - STATUS_LINES - 1
+	# # Status bar configuration: reserve two lines for time adjustment and main status.
+	# STATUS_LINES = 2  
+	# MAIN_STATUS_LINE = height - 1
+	# TIME_ADJUST_LINE = height - 2
+	# # LYRICS_AREA_HEIGHT = height - STATUS_LINES  # Lines available for lyrics
+	# LYRICS_AREA_HEIGHT = height - STATUS_LINES - 1
 	
-	# Minimum terminal size check.
-	# if LYRICS_AREA_HEIGHT < 3 or width < 10:
+	# # Minimum terminal size check.
+	# # if LYRICS_AREA_HEIGHT < 3 or width < 10:
+		# # try:
+			# # stdscr.clear()
+			# # stdscr.addstr(0, 0, "Window too small", curses.color_pair(1))
+		# # except curses.error:
+			# # pass
+		# # stdscr.refresh()
+		# # return 0
+
+	# stdscr.clear()
+
+	# # Display errors on the top line.
+	# if errors:
 		# try:
-			# stdscr.clear()
-			# stdscr.addstr(0, 0, "Window too small", curses.color_pair(1))
+			# error_str = f"Errors: {len(errors)}"[:width-1]
+			# stdscr.addstr(0, 0, error_str, curses.color_pair(1))
 		# except curses.error:
 			# pass
-		# stdscr.refresh()
-		# return 0
 
-	stdscr.clear()
+	# if is_a2_format:
+		# # A2 Format Rendering
+		# a2_lines = []
+		# current_line = []
+		# for t, item in lyrics:
+			# if item is None:
+				# if current_line:
+					# a2_lines.append(current_line)
+					# current_line = []
+			# else:
+				# current_line.append((t, item))
+		# if current_line:
+			# a2_lines.append(current_line)
 
-	# Display errors on the top line.
+		# # Calculate visible range: available lines equals LYRICS_AREA_HEIGHT.
+		# visible_lines = LYRICS_AREA_HEIGHT
+		# max_start_line = max(0, len(a2_lines) - visible_lines)
+		# # For manual scroll, clamp manual_offset to [0, max_start_line]
+		# start_line = (max(0, min(manual_offset, max_start_line)) 
+					  # if use_manual_offset else max_start_line)
+
+		# # Render A2 lines starting at y=1 (below error line) until TIME_ADJUST_LINE.
+		# current_y = 1
+		# for line_idx in range(start_line, min(start_line + visible_lines, len(a2_lines))):
+			# if current_y >= TIME_ADJUST_LINE:
+				# break
+			# line = a2_lines[line_idx]
+			# line_str = " ".join([text for _, (text, _) in line])
+			# # Alignment calculation
+			# if alignment == 'right':
+				# x_pos = max(0, width - len(line_str) - 1)
+			# elif alignment == 'center':
+				# x_pos = max(0, (width - len(line_str)) // 2)
+			# else:
+				# x_pos = 1
+
+			# # Render each word in the line.
+			# cursor = 0
+			# for word_idx, (start, (text, end)) in enumerate(line):
+				# remaining_space = width - x_pos - cursor - 1
+				# if remaining_space <= 0:
+					# break
+				# display_text = text[:remaining_space]
+				# # Highlight the last A2 line differently.
+				# color = curses.color_pair(2) if line_idx == (len(a2_lines) - 1) else curses.color_pair(3)
+				# try:
+					# stdscr.addstr(current_y, x_pos + cursor, display_text, color)
+					# cursor += len(display_text) + 1
+				# except curses.error:
+					# break
+			# current_y += 1
+
+		# start_screen_line = start_line
+
+	# else:
+		# # LRC/TXT Format Rendering
+		# wrap_width = max(10, width - 2)
+		# wrapped_lines = []
+		# # Generate wrapped lines with index tracking.
+		# for orig_idx, (_, lyric) in enumerate(lyrics):
+			# if lyric.strip():
+				# lines = textwrap.wrap(lyric, wrap_width, drop_whitespace=False)
+				# if lines:
+					# # First line without a leading space.
+					# wrapped_lines.append((orig_idx, lines[0]))
+					# for line in lines[1:]:
+						# # For wrapped continuation, add a leading space.
+						# wrapped_lines.append((orig_idx, " " + line))
+			# else:
+				# wrapped_lines.append((orig_idx, ""))
+
+		# # Compute available lines (do not add extra margin here).
+		# available_lines = LYRICS_AREA_HEIGHT
+		# total_wrapped = len(wrapped_lines)
+		# max_start = max(0, total_wrapped - available_lines)
+		
+		# if use_manual_offset:
+			# # Clamp manual_offset between 0 and max_start.
+			# start_screen_line = max(0, min(manual_offset, max_start))
+		# else:
+			# # Auto-scroll: Center current lyric if possible.
+			# if current_idx >= len(lyrics) - 1:
+				# start_screen_line = max_start
+			# else:
+				# indices = [i for i, (orig, _) in enumerate(wrapped_lines) if orig == current_idx]
+				# if indices:
+					# center = (indices[0] + indices[-1]) // 2
+					# ideal_start = center - (available_lines // 2)
+					# start_screen_line = max(0, min(ideal_start, max_start))
+				# else:
+					# start_screen_line = max(0, min(current_idx, max_start))
+
+		# # Render visible wrapped lines starting at y=1 (below error message).
+		# end_screen_line = min(start_screen_line + available_lines, total_wrapped)
+		# current_line_y = 1
+		# for idx, (orig_idx, line) in enumerate(wrapped_lines[start_screen_line:end_screen_line]):
+			# if current_line_y >= TIME_ADJUST_LINE:
+				# break
+			# trimmed_line = line.strip()[:width-1]
+			# # Alignment calculation
+			# if alignment == 'right':
+				# x_pos = max(0, width - len(trimmed_line) - 1)
+			# elif alignment == 'center':
+				# x_pos = max(0, (width - len(trimmed_line)) // 2)
+			# else:
+				# x_pos = 1
+
+			# # Color handling based on type.
+			# if is_txt_format:
+				# color = curses.color_pair(4) if orig_idx == current_idx else curses.color_pair(5)
+			# else:
+				# color = curses.color_pair(2) if orig_idx == current_idx else curses.color_pair(3)
+			
+			# try:
+				# stdscr.addstr(current_line_y, x_pos, trimmed_line, color)
+			# except curses.error:
+				# pass
+			# current_line_y += 1
+
+	# if (current_idx is not None and 
+		# current_idx == len(lyrics) - 1 and 
+		# not is_txt_format and 
+		# len(lyrics) > 1):
+		# if height > 2:
+			# stdscr.addstr(height-2, 0, " End of lyrics ", curses.color_pair(2) | curses.A_BOLD)
+
+	# # Render the time adjustment display (second-to-last line).
+	# if time_adjust != 0:
+		# try:
+			# adj_str = f" Offset: {time_adjust:+.1f}s "[:width-1]
+			# stdscr.addstr(TIME_ADJUST_LINE, max(0, width - len(adj_str) - 1),
+						  # adj_str, curses.color_pair(2) | curses.A_BOLD)
+		# except curses.error:
+			# pass
+	# # Render combined status line (bottom left)
+
+	# # Render combined status line (bottom left)
+	# try:
+		# if DISPLAY_NAME:
+			# player_status = ""
+			# is_instrumental = False
+
+			# # Detect player info and fallback
+			# if player_info:
+				# player_type, data = player_info
+				# status = data[5]
+				# artist = data[2] or "Unknown Artist"
+				# title = data[3] or (os.path.basename(data[0]) if data[0] else "Unknown Track")
+
+				# # Instrumental detection (basic heuristics)
+				# title_lower = title.lower()
+				# if "instrumental" in title_lower or "karaoke" in title_lower:
+					# is_instrumental = True
+
+				# player_status = f"{title} - {artist}"
+			# else:
+				# player_status = "No track"
+				# title = ""
+				# artist = ""
+
+			# # Core status values
+			# current_line = min(current_idx + 1, len(lyrics)) if lyrics else 0
+			# total_lines = len(lyrics) if lyrics else 0
+			# adj_indicator = "" if is_instrumental else ("[Adj] " if time_adjust != 0 else "")
+			# icon = " 🎵 " if not is_fetching else " ⏳ "
+
+			# line_info_full = f"Line {current_line}/{total_lines}{adj_indicator}"
+			# line_info_short = f"{current_line}/{total_lines}{adj_indicator}"
+
+			# max_len = width - 1
+			# left_text = ""
+			# spacer = " • "
+
+			# # Try full line first
+			# if len(icon + player_status + spacer + line_info_full) <= max_len:
+				# full_status = f"{icon}{player_status}{spacer}{line_info_full}"
+
+			# # If too long, try with short line info
+			# elif len(icon + player_status + spacer + line_info_short) <= max_len:
+				# allowed_left = max_len - len(line_info_short) - len(spacer)
+				# trunc_left = player_status
+				# if len(icon + trunc_left) > allowed_left:
+					# trunc_len = allowed_left - len(icon) - 3  # for "..."
+					# trunc_left = trunc_left[:trunc_len] + '...' if trunc_len > 0 else ''
+				# padding = ' ' * max(allowed_left - len(icon + trunc_left), 0)
+				# full_status = f"{icon}{trunc_left}{padding}{spacer}{line_info_short}"
+
+			# # If even that is too long, drop title/artist
+			# elif len(line_info_short) <= max_len - len(icon):
+				# padding = ' ' * (max_len - len(icon + line_info_short))
+				# full_status = f"{icon}{padding}{line_info_short}"
+
+			# else:
+				# # Absolute fallback: drop icon if needed
+				# short_line = line_info_short[:max_len]
+				# full_status = short_line
+
+			# stdscr.addstr(MAIN_STATUS_LINE, 0, full_status[:max_len], curses.color_pair(5) | curses.A_BOLD)
+
+		# else:
+			# # DISPLAY_NAME is False, fallback logic
+			# status_line = f" Line {min(current_idx+1, len(lyrics))}/{len(lyrics)}"
+			# # if (current_idx is not None and 
+				# # current_idx == len(lyrics) - 1 and 
+				# # not is_txt_format and 
+				# # len(lyrics) > 1):
+				# # status_line = " End of lyrics "
+			# if time_adjust != 0:
+				# status_line += "[Adj]"
+			# status_line = status_line[:width - 1]
+			# stdscr.addstr(MAIN_STATUS_LINE, 0, status_line, curses.A_BOLD)
+
+	# except curses.error:
+		# pass
+
+	# # Render the status message (bottom line).
+	# if status_msg:
+		# try:
+			# status_line = status_msg[:width-1]
+			# status_line = f"  [{status_line}]  "
+			# stdscr.addstr(MAIN_STATUS_LINE, max(0, (width - len(status_line)) // 2), status_line, curses.color_pair(2) | curses.A_BOLD)
+		# except curses.error:
+			# pass
+			
+	# stdscr.refresh()
+	# return start_screen_line
+
+def display_lyrics( # Revamped the whole display lyrics logic should be a massive improvement however i sometimes prefer the previous on you could choose anyway commen it out or smth, but this feels more snappy less computations, resizing to smaller window will leave massive spaces thus making lines which something you might not wanted where the previous one doesnt have that issue at all
+	stdscr,
+	lyrics,
+	errors,
+	position,
+	track_info,
+	manual_offset,
+	is_txt_format,
+	is_a2_format,
+	current_idx,
+	use_manual_offset,
+	time_adjust=0,
+	is_fetching=False,
+	subframe_fraction=0.0,
+	alignment='center',
+	player_info=None
+):
+	"""Render lyrics in curses interface with minimal redraw using separate windows and dynamic resize."""
+	# Get terminal dimensions
+	height, width = stdscr.getmaxyx()
+	status_msg = get_current_status()
+
+	# Layout constants
+	STATUS_LINES = 2
+	MAIN_STATUS_LINE = height - 1
+	TIME_ADJUST_LINE = height - 2
+	LYRICS_AREA_HEIGHT = height - STATUS_LINES - 1
+
+	# On first call or after resize, (re)initialize windows
+	if (not hasattr(display_lyrics, '_dims')
+		or display_lyrics._dims != (height, width)):
+		display_lyrics._dims = (height, width)
+		# Create/Recreate sub-windows for each section
+		display_lyrics.error_win = curses.newwin(1, width, 0, 0)
+		display_lyrics.lyrics_win = curses.newwin(LYRICS_AREA_HEIGHT, width, 1, 0)
+		display_lyrics.adjust_win = curses.newwin(1, width, TIME_ADJUST_LINE, 0)
+		display_lyrics.status_win = curses.newwin(1, width, MAIN_STATUS_LINE, 0)
+
+	# Alias windows
+	error_win = display_lyrics.error_win
+	lyrics_win = display_lyrics.lyrics_win
+	adjust_win = display_lyrics.adjust_win
+	status_win = display_lyrics.status_win
+
+	# --- 1) Render errors ---
+	error_win.erase()
 	if errors:
 		try:
-			error_str = f"Errors: {len(errors)}"[:width-1]
-			stdscr.addstr(0, 0, error_str, curses.color_pair(1))
+			err_str = f"Errors: {len(errors)}"[:width-1]
+			error_win.addstr(0, 0, err_str, curses.color_pair(1))
 		except curses.error:
 			pass
+	error_win.noutrefresh()
+
+	# --- 2) Render lyrics ---
+	lyrics_win.erase()
 
 	if is_a2_format:
-		# A2 Format Rendering
-		a2_lines = []
-		current_line = []
+		# Build A2 group lines
+		a2_lines, cur = [], []
 		for t, item in lyrics:
 			if item is None:
-				if current_line:
-					a2_lines.append(current_line)
-					current_line = []
+				if cur:
+					a2_lines.append(cur)
+					cur = []
 			else:
-				current_line.append((t, item))
-		if current_line:
-			a2_lines.append(current_line)
+				cur.append((t, item))
+		if cur:
+			a2_lines.append(cur)
 
-		# Calculate visible range: available lines equals LYRICS_AREA_HEIGHT.
-		visible_lines = LYRICS_AREA_HEIGHT
-		max_start_line = max(0, len(a2_lines) - visible_lines)
-		# For manual scroll, clamp manual_offset to [0, max_start_line]
-		start_line = (max(0, min(manual_offset, max_start_line)) 
-					  if use_manual_offset else max_start_line)
-
-		# Render A2 lines starting at y=1 (below error line) until TIME_ADJUST_LINE.
-		current_y = 1
-		for line_idx in range(start_line, min(start_line + visible_lines, len(a2_lines))):
-			if current_y >= TIME_ADJUST_LINE:
+		visible = LYRICS_AREA_HEIGHT
+		max_start = max(0, len(a2_lines) - visible)
+		start_line = (min(max(manual_offset, 0), max_start)
+					  if use_manual_offset else max_start)
+		y = 0
+		for idx in range(start_line, min(start_line + visible, len(a2_lines))):
+			if y >= visible:
 				break
-			line = a2_lines[line_idx]
-			line_str = " ".join([text for _, (text, _) in line])
-			# Alignment calculation
+			line = a2_lines[idx]
+			line_str = " ".join(text for _, (text, _) in line)
+			# Alignment
 			if alignment == 'right':
-				x_pos = max(0, width - len(line_str) - 1)
+				x = max(0, width - len(line_str) - 1)
 			elif alignment == 'center':
-				x_pos = max(0, (width - len(line_str)) // 2)
+				x = max(0, (width - len(line_str)) // 2)
 			else:
-				x_pos = 1
-
-			# Render each word in the line.
+				x = 1
+			# Draw words in line
 			cursor = 0
-			for word_idx, (start, (text, end)) in enumerate(line):
-				remaining_space = width - x_pos - cursor - 1
-				if remaining_space <= 0:
+			for _, (text, _) in line:
+				space_left = width - x - cursor - 1
+				if space_left <= 0:
 					break
-				display_text = text[:remaining_space]
-				# Highlight the last A2 line differently.
-				color = curses.color_pair(2) if line_idx == (len(a2_lines) - 1) else curses.color_pair(3)
+				txt = text[:space_left]
+				color = curses.color_pair(2) if idx == len(a2_lines)-1 else curses.color_pair(3)
 				try:
-					stdscr.addstr(current_y, x_pos + cursor, display_text, color)
-					cursor += len(display_text) + 1
+					lyrics_win.addstr(y, x + cursor, txt, color)
 				except curses.error:
 					break
-			current_y += 1
-
+				cursor += len(txt) + 1
+			y += 1
 		start_screen_line = start_line
 
 	else:
-		# LRC/TXT Format Rendering
-		wrap_width = max(10, width - 2)
-		wrapped_lines = []
-		# Generate wrapped lines with index tracking.
-		for orig_idx, (_, lyric) in enumerate(lyrics):
-			if lyric.strip():
-				lines = textwrap.wrap(lyric, wrap_width, drop_whitespace=False)
-				if lines:
-					# First line without a leading space.
-					wrapped_lines.append((orig_idx, lines[0]))
-					for line in lines[1:]:
-						# For wrapped continuation, add a leading space.
-						wrapped_lines.append((orig_idx, " " + line))
+		# LRC/TXT wrapping
+		wrap_w = max(10, width-2)
+		wrapped = []
+		for orig_i, (_, ly) in enumerate(lyrics):
+			if ly.strip():
+				lines = textwrap.wrap(ly, wrap_w, drop_whitespace=False)
+				wrapped.append((orig_i, lines[0]))
+				for cont in lines[1:]:
+					wrapped.append((orig_i, ' ' + cont))
 			else:
-				wrapped_lines.append((orig_idx, ""))
+				wrapped.append((orig_i, ''))
 
-		# Compute available lines (do not add extra margin here).
-		available_lines = LYRICS_AREA_HEIGHT
-		total_wrapped = len(wrapped_lines)
-		max_start = max(0, total_wrapped - available_lines)
-		
+		total = len(wrapped)
+		avail = LYRICS_AREA_HEIGHT
+		max_start = max(0, total - avail)
+
 		if use_manual_offset:
-			# Clamp manual_offset between 0 and max_start.
-			start_screen_line = max(0, min(manual_offset, max_start))
+			start_screen_line = min(max(manual_offset, 0), max_start)
 		else:
-			# Auto-scroll: Center current lyric if possible.
-			if current_idx >= len(lyrics) - 1:
+			if current_idx >= len(lyrics)-1:
 				start_screen_line = max_start
 			else:
-				indices = [i for i, (orig, _) in enumerate(wrapped_lines) if orig == current_idx]
-				if indices:
-					center = (indices[0] + indices[-1]) // 2
-					ideal_start = center - (available_lines // 2)
-					start_screen_line = max(0, min(ideal_start, max_start))
+				idxs = [i for i,(o,_) in enumerate(wrapped) if o==current_idx]
+				if idxs:
+					center = (idxs[0]+idxs[-1])//2
+					ideal = center - avail//2
+					start_screen_line = min(max(ideal, 0), max_start)
 				else:
-					start_screen_line = max(0, min(current_idx, max_start))
+					start_screen_line = min(max(current_idx, 0), max_start)
 
-		# Render visible wrapped lines starting at y=1 (below error message).
-		end_screen_line = min(start_screen_line + available_lines, total_wrapped)
-		current_line_y = 1
-		for idx, (orig_idx, line) in enumerate(wrapped_lines[start_screen_line:end_screen_line]):
-			if current_line_y >= TIME_ADJUST_LINE:
+		end_line = min(start_screen_line + avail, total)
+		y = 0
+		for _, line in wrapped[start_screen_line:end_line]:
+			if y >= avail:
 				break
-			trimmed_line = line.strip()[:width-1]
-			# Alignment calculation
+			txt = line.strip()[:width-1]
 			if alignment == 'right':
-				x_pos = max(0, width - len(trimmed_line) - 1)
+				x = max(0, width - len(txt) - 1)
 			elif alignment == 'center':
-				x_pos = max(0, (width - len(trimmed_line)) // 2)
+				x = max(0, (width - len(txt))//2)
 			else:
-				x_pos = 1
-
-			# Color handling based on type.
+				x = 1
 			if is_txt_format:
-				color = curses.color_pair(4) if orig_idx == current_idx else curses.color_pair(5)
+				color = curses.color_pair(4) if wrapped[start_screen_line+y][0]==current_idx else curses.color_pair(5)
 			else:
-				color = curses.color_pair(2) if orig_idx == current_idx else curses.color_pair(3)
-			
+				color = curses.color_pair(2) if wrapped[start_screen_line+y][0]==current_idx else curses.color_pair(3)
 			try:
-				stdscr.addstr(current_line_y, x_pos, trimmed_line, color)
+				lyrics_win.addstr(y, x, txt, color)
 			except curses.error:
 				pass
-			current_line_y += 1
+			y += 1
 
-	if (current_idx is not None and 
-		current_idx == len(lyrics) - 1 and 
-		not is_txt_format and 
+	lyrics_win.noutrefresh()
+
+	# --- 3) End-of-lyrics or Time-adjustment display ---
+	adjust_win.erase()
+	# Show "End of lyrics" when at final line of non-text format
+	if (current_idx is not None and
+		current_idx == len(lyrics) - 1 and
+		not is_txt_format and
 		len(lyrics) > 1):
-		if height > 2:
-			stdscr.addstr(height-2, 0, " End of lyrics ", curses.color_pair(2) | curses.A_BOLD)
-
-	# Render the time adjustment display (second-to-last line).
-	if time_adjust != 0:
 		try:
-			adj_str = f" Offset: {time_adjust:+.1f}s "[:width-1]
-			stdscr.addstr(TIME_ADJUST_LINE, max(0, width - len(adj_str) - 1),
-						  adj_str, curses.color_pair(2) | curses.A_BOLD)
+			adjust_win.addstr(0, 0, " End of lyrics ", curses.color_pair(2) | curses.A_BOLD)
 		except curses.error:
 			pass
-	# Render combined status line (bottom left)
-	try:
-		if DISPLAY_NAME == True:
-			player_status = ""
-			is_instrumental = False
+	# Otherwise, show time adjustment
+	elif time_adjust:
+		adj_str = f" Offset: {time_adjust:+.1f}s "[:width-1]
+		try:
+			adjust_win.addstr(0, max(0, width - len(adj_str) - 1),
+							   adj_str, curses.color_pair(2) | curses.A_BOLD)
+		except curses.error:
+			pass
+	adjust_win.noutrefresh()
 
-			# Detect player info and fallback
-			if player_info:
-				player_type, data = player_info
-				status = data[5]
-				artist = data[2] or "Unknown Artist"
-				title = data[3] or (os.path.basename(data[0]) if data[0] else "Unknown Track")
-
-				# Instrumental detection (basic heuristics)
-				title_lower = title.lower()
-				if "instrumental" in title_lower or "karaoke" in title_lower:
-					is_instrumental = True
-
-				player_status = f"{title} - {artist}"
-
-			else:
-				player_status = "No track"
-				title = ""
-				artist = ""
-
-			# Core status items
-			current_line = min(current_idx + 1, len(lyrics)) if lyrics else 0
-			total_lines = len(lyrics) if lyrics else 0
-			line_counter = f"Line {current_line}/{total_lines}"
-
-			adj_indicator = "" if is_instrumental else ("[Adj] " if time_adjust != 0 else " ")
-			icon = " 🎵 " if not is_fetching else " ⏳ "
-
-			# === Display logic ===
-			max_length = width - 1
-			right_text = f"{line_counter}{adj_indicator}"
-
-			left_text = ""
-			spacer = " • "
-			right_mode = False
-
-			# Calculate room for left text
-			if player_status:
-				left_space = max_length - len(icon) - len(spacer) - len(right_text)
-
-				if left_space >= 10:
-					player_text = player_status
-					if len(player_text) > left_space:
-						player_text = player_text[:left_space - 3] + "..."
-					left_text = f"{icon}{player_text}{spacer}"
-				else:
-					# Too tight, use only icon, right-align line info
-					left_text = f"{icon}"
-					right_mode = True
-			else:
-				left_text = f"{icon}"
-				right_mode = True
-
-			if right_mode:
-				# Tight layout: right-align counter/adj
-				spacing = max_length - len(left_text) - len(right_text)
-				if spacing < 0:
-					spacing = 0
-				full_status = left_text + (" " * spacing) + right_text
-			else:
-				# Inline layout: just append right_text
-				full_status = f"{left_text}{right_text}"
-
-			stdscr.addstr(MAIN_STATUS_LINE, 0, full_status[:max_length], curses.color_pair(5) | curses.A_BOLD) # you might wanted to customize this color ... ill add them options in configs laters
+	# --- 4) Status bar ---
+	status_win.erase()
+	if globals().get('DISPLAY_NAME'):
+		# Build player status text
+		if player_info:
+			_, data = player_info
+			artist = data[2] or 'Unknown Artist'
+			title = data[3] or os.path.basename(data[0]) or 'Unknown Track'
+			is_inst = any(x in title.lower() for x in ['instrumental','karaoke'])
+			ps = f"{title} - {artist}"
 		else:
-			status_line = f" Line {min(current_idx+1, len(lyrics))}/{len(lyrics)}"
-			# if (current_idx is not None and 
-				# current_idx == len(lyrics) - 1 and 
-				# not is_txt_format and 
-				# len(lyrics) > 1):
-				# status_line = " End of lyrics "
-			if time_adjust != 0:
-				status_line += "[Adj]"
-			status_line = status_line[:width-1]
-			stdscr.addstr(MAIN_STATUS_LINE, 0, status_line, curses.A_BOLD)
+			ps, is_inst = 'No track', False
+			
+		ps = f"{title} - {artist}"
+		cur_line = min(current_idx + 1, len(lyrics)) if lyrics else 0
+		line_info = f"Line {cur_line}/{len(lyrics)}"
+		adj_flag = '' if is_inst else ('[Adj] ' if time_adjust else '')
+		icon = ' ⏳ ' if is_fetching else ' 🎵 '
 
-	except curses.error:
-		pass
+		# Compose right text section
+		right_text_full = f"{line_info}{adj_flag}"
+		right_text_fallback = f"{cur_line}/{len(lyrics)}{adj_flag}"
 
+		# Check how much space remains for left-side
+		if len(f"{icon}{ps} • {right_text_full}") <= width - 1:
+			# ✅ All fits
+			display_line = f"{icon}{ps} • {right_text_full}"
+		elif len(f"{icon}{ps} • {right_text_fallback}") <= width - 1:
+			# ❕ Use short fallback right text (drop "Line")
+			right_text = right_text_fallback
+			left_max = width - 1 - len(right_text) - 1
+			ps_trunc = f"{icon}{ps}"
+			if len(ps_trunc) > left_max:
+				trunc_len = left_max - 3  # for "..."
+				ps_trunc = ps_trunc[:trunc_len] + '...' if trunc_len > 0 else ''
+			padding = ' ' * max(left_max - len(ps_trunc), 0)
+			display_line = f"{ps_trunc}{padding} {right_text} "
+		else:
+			# 🔴 Not even fallback fits cleanly — truncate both
+			# Ensure right_text fits first
+			right_text = right_text_fallback
+			max_right = width - 1
+			if len(right_text) > max_right:
+				right_text = right_text[:max_right]
+				display_line = right_text
+			else:
+				left_max = width - 1 - len(right_text) - 1
+				ps_trunc = f"{icon}{ps} "
+				if len(ps_trunc) > left_max:
+					trunc_len = left_max - 3  # for "..."
+					ps_trunc = ps_trunc[:trunc_len] + '...' if trunc_len > 0 else ''
+				padding = ' ' * max(left_max - len(ps_trunc), 0)
+				display_line = f"{ps_trunc}{padding} {right_text} "
 
-	# Render the status message (bottom line).
-	if status_msg:
 		try:
-			status_line = status_msg[:width-1]
-			status_line = f"  [{status_line}]  "
-			stdscr.addstr(MAIN_STATUS_LINE, max(0, (width - len(status_line)) // 2), status_line, curses.color_pair(2) | curses.A_BOLD)
+			safe_width = max(0, width - 1)
+			safe_line = display_line[:safe_width]
+			status_win.addstr(0, 0, safe_line, curses.color_pair(5) | curses.A_BOLD)
 		except curses.error:
 			pass
-			
-	stdscr.refresh()
+
+	else:
+		info = f"Line {min(current_idx+1, len(lyrics))}/{len(lyrics)}"
+		if time_adjust:
+			info += '[Adj]'
+		try:
+			status_win.addstr(0, 0, info[:width-1], curses.A_BOLD)
+		except curses.error:
+			pass
+
+	# Overlay centered status message
+	if status_msg:
+		msg = f"  [{status_msg}]  "[:width-1]
+		try:
+			status_win.addstr(0, max(0, (width - len(msg)) // 2),
+							   msg, curses.color_pair(2) | curses.A_BOLD)
+		except curses.error:
+			pass
+	status_win.noutrefresh()
+
+	# Refresh all windows at once
+	curses.doupdate()
+	# Return scroll start for caller
 	return start_screen_line
+
 
 	
 # ================
@@ -1436,8 +1701,6 @@ def load_key_bindings(config):
 		parsed[key] = parsed.get(key, default) if key not in parsed or not parsed[key] else parsed[key]
 	
 	return parsed
-
-SCROLL_TIMEOUT = 2.0  # seconds before auto-centering
 
 def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw, 
 					   time_adjust, current_alignment, key_bindings):
@@ -1667,7 +1930,6 @@ def subframe_interpolation(continuous_position, timestamps, index):
 	return index, fraction
 
 
-
 def main(stdscr):
 	# Initialize colors and UI
 	log_info("Initializing colors and UI")
@@ -1688,6 +1950,7 @@ def main(stdscr):
 	refresh_interval_2 = CONFIG["ui"]["coolcpu_ms"]  # NEW,
 	smart_refresh_duration = CONFIG["ui"]["smart_refresh_duration"]
 	smart_refresh_interval = CONFIG["ui"]["smart_coolcpu_ms"]
+	smart_refresh_interval_v2 = CONFIG["ui"]["smart_coolcpu_ms_v2"]
 	# Threshold to detect playback jumps (in seconds)  # ADDED FROM ORIGINAL
 	JUMP_THRESHOLD = CONFIG["ui"].get("jump_threshold_sec", 1.0)  # ADDED FROM ORIGINAL
 	
@@ -1814,10 +2077,12 @@ def main(stdscr):
 				state['player_info'][1][5] == "playing" and 
 				state['lyrics']):
 				stdscr.timeout(smart_refresh_interval)
-				#last_position_time = now 
-				last_cmus_position = raw_position
-				last_position_time = now
-				estimated_position = raw_position
+				# last_position_time = now 
+				# # last_cmus_position = raw_position
+				# last_cmus_position = float(raw_pos or 0)
+				#last_position_time = now
+				# # estimated_position = raw_position
+				# estimated_position = float(raw_pos or 0)
 			else:
 				stdscr.timeout(refresh_interval_2)
 
@@ -1842,9 +2107,11 @@ def main(stdscr):
 					if drift > JUMP_THRESHOLD:
 						state['resume_trigger_time'] = time.perf_counter()
 						log_debug(f"Jump detected: drift={drift:.3f}s, triggering refresh")
-						last_cmus_position = raw_position
-						last_position_time = now
-						estimated_position = raw_position
+						# # last_cmus_position = raw_position
+						# last_cmus_position = float(raw_pos or 0)
+						#last_position_time = now
+						# # estimated_position = raw_position
+						# estimated_position = float(raw_pos or 0)
 					
 					# Trigger refresh on resume from pause using the unpacked player_type
 					if (current_player_type == "cmus" and 
@@ -2010,7 +2277,8 @@ def main(stdscr):
 				# 4) Only switch into high‑freq if we're within [min, threshold]
 				if PROXIMITY_MIN_THRESHOLD_SEC <= time_to_next <= threshold:
 					state['proximity_trigger_time'] = now
-					stdscr.timeout(smart_refresh_interval)
+					# stdscr.timeout(smart_refresh_interval)
+					stdscr.timeout(smart_refresh_interval_v2)
 					log_debug(
 						f"Proximity TRIG: time_to_next={time_to_next:.3f}s "
 						f"within [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]"
