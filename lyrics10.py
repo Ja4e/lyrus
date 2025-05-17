@@ -88,6 +88,7 @@ def load_config():
 			"debug_log": "debug.log", # stored under that logs_dir
 			"log_retention_days": 10, # resets the songs that in timedout log in days
 			"max_debug_count": 100, # just incase the log fire gets abdnormally big.
+			"max_log_count": 100,
 			"enable_debug": {"env": "DEBUG", "default": "0"}  # debug environment can be enabled through terminal:  DEBUG=1 python lyrics.py very useful for ease of debugging
 		},
 		"player": {
@@ -139,8 +140,8 @@ def load_config():
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
 			"scroll_timeout": 2, # scroll timeout to auto scroll
-			"refresh_interval_ms": 200, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth #100 or 0, I would recommend you to include this ms latency into that snyc offset sec
-			"coolcpu_ms": 200, # cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it #10 or 100
+			"refresh_interval_ms": 1000, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth #100 or 0, I would recommend you to include this ms latency into that snyc offset sec
+			"coolcpu_ms": 100, # cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it #10 or 100
 			
 			
 			"smart-tracking": 0, # incase you need to enable it, it will certainly lock to the next early but accurate This is not in boolean format because i will implement more sophiscated ones in future
@@ -157,26 +158,26 @@ def load_config():
 			"wrap_width_percent": 90,  # Just incase you need them need better implementations not yet implemented
 			"smart_refresh_duration": 1, # in second hmmm not implemented yet just leave this alone Actually I implemented to define an optional way to where it could trigerr something/s
 			#"smart_refresh_interval": 80, in experimental
-			"smart_coolcpu_ms": 25, # used by triggers , Just keep it like this just to keep the number accurate and syncd
+			"smart_coolcpu_ms": 20, # used by triggers , Just keep it like this just to keep the number accurate and syncd
 			"jump_threshold_sec": 1, # Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most, cmus updates in seconds  sigmas rizzler
 			"end_trigger_threshold_sec": 1,
 			
 			"smart-proximity": True, # turns the proximity on just to keep up the next line being sync regardless of speed of the lyrics it will use the smart coolcpu ms freq , Might need to separate this with the refresh interval ms somewhere
-			"refresh_proximity_interval_ms": 20,
+			"refresh_proximity_interval_ms": 150, #originally 100
 			"smart_coolcpu_ms_v2": 50, # used by proximity to keep the lyrics sync to patch stupid issue with long refresh interval ms and cmus's 1ms interval updates
 			
 			"proximity_threshold_sec": 0.01,
-			"proximity_threshold_percent": 5,
+			"proximity_threshold_percent": 2,
 			# "proximity_min_threshold_sec": 0.01,
-			"proximity_min_threshold_sec": 1.0,
-			"proximity_max_threshold_sec": 1.5,
+			"proximity_min_threshold_sec": 0.01,
+			"proximity_max_threshold_sec": 2.0,
 			
 			
 			# "sync_offset_sec": -0.015,
 			# try to adjust them based on that refresh interval ms
-			# "sync_offset_sec": 0.006,
-			"sync_offset_sec": 0.095,
-			# "sync_offset_sec": 0.155,
+			# "sync_offset_sec": 0.095,
+			# "sync_offset_sec": 0.32,
+			# "sync_offset_sec": 0.045,
 			# "sync_offset_sec": 0.125, # perfect? maybe should be good enough anyway but bewarned the high coolcpu ms may not work properly for fast paced lyrics nevermind it works properly with proximity feature shit was complete an exact ratio against 0ms to 0ms
 		},
 		"key_bindings": { # Set as "null" if you do not want it assigned 
@@ -1720,7 +1721,8 @@ def main(stdscr):
 	smart_refresh_interval_v2      = CONFIG["ui"]["smart_coolcpu_ms_v2"]
 	JUMP_THRESHOLD                 = CONFIG["ui"].get("jump_threshold_sec", 1.0)
 	refresh_proximity_interval_ms  = CONFIG["ui"].get("refresh_proximity_interval_ms", 200)
-	refresh_proximity_interval     = refresh_proximity_interval_ms / 1000.0
+	#refresh_proximity_interval     = refresh_proximity_interval_ms / 1000.0
+	refresh_proximity_interval     = CONFIG["ui"]["smart_coolcpu_ms_v2"]
 
 	PROXIMITY_THRESHOLD_SEC        = CONFIG["ui"].get("proximity_threshold_sec", 0.05)
 	PROXIMITY_THRESHOLD_PERCENT    = CONFIG["ui"].get("proximity_threshold_percent", 0.05)
@@ -1830,7 +1832,7 @@ def main(stdscr):
 				stdscr.timeout(refresh_interval_2)
 
 			# Determine fetch interval with proximity override
-			if state['proximity_active']:
+			if state['proximity_active'] and status == "playing":
 				interval = refresh_proximity_interval
 			elif (state.get('resume_trigger_time') and
 				  (current_time - state['resume_trigger_time'] <= TEMPORARY_REFRESH_SEC)):
@@ -1972,7 +1974,7 @@ def main(stdscr):
 			# log_debug(f"Continuous position = {continuous_position:.6f} seconds") #debugging purpose
 			
 			# Proximity refresh
-			state['proximity_active'] = False
+			# state['proximity_active'] = False
 			if (not manual_scroll and state['smart_proximity']
 				and state['timestamps'] and not state['is_txt']
 				and state['last_idx'] >= 0
@@ -2013,6 +2015,8 @@ def main(stdscr):
 					)
 				else:
 					state['proximity_active'] = False
+			else:
+				state['proximity_active'] = False
 
 			# Generate wrapped lines for TXT files
 			window_h, window_w = state['window_size']
@@ -2031,6 +2035,8 @@ def main(stdscr):
 					state['max_wrapped_offset'] = max(0, len(wrapped) - lyrics_area_height)
 					state['window_width'] = window_w
 
+			offset = CONFIG["ui"].get("sync_offset_sec", 0.0) + sync_compensation
+			
 			# ─── Calculate current lyric index ────────────────────────────────────────────
 			if state['smart_tracking'] == 1:
 				current_idx = -1
@@ -2042,13 +2048,15 @@ def main(stdscr):
 							bisect_worker,
 							continuous_position,
 							state['timestamps'],
-							CONFIG["ui"]["bisect_offset"] + sync_compensation
+							#CONFIG["ui"]["bisect_offset"] + sync_compensation
+							CONFIG["ui"]["bisect_offset"] + offset
 						).result()
 						proximity_idx = sync_exec.submit(
 							proximity_worker,
 							continuous_position,
 							state['timestamps'],
-							CONFIG["ui"]["proximity_threshold"]
+							#CONFIG["ui"]["proximity_threshold"]
+							CONFIG["ui"]["proximity_threshold"] + offset
 						).result()
 
 					if abs(bisect_idx - proximity_idx) > 1:
@@ -2074,21 +2082,17 @@ def main(stdscr):
 					target_idx  = int((continuous_position / duration) * num_wrapped)
 					current_idx = max(0, min(target_idx, num_wrapped - 1))
 					last_position_time = now  # Reset timer to prevent residual elapsed time
-					last_cmus_position = raw_position
-					estimated_position = raw_position
 
 				else:
 					current_idx = -1
 					last_position_time = now  # Reset timer to prevent residual elapsed time
-					last_cmus_position = raw_position
-					estimated_position = raw_position
 
 
 			else:
 				if state['timestamps'] and not state['is_txt']:
 					ts     = state['timestamps']
 					# include sync_compensation in your manual‑offset branch too
-					offset = CONFIG["ui"].get("sync_offset_sec", 0.0) + sync_compensation
+					# offset = CONFIG["ui"].get("sync_offset_sec", 0.0) + sync_compensation
 					idx    = bisect.bisect_right(ts, continuous_position + offset) - 1
 
 					if idx >= 0:
@@ -2096,10 +2100,6 @@ def main(stdscr):
 						continuous_position = ts[idx]
 						if status == "paused" and not manual_scroll and not state['current_file']:
 							last_position_time = now  # Reset timer to prevent residual elapsed time
-							last_cmus_position = raw_position
-							estimated_position = raw_position
-						last_cmus_position = raw_position
-						estimated_position = raw_position
 					else:
 						current_idx = -1
 
@@ -2112,27 +2112,30 @@ def main(stdscr):
 				else:
 					current_idx = -1
 					last_position_time = now  # Reset timer to prevent residual elapsed time
-					last_cmus_position = raw_position
-					estimated_position = raw_position
 			# ────────────────────────────────────────────────────────────────────────────────
-
-			# # Auto-scroll logic
+			
+			base_offset = CONFIG["ui"].get("sync_offset_sec", 0.0)
+			offset = base_offset + sync_compensation
+			sync_compensation = 0.0
+			
+			# Auto scroll logic
 			if state['last_input'] == 0 and not manual_scroll:
 				if state['is_txt'] and state['wrapped_lines']:
 					lyrics_area_height = window_h - 3
 					ideal_offset = current_idx - (lyrics_area_height // 2)
-					new_offset = max(0, min(ideal_offset, state['max_wrapped_offset']))
-					if new_offset != state['manual_offset']:
-						state['manual_offset'] = new_offset
+					target_offset = max(0, min(ideal_offset, state['max_wrapped_offset']))
+					if target_offset != state['manual_offset']:
+						state['manual_offset'] = target_offset
 						needs_redraw = True
-
+				
 				elif not state['is_txt'] and state['wrapped_lines']:
 					# LRC: Standard auto-center
 					ideal_offset = current_idx - ((window_h-3) // 2)
 					target_offset = max(0, min(ideal_offset, state['max_wrapped_offset']))
-					if new_offset != state['manual_offset']:
+					if target_offset != state['manual_offset']:
 						state['manual_offset'] = target_offset
 						needs_redraw = True
+
 			
 			# Handle user input
 			key = stdscr.getch()
