@@ -166,11 +166,11 @@ def load_config():
 			"refresh_proximity_interval_ms": 150, #originally 100
 			"smart_coolcpu_ms_v2": 50, # used by proximity to keep the lyrics sync to patch stupid issue with long refresh interval ms and cmus's 1ms interval updates
 			
-			"proximity_threshold_sec": 0.01,
-			"proximity_threshold_percent": 2,
-			# "proximity_min_threshold_sec": 0.01,
-			"proximity_min_threshold_sec": 0.01,
-			"proximity_max_threshold_sec": 2.0,
+			"proximity_threshold_sec": 0.1, # original 0.1
+			"proximity_threshold_percent": 2, # original 2
+			"proximity_min_threshold_sec": 0.00, # original 0.01
+			#"proximity_min_threshold_sec": 0.2,
+			"proximity_max_threshold_sec": 1, # Just capping originall is 2.0 seems unecessary
 			
 			
 			# "sync_offset_sec": -0.015,
@@ -789,7 +789,9 @@ def get_cmus_info():
 							   capture_output=True, 
 							   text=True, 
 							   check=True).stdout.splitlines()
+		log_debug("Cmus-remote polling...")
 	except subprocess.CalledProcessError:
+		log_debug("Error occurred. Aborting...")
 		return None, 0, None, None, 0, "stopped"
 
 	# Parse cmus output
@@ -1571,6 +1573,7 @@ def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset,
 
 
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+#executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 future_lyrics = None  # Holds the async result
 
 def fetch_lyrics_async(audio_file, directory, artist, title, duration):
@@ -1783,6 +1786,7 @@ def main(stdscr):
 
 	TEMPORARY_REFRESH_SEC = CONFIG["ui"]["smart_refresh_duration"]
 	executor = ThreadPoolExecutor(max_workers=4)
+	#executor = ThreadPoolExecutor(max_workers=1)
 	future_lyrics = None
 	last_cmus_position = 0.0
 	estimated_position = 0.0
@@ -1946,14 +1950,26 @@ def main(stdscr):
 				if status == "playing":
 					elapsed = now - state['last_pos_time']
 					estimated_position = raw_position + elapsed
+					estimated_position = min(estimated_position, duration)
 				else:
-					state['last_pos_time'] = now
-				estimated_position = max(0.0, min(estimated_position, duration))
+					if raw_position != last_cmus_position:
+						state['last_pos_time'] = now
+					#state['last_pos_time'] = now
+					estimated_position = min(estimated_position, duration)
+				#estimated_position = max(0.0, min(estimated_position, duration))
+				
 			else:
 				playback_paused = (status == "pause")
 
-			continuous_position = max(0.0, estimated_position + state['time_adjust'])
+			base_offset = CONFIG["ui"].get("sync_offset_sec", 0.0)
+			offset = base_offset + sync_compensation
+
+			continuous_position = max(0.0, estimated_position + state['time_adjust'] + offset)
 			continuous_position = min(continuous_position, duration)
+			
+			# offset = CONFIG["ui"].get("sync_offset_sec", 0.0) + sync_compensation
+			
+			# sync_compensation = 0.0
 			
 			# ─── End‑of‑track proximity trigger ────────────────────────────────────────────
 			END_TRIGGER_SEC = CONFIG["ui"].get("end_trigger_threshold_sec", 1.0)
@@ -1971,7 +1987,14 @@ def main(stdscr):
 				log_debug(f"End‑of‑track reached (pos={continuous_position:.3f}s), triggered final redraw")
 			# ────────────────────────────────────────────────────────────────────────────────
 
-			# log_debug(f"Continuous position = {continuous_position:.6f} seconds") #debugging purpose
+			# Cancel proximity if playback paused
+			if status != "playing" and state['proximity_active']:
+				state['proximity_active'] = False
+				state['proximity_trigger_time'] = None
+				stdscr.timeout(refresh_interval_2)
+				log_debug("Proximity forcibly reset due to pause")
+
+			# log_debug(f"Continuous position = {continuous_position:.6f} seconds") # debugging purpose
 			
 			# Proximity refresh
 			# state['proximity_active'] = False
@@ -1979,7 +2002,8 @@ def main(stdscr):
 				and state['timestamps'] and not state['is_txt']
 				and state['last_idx'] >= 0
 				and state['last_idx'] + 1 < len(state['timestamps'])
-				and status == "playing"):
+				and status == "playing"
+				and not playback_paused):
 
 				idx = state['last_idx']
 				t0, t1 = state['timestamps'][idx], state['timestamps'][idx + 1]
@@ -2034,8 +2058,6 @@ def main(stdscr):
 					lyrics_area_height = window_h - 3
 					state['max_wrapped_offset'] = max(0, len(wrapped) - lyrics_area_height)
 					state['window_width'] = window_w
-
-			offset = CONFIG["ui"].get("sync_offset_sec", 0.0) + sync_compensation
 			
 			# ─── Calculate current lyric index ────────────────────────────────────────────
 			if state['smart_tracking'] == 1:
@@ -2044,6 +2066,7 @@ def main(stdscr):
 				if state['timestamps'] and not state['is_txt']:
 					# LRC synchronization logic
 					with ThreadPoolExecutor(max_workers=2) as sync_exec:
+					#with ThreadPoolExecutor(max_workers=1) as sync_exec:
 						bisect_idx = sync_exec.submit(
 							bisect_worker,
 							continuous_position,
@@ -2113,10 +2136,8 @@ def main(stdscr):
 					current_idx = -1
 					last_position_time = now  # Reset timer to prevent residual elapsed time
 			# ────────────────────────────────────────────────────────────────────────────────
-			
-			base_offset = CONFIG["ui"].get("sync_offset_sec", 0.0)
-			offset = base_offset + sync_compensation
-			sync_compensation = 0.0
+		
+			#sync_compensation = 0.0
 			
 			# Auto scroll logic
 			if state['last_input'] == 0 and not manual_scroll:
@@ -2127,6 +2148,12 @@ def main(stdscr):
 					if target_offset != state['manual_offset']:
 						state['manual_offset'] = target_offset
 						needs_redraw = True
+					if current_idx != state['last_idx']:
+						# only update scroll if index changed
+						if target_offset != state['manual_offset']:
+							state['manual_offset'] = target_offset
+							needs_redraw = True
+
 				
 				elif not state['is_txt'] and state['wrapped_lines']:
 					# LRC: Standard auto-center
@@ -2135,6 +2162,12 @@ def main(stdscr):
 					if target_offset != state['manual_offset']:
 						state['manual_offset'] = target_offset
 						needs_redraw = True
+					if current_idx != state['last_idx']:
+						# only update scroll if index changed
+						if target_offset != state['manual_offset']:
+							state['manual_offset'] = target_offset
+							needs_redraw = True
+
 
 			
 			# Handle user input
@@ -2169,39 +2202,65 @@ def main(stdscr):
 					break
 			
 			# Update display if needed
-			if new_input or needs_redraw or state['force_redraw'] or (current_idx != state['last_idx']):
-				#stdscr.timeout(smart_refresh_interval)
-				#draw_start = time.perf_counter()
-				
-				start_screen_line = update_display(	
-					stdscr,	
-					state['wrapped_lines'] if state['is_txt'] else state['lyrics'],
-					state['errors'],
-					continuous_position,
-					state['current_file'],
-					state['manual_offset'],
-					state['is_txt'],
-					state['is_a2'],
-					current_idx,
-					manual_scroll,
-					state['time_adjust'],
-					future_lyrics is not None,
-					alignment=state['alignment'],
-					player_info=state["player_info"],
-				)
-				draw_end = time.perf_counter()
-				sync_compensation = draw_end - draw_start
-				
-				# Synchronize actual offset used
-				state['manual_offset'] = start_screen_line
-				state.update({
-					'force_redraw': False,
-					'last_manual': manual_scroll,
-					'last_start_screen_line': start_screen_line,
-					'last_idx': current_idx
-				})
-				#stdscr.timeout(80)
-				log_debug(f"Triggered redraw, Sync compensated: {sync_compensation}")
+			skip_redraw = (
+				status == "paused" and
+				not manual_scroll and
+				not state['force_redraw'] and
+				current_idx == state['last_idx'] and
+				not state['proximity_active']
+			)
+			
+			if not skip_redraw:
+				if new_input or needs_redraw or state['force_redraw'] or (current_idx != state['last_idx']):
+					log_debug(
+						f"Redraw triggered: new_input={new_input}, "
+						f"needs_redraw={needs_redraw}, force_redraw={state['force_redraw']}, "
+						f"idx={state['last_idx']} → {current_idx}, paused={status == 'paused'}"
+					)
+
+					start_screen_line = update_display(
+						stdscr,
+						state['wrapped_lines'] if state['is_txt'] else state['lyrics'],
+						state['errors'],
+						continuous_position,
+						state['current_file'],
+						state['manual_offset'],
+						state['is_txt'],
+						state['is_a2'],
+						current_idx,
+						manual_scroll,
+						state['time_adjust'],
+						future_lyrics is not None,
+						alignment=state['alignment'],
+						player_info=state["player_info"],
+					)
+					
+					log_debug(
+						f"Triggered at: {continuous_position}."
+					)
+					draw_end = time.perf_counter()
+					sync_compensation = draw_end - draw_start
+					#sync_compensation = draw_start - draw_end
+					#sync_compensation = 0
+					
+					log_debug(
+						f"Compensated: {sync_compensation}"
+					)
+
+					# Synchronize actual offset used
+					state['manual_offset'] = start_screen_line
+					state.update({
+						'force_redraw': False,
+						'last_manual': manual_scroll,
+						'last_start_screen_line': start_screen_line,
+						'last_idx': current_idx
+					})
+			# else:
+				# log_debug(
+					# f"Redraw skipped (paused): idx={state['last_idx']}, "
+					# f"manual_scroll={manual_scroll}, force_redraw={state['force_redraw']}"
+				# )
+			
 			
 			#cpu destressor
 			if status == "paused" and not manual_scroll and not state['current_file']:
