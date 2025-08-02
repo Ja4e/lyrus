@@ -951,66 +951,56 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 	log_debug("Fetching from syncedlyrics...")
 	search_start = time.time()
 	log_info(f"Searching online sources for: {artist_name} - {track_name}")
-	if has_internet_global():
-		fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
-		if has_internet_global():
-			if fetched_lyrics:
-				search_time = time.time() - search_start
-				log_debug(f"Online search completed in {search_time:.3f}s")
-				
-				log_info(f"Found {'synced' if is_synced else 'plain'} lyrics online")
-				# Add validation warning if needed
-				if not validate_lyrics(fetched_lyrics, artist_name, track_name):
-					log_debug("Validation warning - possible mismatch")
-					fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
-				
-				line_count = len(fetched_lyrics.split('\n'))
-				log_debug(f"Lyrics stats - Lines: {line_count}, "
-						 f"Chars: {len(fetched_lyrics)}, "
-						 f"Synced: {is_synced}")
-				
-				# Determine file format
-				is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) 
-								for line in fetched_lyrics.split('\n'))
-				# extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
-				has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
-				# if is_enhanced:
-					# extension = 'a2'
-				# else:
-					# # Check if lyrics actually contain LRC timestamps
-					# has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
-					# extension = 'lrc' if (is_synced and has_lrc_timestamps) else 'txt'
-				if is_enhanced:
-					extension = 'a2'
-				elif is_synced and has_lrc_timestamps:
-					extension = 'lrc'
-				else:
-					extension = 'txt'
-				return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-		else:
-			log_debug("No Internet access skipping...")
+	fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
+	if fetched_lyrics:
+		search_time = time.time() - search_start
+		log_debug(f"Online search completed in {search_time:.3f}s")
 		
-		# Fallback to LRCLIB
-		if has_internet_global():
-			update_fetch_status("lrc_lib")
-			log_debug("Fetching from LRCLIB...")
-			fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
-			if fetched_lyrics:
-				search_time = time.time() - search_start
-				log_debug(f"Online search completed in {search_time:.3f}s")
-				extension = 'lrc' if is_synced else 'txt'
-				return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-			
-			log_debug("No lyrics found from any source")
-			update_fetch_status("failed")
-			log_timeout(artist_name, track_name)
-			return None
+		log_info(f"Found {'synced' if is_synced else 'plain'} lyrics online")
+		# Add validation warning if needed
+		if not validate_lyrics(fetched_lyrics, artist_name, track_name):
+			log_debug("Validation warning - possible mismatch")
+			fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
+		
+		line_count = len(fetched_lyrics.split('\n'))
+		log_debug(f"Lyrics stats - Lines: {line_count}, "
+				 f"Chars: {len(fetched_lyrics)}, "
+				 f"Synced: {is_synced}")
+		
+		# Determine file format
+		is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) 
+						for line in fetched_lyrics.split('\n'))
+		# extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
+		has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
+		# if is_enhanced:
+			# extension = 'a2'
+		# else:
+			# # Check if lyrics actually contain LRC timestamps
+			# has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
+			# extension = 'lrc' if (is_synced and has_lrc_timestamps) else 'txt'
+		if is_enhanced:
+			extension = 'a2'
+		elif is_synced and has_lrc_timestamps:
+			extension = 'lrc'
 		else:
-			log_debug("No Internet access skipping...")
-			return None
-	else:
-		log_debug("No Internet access skipping...")
-		return None
+			extension = 'txt'
+		return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+	
+	# Fallback to LRCLIB
+	update_fetch_status("lrc_lib")
+	log_debug("Fetching from LRCLIB...")
+	fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
+	if fetched_lyrics:
+		search_time = time.time() - search_start
+		log_debug(f"Online search completed in {search_time:.3f}s")
+		extension = 'lrc' if is_synced else 'txt'
+		return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+	
+	log_debug("No lyrics found from any source")
+	update_fetch_status("failed")
+	if has_internet_global():
+		log_timeout(artist_name, track_name)
+	return None
 
 def parse_time_to_seconds(time_str):
 	"""Convert various timestamp formats to seconds with millisecond precision."""
