@@ -172,6 +172,7 @@ def load_config():
 			#"proximity_min_threshold_sec": 0.2,
 			"proximity_max_threshold_sec": 1, # Just capping originall is 2.0 seems unecessary
 			
+			"sync_offset_sec": 0.0011, # just incase uhhh thiis script does not follow what your monitor's refresh rate so it will be inregularrities in tracking, already hurting my eyes, will implement this
 			
 			# "sync_offset_sec": -0.015,
 			# try to adjust them based on that refresh interval ms
@@ -686,7 +687,16 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 		def worker(result_dict, search_term, synced=True):
 			log_trace(f"Worker started: {'synced' if synced else 'plain'} search")
 			"""Async worker for lyric search"""
-			try:
+			try: 
+				""" 
+				can be customized I havent implement it yet attach this into these: providers=["NetEase"] 
+				allowed providers:
+					Musixmatch (requires requested api but apparently it actually fetch it for you)
+					Lrclib (my first implementations, im just leaving this implementation as a backward compabilities incase this fails)
+					NetEase
+					Megalobiz
+					Genius
+				"""
 				result = syncedlyrics.search(search_term) if synced else \
 						 syncedlyrics.search(search_term, plain_only=True)
 				result_dict["lyrics"] = result
