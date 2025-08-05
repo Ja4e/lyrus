@@ -1412,7 +1412,6 @@ def display_lyrics(
 			status_win.addstr(0, 0, safe_line, curses.color_pair(5) | curses.A_BOLD)
 		except curses.error:
 			pass
-
 	else:
 		info = f"Line {min(current_idx+1, len(lyrics))}/{len(lyrics)}"
 		if time_adjust:
@@ -1421,6 +1420,7 @@ def display_lyrics(
 			status_win.addstr(0, 0, info[:width-1], curses.A_BOLD)
 		except curses.error:
 			pass
+	status_win.noutrefresh()
 
 	# Overlay centered status message
 	if status_msg:
@@ -1879,13 +1879,15 @@ def main(stdscr):
 					_, raw_val, _, _, _, status_val = p_data
 					new_raw = float(raw_val or 0.0)
 					drift = abs(new_raw - estimated_position)
-					if drift > JUMP_THRESHOLD:
+					if drift > JUMP_THRESHOLD and status_val == "playing":
 						state['resume_trigger_time'] = time.perf_counter()
 						log_debug(f"Jump detected: {drift:.3f}s")
+						needs_redraw = True
 
 					if (p_type == "cmus" and prev_status == "paused" and status_val == "playing"):
 						state['resume_trigger_time'] = time.perf_counter()
 						log_debug("Pause→play refresh")
+						needs_redraw = True
 				except Exception as e:
 					log_debug("Error getting player info: " + str(e))
 				state['last_player_update'] = current_time
