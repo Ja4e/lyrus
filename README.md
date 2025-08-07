@@ -6,7 +6,7 @@ ncurses, scrollable
 
 do use lyrics10.py file
 
-cmus mainly and it works flawlessly mind you there uhh can be small bugs because of external library used
+customizable through this local where this program installed.
 
 best cmus simple lyrics player out there
 
