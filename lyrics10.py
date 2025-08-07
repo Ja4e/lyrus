@@ -140,7 +140,7 @@ def load_config():
 				},
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
-			"scroll_timeout": 2, # scroll timeout to auto scroll
+			"scroll_timeout": 4, # scroll timeout to auto scroll
 			"refresh_interval_ms": 1000, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth #100 or 0, I would recommend you to include this ms latency into that snyc offset sec
 			"coolcpu_ms": 100, # cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it #10 or 100
 			
@@ -168,7 +168,7 @@ def load_config():
 			"smart_coolcpu_ms_v2": 50, # used by proximity to keep the lyrics sync to patch stupid issue with long refresh interval ms and cmus's 1ms interval updates
 			
 			"proximity_threshold_sec": 0.1, # original 0.1
-			"proximity_threshold_percent": 2, # original 2
+			"proximity_threshold_percent": 500, # original 2
 			"proximity_min_threshold_sec": 0.00, # original 0.01
 			#"proximity_min_threshold_sec": 0.2,
 			"proximity_max_threshold_sec": 1, # Just capping originall is 2.0 seems unecessary
@@ -495,16 +495,16 @@ def get_current_status(e=None, current_e=None):
 		
 
 def has_internet_global(timeout=3):
-    global_hosts = ["http://www.google.com", "http://1.1.1.1"]
-    china_hosts = ["http://www.baidu.com", "http://www.qq.com"]
-    
-    for url in (global_hosts + china_hosts):
-        try:
-            urllib.request.urlopen(url, timeout=timeout)
-            return True
-        except:
-            continue
-    return False
+	global_hosts = ["http://www.google.com", "http://1.1.1.1"]
+	china_hosts = ["http://www.baidu.com", "http://www.qq.com"]
+	
+	for url in (global_hosts + china_hosts):
+		try:
+			urllib.request.urlopen(url, timeout=timeout)
+			return True
+		except:
+			continue
+	return False
 
 
 # ================
@@ -719,6 +719,7 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 				log_debug(f"Lyrics search error: {e}")
 				result_dict["lyrics"] = None
 				result_dict["synced"] = False
+				return None, None
 
 		search_term = f"{track_name} {artist_name}".strip()
 		log_trace(f"Formatted search term: '{search_term}'")
@@ -987,7 +988,10 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 		return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
 	
 	# Fallback to LRCLIB
-	update_fetch_status("lrc_lib")
+	if fetched_result is None:
+		log_debug("Error occurred during lyric fetch, skipping to next source")
+		update_fetch_status("lrc_lib")
+	# update_fetch_status("lrc_lib")
 	log_debug("Fetching from LRCLIB...")
 	fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
 	if fetched_lyrics:
@@ -1934,7 +1938,8 @@ def main(stdscr):
 					(new_lyrics, errors), is_txt, is_a2 = future_lyrics.result()
 					state.update({
 						'lyrics': new_lyrics,
-						'errors': errors,
+						'errors': [],  # Keep errors empty to prevent display
+						#'errors': errors,
 						'timestamps': ([] if (is_txt or is_a2)
 									   else sorted(t for t, _ in new_lyrics if t is not None)),
 						'valid_indices': [i for i, (t, _) in enumerate(new_lyrics) if t is not None],
@@ -2025,7 +2030,7 @@ def main(stdscr):
 			
 			# Proximity refresh
 			# state['proximity_active'] = False
-			if (not manual_scroll and state['smart_proximity']
+			if (state['smart_proximity']
 				and state['timestamps'] and not state['is_txt']
 				and state['last_idx'] >= 0
 				and state['last_idx'] + 1 < len(state['timestamps'])
@@ -2035,7 +2040,7 @@ def main(stdscr):
 				idx = state['last_idx']
 				t0, t1 = state['timestamps'][idx], state['timestamps'][idx + 1]
 				line_duration = t1 - t0
-				percent_thresh = line_duration * PROXIMITY_THRESHOLD_PERCENT
+				percent_thresh = line_duration * (PROXIMITY_THRESHOLD_PERCENT/100)
 				abs_thresh = PROXIMITY_THRESHOLD_SEC
 				raw_thresh = max(percent_thresh, abs_thresh)
 				threshold = min(
