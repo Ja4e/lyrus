@@ -168,7 +168,7 @@ def load_config():
 			"smart_coolcpu_ms_v2": 50, # used by proximity to keep the lyrics sync to patch stupid issue with long refresh interval ms and cmus's 1ms interval updates
 			
 			"proximity_threshold_sec": 0.1, # original 0.1
-			"proximity_threshold_percent": 500, # original 2
+			"proximity_threshold_percent": 100, # original 200
 			"proximity_min_threshold_sec": 0.00, # original 0.01
 			#"proximity_min_threshold_sec": 0.2,
 			"proximity_max_threshold_sec": 1, # Just capping originall is 2.0 seems unecessary
