@@ -1601,7 +1601,7 @@ def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset,
 							  manual_scroll_active, time_adjust, is_fetching, subframe_fraction, alignment, player_info)
 
 
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=10)
+#executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 #executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 future_lyrics = None  # Holds the async result
 
@@ -1814,7 +1814,7 @@ def main(stdscr):
 	}
 
 	TEMPORARY_REFRESH_SEC = CONFIG["ui"]["smart_refresh_duration"]
-	executor = ThreadPoolExecutor(max_workers=4)
+	executor = ThreadPoolExecutor(max_workers=1)
 	#executor = ThreadPoolExecutor(max_workers=1)
 	future_lyrics = None
 	last_cmus_position = 0.0
@@ -1972,26 +1972,46 @@ def main(stdscr):
 				state['force_redraw'] = True
 				state['lyrics_loaded_time'] = None
 
-			# Update position estimation
-			if raw_position != last_cmus_position:
+			# # Update position estimation
+			# if raw_position != last_cmus_position:
+				# last_cmus_position = raw_position
+				# state['last_pos_time'] = now
+				# estimated_position = raw_position
+				# playback_paused = (status == "paused")
+
+			# Track pause state first
+			playback_paused = (status == "paused")
+
+			# Update last position tracking only if playing
+			if not playback_paused and raw_position != last_cmus_position:
 				last_cmus_position = raw_position
 				state['last_pos_time'] = now
 				estimated_position = raw_position
-				playback_paused = (status == "paused")
 
+
+			# # Player-specific estimation
+			# if player_type == "cmus":
+				# if status == "playing":
+					# elapsed = now - state['last_pos_time']
+					# estimated_position = raw_position + elapsed
+					# estimated_position = min(estimated_position, duration)
+				# else:
+					# if raw_position != last_cmus_position:
+						# state['last_pos_time'] = now
+					# #state['last_pos_time'] = now
+					# estimated_position = min(estimated_position, duration)
+				# #estimated_position = max(0.0, min(estimated_position, duration))
+				
 			# Player-specific estimation
 			if player_type == "cmus":
-				if status == "playing":
+				if not playback_paused:
 					elapsed = now - state['last_pos_time']
 					estimated_position = raw_position + elapsed
 					estimated_position = min(estimated_position, duration)
 				else:
-					if raw_position != last_cmus_position:
-						state['last_pos_time'] = now
-					#state['last_pos_time'] = now
-					estimated_position = min(estimated_position, duration)
-				#estimated_position = max(0.0, min(estimated_position, duration))
-				
+					# do NOT update last_pos_time here!
+					estimated_position = raw_position
+
 			else:
 				playback_paused = (status == "pause")
 
