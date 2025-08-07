@@ -24,3 +24,6 @@ run this script with these requirement  installable through pip
 
 
 Currently need to clean up the code its too big to clean if theres a bug
+
+
+It detects your custon config.json (monfiable btw) make sure you backup this json configurations
