@@ -58,44 +58,46 @@
 		"error": {"env": "ERROR_COLOR", "default": 196}         // Bright red
 	},
 	"scroll_timeout": 4, // scroll timeout to auto scroll
-	"refresh_interval_ms": 1000, // delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth #100 or 0, I would recommend you to include this ms latency into that snyc offset sec
-	"coolcpu_ms": 100, // cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it #10 or 100
-	
-	
-	"smart-tracking": 0, // incase you need to enable it, it will certainly lock to the next early but accurate This is not in boolean format because i will implement more sophiscated ones in future
-	"bisect_offset": 0,  /* Time offset (in seconds) added to the current position before bisecting.
-							Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
-							Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps. */
+	"sync": {
+		"refresh_interval_ms": 1000, // delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth #100 or 0, I would recommend you to include this ms latency into that snyc offset sec
+		"coolcpu_ms": 100, // cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it #10 or 100
+		
+		
+		"smart-tracking": 0, // incase you need to enable it, it will certainly lock to the next early but accurate This is not in boolean format because i will implement more sophiscated ones in future
+		"bisect_offset": 0,  /* Time offset (in seconds) added to the current position before bisecting.
+								Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
+								Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps. */
 
-	"proximity_threshold": 0,  /* Fractional threshold used to determine when to switch to the next timestamp line.
-								  If more than 99% of the current line duration has passed, it allows switching early.
-								  Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker. Not implemented yet can be changed over if needed */
-								  
-	"wrap_width_percent": 90,  //Just incase you need them need better implementations not yet implemented
-	"smart_refresh_duration": 1, // in second hmmm not implemented yet just leave this alone Actually I implemented to define an optional way to where it could trigerr something/s
-	//"smart_refresh_interval": 80, in experimental
-	"smart_coolcpu_ms": 20, // used by triggers , Just keep it like this just to keep the number accurate and syncd
-	"jump_threshold_sec": 1, // Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most, cmus updates in seconds  sigmas rizzler
-	"end_trigger_threshold_sec": 1,
-	
-	"smart-proximity": True, // turns the proximity on just to keep up the next line being sync regardless of speed of the lyrics it will use the smart coolcpu ms freq , Might need to separate this with the refresh interval ms somewhere
-	"refresh_proximity_interval_ms": 150, //originally 100
-	"smart_coolcpu_ms_v2": 50, // used by proximity to keep the lyrics sync to patch stupid issue with long refresh interval ms and cmus's 1ms interval updates
-	
-	"proximity_threshold_sec": 0.1, // original 0.1
-	"proximity_threshold_percent": 500, // original 2
-	"proximity_min_threshold_sec": 0.00, // original 0.01
-	//"proximity_min_threshold_sec": 0.2,
-	"proximity_max_threshold_sec": 1, // Just capping originall is 2.0 seems unecessary
-	
-	"sync_offset_sec": 0.0008, // just incase uhhh thiis script does not follow what your monitor's refresh rate so it will be inregularrities in tracking, already hurting my eyes, will implement this
-	
-	// "sync_offset_sec": -0.015,
-	// try to adjust them based on that refresh interval ms
-	// "sync_offset_sec": 0.095,
-	// "sync_offset_sec": 0.32,
-	// "sync_offset_sec": 0.045,
-	// "sync_offset_sec": 0.125, # perfect? maybe should be good enough anyway but bewarned the high coolcpu ms may not work properly for fast paced lyrics nevermind it works properly with proximity feature shit was complete an exact ratio against 0ms to 0ms
+		"proximity_threshold": 0,  /* Fractional threshold used to determine when to switch to the next timestamp line.
+									  If more than 99% of the current line duration has passed, it allows switching early.
+									  Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker. Not implemented yet can be changed over if needed */
+									  
+		"wrap_width_percent": 90,  //Just incase you need them need better implementations not yet implemented
+		"smart_refresh_duration": 1, // in second hmmm not implemented yet just leave this alone Actually I implemented to define an optional way to where it could trigerr something/s
+		//"smart_refresh_interval": 80, in experimental
+		"smart_coolcpu_ms": 20, // used by triggers , Just keep it like this just to keep the number accurate and syncd
+		"jump_threshold_sec": 1, // Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most, cmus updates in seconds  sigmas rizzler
+		"end_trigger_threshold_sec": 1,
+		
+		"proximity":{
+			"smart-proximity": True, // turns the proximity on just to keep up the next line being sync regardless of speed of the lyrics it will use the smart coolcpu ms freq , Might need to separate this with the refresh interval ms somewhere
+			"refresh_proximity_interval_ms": 150, //originally 100
+			"smart_coolcpu_ms_v2": 50, // used by proximity to keep the lyrics sync to patch stupid issue with long refresh interval ms and cmus's 1ms interval updates
+			
+			"proximity_threshold_sec": 0.1, // original 0.1
+			"proximity_threshold_percent": 100, // original 2
+			"proximity_min_threshold_sec": 0.00, // original 0.01
+			//"proximity_min_threshold_sec": 0.2,
+			"proximity_max_threshold_sec": 1, // Just capping originall is 2.0 seems unecessary
+		},
+			
+		"sync_offset_sec": 0.0008, // just incase
+		
+		"VRR_R_bol": False, // Ah finally the "VRR" functionality god bless eyes that fetches and estimate the duration of music player duration but not excatly like fps
+		
+		"VRR_bol": False, // the real fps controller
+		
+	},
 },
 "key_bindings": { // Set as "null" if you do not want it assigned 
 	"quit": ["q", "Q"], // kinds of broken in this implementation but i will fix it, its no big deal
