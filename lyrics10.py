@@ -141,46 +141,47 @@ def load_config():
 				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
 			},
 			"scroll_timeout": 4, # scroll timeout to auto scroll
-			"refresh_interval_ms": 1000, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth #100 or 0, I would recommend you to include this ms latency into that snyc offset sec
-			"coolcpu_ms": 100, # cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it #10 or 100
-			
-			
-			"smart-tracking": 0, # incase you need to enable it, it will certainly lock to the next early but accurate This is not in boolean format because i will implement more sophiscated ones in future
-			"bisect_offset": 0,  # Time offset (in seconds) added to the current position before bisecting.
-									# Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
-									# Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps.
+		
+			"sync": {
+				"refresh_interval_ms": 1000, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth #100 or 0, I would recommend you to include this ms latency into that snyc offset sec
+				"coolcpu_ms": 100, # cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it #10 or 100
+				
+				
+				"smart-tracking": 0, # incase you need to enable it, it will certainly lock to the next early but accurate This is not in boolean format because i will implement more sophiscated ones in future
+				"bisect_offset": 0,  # Time offset (in seconds) added to the current position before bisecting.
+										# Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
+										# Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps.
 
-			"proximity_threshold": 0,  # Fractional threshold used to determine when to switch to the next timestamp line.
-										  # If more than 99% of the current line duration has passed, it allows switching early.
-										  # Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker. Not implemented yet can be changed over if needed
-										  
-		
-		
-			"wrap_width_percent": 90,  # Just incase you need them need better implementations not yet implemented
-			"smart_refresh_duration": 1, # in second hmmm not implemented yet just leave this alone Actually I implemented to define an optional way to where it could trigerr something/s
-			#"smart_refresh_interval": 80, in experimental
-			"smart_coolcpu_ms": 20, # used by triggers , Just keep it like this just to keep the number accurate and syncd
-			"jump_threshold_sec": 1, # Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most, cmus updates in seconds  sigmas rizzler
-			"end_trigger_threshold_sec": 1,
+				"proximity_threshold": 0,  # Fractional threshold used to determine when to switch to the next timestamp line.
+											  # If more than 99% of the current line duration has passed, it allows switching early.
+											  # Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker. Not implemented yet can be changed over if needed
 			
-			"smart-proximity": True, # turns the proximity on just to keep up the next line being sync regardless of speed of the lyrics it will use the smart coolcpu ms freq , Might need to separate this with the refresh interval ms somewhere
-			"refresh_proximity_interval_ms": 150, #originally 100
-			"smart_coolcpu_ms_v2": 50, # used by proximity to keep the lyrics sync to patch stupid issue with long refresh interval ms and cmus's 1ms interval updates
 			
-			"proximity_threshold_sec": 0.1, # original 0.1
-			"proximity_threshold_percent": 500, # original 2
-			"proximity_min_threshold_sec": 0.00, # original 0.01
-			#"proximity_min_threshold_sec": 0.2,
-			"proximity_max_threshold_sec": 1, # Just capping originall is 2.0 seems unecessary
-			
-			"sync_offset_sec": 0.0008, # just incase uhhh thiis script does not follow what your monitor's refresh rate so it will be inregularrities in tracking, already hurting my eyes, will implement this
-			
-			# "sync_offset_sec": -0.015,
-			# try to adjust them based on that refresh interval ms
-			# "sync_offset_sec": 0.095,
-			# "sync_offset_sec": 0.32,
-			# "sync_offset_sec": 0.045,
-			# "sync_offset_sec": 0.125, # perfect? maybe should be good enough anyway but bewarned the high coolcpu ms may not work properly for fast paced lyrics nevermind it works properly with proximity feature shit was complete an exact ratio against 0ms to 0ms
+				"wrap_width_percent": 90,  # Just incase you need them need better implementations not yet implemented
+				"smart_refresh_duration": 1, # in second hmmm not implemented yet just leave this alone Actually I implemented to define an optional way to where it could trigerr something/s
+				#"smart_refresh_interval": 80, in experimental
+				"smart_coolcpu_ms": 20, # used by triggers , Just keep it like this just to keep the number accurate and syncd
+				"jump_threshold_sec": 1, # Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most, cmus updates in seconds  sigmas rizzler
+				"end_trigger_threshold_sec": 1,
+				
+				"proximity": {
+					"smart-proximity": True, # turns the proximity on just to keep up the next line being sync regardless of speed of the lyrics it will use the smart coolcpu ms freq , Might need to separate this with the refresh interval ms somewhere
+					"refresh_proximity_interval_ms": 150, #originally 100
+					"smart_coolcpu_ms_v2": 50, # used by proximity to keep the lyrics sync to patch stupid issue with long refresh interval ms and cmus's 1ms interval updates
+					
+					"proximity_threshold_sec": 0.1, # original 0.1
+					"proximity_threshold_percent": 500, # original 2
+					"proximity_min_threshold_sec": 0.00, # original 0.01
+					#"proximity_min_threshold_sec": 0.2,
+					"proximity_max_threshold_sec": 1, # Just capping originall is 2.0 seems unecessary
+				},
+				
+				"sync_offset_sec": 0.005, # just incase 
+				
+				"VRR_R_bol": False, # Ah finally the "VRR" functionality god bless eyes that fetches and estimate the duration of music player duration but not excatly like fps careful not to use it
+				
+				"VRR_bol": False, # the real fps controller
+			},
 		},
 		"key_bindings": { # Set as "null" if you do not want it assigned 
 			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
@@ -339,10 +340,6 @@ def resolve_color(setting):
 		setting.get("default", 7)
 	)
 	return get_color_value(raw_value)
-
-SCROLL_TIMEOUT = CONFIG["ui"]["scroll_timeout"]
-REFRESH_INTERVAL = CONFIG["ui"]["refresh_interval_ms"]
-WRAP_WIDTH_PERCENT = CONFIG["ui"]["wrap_width_percent"]
 
 # Status system
 MESSAGES = CONFIG["status_messages"]
@@ -544,6 +541,7 @@ async def fetch_lrclib_async(artist, title, duration=None, session=None):
 
 	return None, None
 
+
 # Added comprehensive debug points throughout code
 log_trace("Initializing configuration manager")
 
@@ -592,8 +590,6 @@ def sanitize_filename(name):
 def sanitize_string(s):
 	"""Normalize strings for comparison"""
 	return re.sub(r'[^a-zA-Z0-9]', '', str(s)).lower()
-
-
 
 def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
 	"""Sync wrapper for async LRCLIB fetch"""
@@ -1543,7 +1539,6 @@ def fetch_lyrics_async(audio_file, directory, artist, title, duration):
 		update_fetch_status('failed')
 		return ([], []), False, False
 		
-
 def sync_player_position(status, raw_pos, last_time, time_adjust, duration):
 	now = time.perf_counter()
 	elapsed = now - last_time
@@ -1598,7 +1593,6 @@ def proximity_worker(position, timestamps, threshold):
 				idx += 1
 	return idx
 
-
 def subframe_interpolation(continuous_position, timestamps, index):
 	"""
 	Given an index, compute a fraction (0.0 to 1.0) representing the progress between this timestamp and the next.
@@ -1614,7 +1608,17 @@ def subframe_interpolation(continuous_position, timestamps, index):
 	fraction = max(0.0, min(1.0, fraction))
 	return index, fraction
 
-
+def get_monitor_refresh_rate():
+    try:
+        # Query active monitor mode
+        xrandr_output = subprocess.check_output(["xrandr"]).decode()
+        # Find the line with '*' which marks the active mode
+        match = re.search(r"(\d+\.\d+)\*", xrandr_output)
+        if match:
+            return float(match.group(1))
+    except Exception as e:
+        print("Could not detect refresh rate:", e)
+    return 60.0  # fallback
 
 def main(stdscr):
 	# Initialize colors and UI
@@ -1625,32 +1629,63 @@ def main(stdscr):
 	color_config = CONFIG["ui"]["colors"]
 
 	# Resolve color configurations
-	error_color    = resolve_color(color_config["error"])
-	txt_active     = resolve_color(color_config["txt"]["active"])
-	txt_inactive   = resolve_color(color_config["txt"]["inactive"])
-	lrc_active     = resolve_color(color_config["lrc"]["active"])
-	lrc_inactive   = resolve_color(color_config["lrc"]["inactive"])
+	error_color		= resolve_color(color_config["error"])
+	txt_active		= resolve_color(color_config["txt"]["active"])
+	txt_inactive 	= resolve_color(color_config["txt"]["inactive"])
+	lrc_active		= resolve_color(color_config["lrc"]["active"])
+	lrc_inactive	= resolve_color(color_config["lrc"]["inactive"])
 
 	# Load intervals and thresholds
-	refresh_interval_ms            = CONFIG["ui"]["refresh_interval_ms"]
-	refresh_interval               = refresh_interval_ms / 1000.0
-	refresh_interval_2             = CONFIG["ui"]["coolcpu_ms"]
-	smart_refresh_interval         = CONFIG["ui"]["smart_coolcpu_ms"]
-	smart_refresh_interval_v2      = CONFIG["ui"]["smart_coolcpu_ms_v2"]
-	JUMP_THRESHOLD                 = CONFIG["ui"].get("jump_threshold_sec", 1.0)
-	refresh_proximity_interval_ms  = CONFIG["ui"].get("refresh_proximity_interval_ms", 200)
-	#refresh_proximity_interval     = refresh_proximity_interval_ms / 1000.0
-	refresh_proximity_interval     = CONFIG["ui"]["smart_coolcpu_ms_v2"]
+	refresh_interval_ms				= CONFIG["ui"]["sync"]["refresh_interval_ms"]
+	refresh_interval				= refresh_interval_ms / 1000.0
+	refresh_interval_2				= CONFIG["ui"]["sync"]["coolcpu_ms"]
+	
+	smart_refresh_interval			= CONFIG["ui"]["sync"]["smart_coolcpu_ms"]
+	
+	smart_refresh_interval_v2		= CONFIG["ui"]["sync"]["proximity"]["smart_coolcpu_ms_v2"] # can be directly replaced anyway actually i will need to add another option
+	refresh_proximity_interval		= CONFIG["ui"]["sync"]["proximity"]["smart_coolcpu_ms_v2"]
+	
+	JUMP_THRESHOLD					= CONFIG["ui"]["sync"].get("jump_threshold_sec", 1.0)
+	refresh_proximity_interval_ms	= CONFIG["ui"]["sync"].get("refresh_proximity_interval_ms", 200)
+	TEMPORARY_REFRESH_SEC			= CONFIG["ui"]["sync"]["smart_refresh_duration"]
 
-	PROXIMITY_THRESHOLD_SEC        = CONFIG["ui"].get("proximity_threshold_sec", 0.05)
-	PROXIMITY_THRESHOLD_PERCENT    = CONFIG["ui"].get("proximity_threshold_percent", 0.05)
-	#PROXIMITY_MIN_THRESHOLD_SEC    = CONFIG["ui"].get("proximity_min_threshold_sec", 0.01)
-	PROXIMITY_MIN_THRESHOLD_SEC    = CONFIG["ui"].get("proximity_min_threshold_sec", 1.0)
-	PROXIMITY_MAX_THRESHOLD_SEC    = CONFIG["ui"].get("proximity_max_threshold_sec", 2.0)
+	smart_tracking_bol				= CONFIG["ui"]["sync"].get("smart-tracking")
 
+	proximity_threshold				= CONFIG["ui"]["sync"]["proximity_threshold"]
+	smart_proximity_bol				= CONFIG["ui"]["sync"]["proximity"].get("smart-proximity", False)
+	PROXIMITY_THRESHOLD_SEC			= CONFIG["ui"]["sync"]["proximity"].get("proximity_threshold_sec", 0.05)
+	PROXIMITY_THRESHOLD_PERCENT		= CONFIG["ui"]["sync"]["proximity"].get("proximity_threshold_percent", 0.05)
+	PROXIMITY_MIN_THRESHOLD_SEC 	= CONFIG["ui"]["sync"]["proximity"].get("proximity_min_threshold_sec", 1.0)
+	PROXIMITY_MAX_THRESHOLD_SEC		= CONFIG["ui"]["sync"]["proximity"].get("proximity_max_threshold_sec", 2.0)
+
+	END_TRIGGER_SEC					= CONFIG["ui"]["sync"].get("end_trigger_threshold_sec", 1.0)
+	SCROLL_TIMEOUT					= CONFIG["ui"]["scroll_timeout"]
+	WRAP_WIDTH_PERCENT				= CONFIG["ui"]["sync"]["wrap_width_percent"]
+	base_offset						= CONFIG["ui"]["sync"].get("sync_offset_sec", 0.0)
+	bisect_offset					= CONFIG["ui"]["sync"]["bisect_offset"]
+	
 	# New: initialize synchronization compensation variable
 	# This will store the last measured redraw duration (in seconds)
 	sync_compensation = 0.0
+	
+	VRR_ENABLED						= CONFIG["ui"]["sync"].get("VRR_bol", False)
+	
+	if CONFIG["ui"]["sync"].get("VRR_R_bol", False):
+		refresh_rate = get_monitor_refresh_rate()
+		frame_time_sec = 1.0 / refresh_rate
+
+		# Normal polling every N frames
+		NORMAL_POLL_FRAMES = CONFIG["ui"]["sync"]["VRR_R"].get("Norm_poll_F", 30)
+		PROX_POLL_FRAMES   = CONFIG["ui"]["sync"]["VRR_R"].get("Proxi_poll_F", 10)
+
+		# Apply frame-based interval but cap at config limit
+		refresh_interval = min(frame_time_sec * NORMAL_POLL_FRAMES, refresh_interval)
+		refresh_proximity_interval = min(frame_time_sec * PROX_POLL_FRAMES, refresh_proximity_interval)
+
+	if VRR_ENABLED:
+		refresh_rate = get_monitor_refresh_rate()
+		frame_time = 1.0 / refresh_rate  # Target time per frame (seconds)
+		next_frame_time = time.perf_counter() + frame_time
 
 	# Initialize color pairs
 	curses.init_pair(1, error_color,     curses.COLOR_BLACK)
@@ -1693,21 +1728,20 @@ def main(stdscr):
 		'last_player_update': 0.0,
 		'player_info': (None, (None, 0, None, None, 0, "stopped")),
 		'resume_trigger_time': None,
-		'smart_tracking': CONFIG["ui"].get("smart-tracking"),
-		'smart_proximity': CONFIG["ui"].get("smart-proximity", False),
+		'smart_tracking': smart_tracking_bol,
+		'smart_proximity': smart_proximity_bol,
 		'proximity_trigger_time': None,
 		'proximity_active': False,
 		"poll": False,
 	}
 
-	TEMPORARY_REFRESH_SEC = CONFIG["ui"]["smart_refresh_duration"]
 	executor = ThreadPoolExecutor(max_workers=1)
-	#executor = ThreadPoolExecutor(max_workers=1)
 	future_lyrics = None
 	last_cmus_position = 0.0
 	estimated_position = 0.0
 	playback_paused = False
 
+	skip_redraw_for_vrr = False
 	# Unpack initial player info
 	player_type, (audio_file, raw_pos, artist, title, duration, status) = state["player_info"]
 
@@ -1718,7 +1752,7 @@ def main(stdscr):
 			draw_start = time.perf_counter()
 			needs_redraw = False
 			time_since_input = current_time - (state['last_input'] or 0.0)
-
+			
 			# Manual scroll timeout
 			if state['last_input'] > 0:
 				if time_since_input >= SCROLL_TIMEOUT:
@@ -1753,14 +1787,18 @@ def main(stdscr):
 				stdscr.timeout(refresh_interval_2)
 				state["poll"] = False
 
-			# Determine fetch interval with proximity override
-			if state['proximity_active'] and status == "playing": # may need to update this part
-				interval = refresh_proximity_interval
-			elif (state.get('resume_trigger_time') and
-				  (current_time - state['resume_trigger_time'] <= TEMPORARY_REFRESH_SEC)):
-				interval = 0.0
-			else:
+			# Determine fetch interval with proximity overlay
+			if state['proximity_active'] and status == "playing":
+				# Keep normal polling but also trigger proximity updates
 				interval = refresh_interval
+				if (current_time - state.get('last_player_update', 0)) >= refresh_proximity_interval:
+					state['force_proximity_update'] = True
+			else:
+				if (state.get('resume_trigger_time') and
+					(current_time - state['resume_trigger_time'] <= TEMPORARY_REFRESH_SEC)):
+					interval = 0.0
+				else:
+					interval = refresh_interval
 
 			# Refresh player info when due
 			if current_time - state['last_player_update'] >= interval:
@@ -1870,6 +1908,7 @@ def main(stdscr):
 				state['last_pos_time'] = now
 				estimated_position = raw_position
 
+				
 			# Player-specific estimation
 			if player_type == "cmus":
 				if not playback_paused:
@@ -1883,36 +1922,29 @@ def main(stdscr):
 			else:
 				playback_paused = (status == "pause")
 
-			base_offset = CONFIG["ui"].get("sync_offset_sec", 0.0)
 			offset = base_offset + sync_compensation
 
 			continuous_position = max(0.0, estimated_position + state['time_adjust'] + offset)
+			
 			continuous_position = min(continuous_position, duration)
 			
-			
-			# ─── End‑of‑track proximity trigger ────────────────────────────────────────────
-			END_TRIGGER_SEC = CONFIG["ui"].get("end_trigger_threshold_sec", 1.0)
 
+			# End‑of‑track proximity trigger 
 			# only run once per track
 			if duration > 0 \
 			   and (duration - continuous_position) <= END_TRIGGER_SEC \
 			   and not state.get("end_triggered", False):
 
 				state["end_triggered"] = True
-
-				# === your custom action here ===
-				# e.g. force a final redraw:
 				state["force_redraw"] = True
 				log_debug(f"End‑of‑track reached (pos={continuous_position:.3f}s), triggered final redraw")
-			# ────────────────────────────────────────────────────────────────────────────────
 
-			# Cancel proximity if playback paused
+			# Cancel proximity if playback paused just incase 
 			if status != "playing" and state['proximity_active']:
 				state['proximity_active'] = False
 				state['proximity_trigger_time'] = None
 				stdscr.timeout(refresh_interval_2)
 				log_debug("Proximity forcibly reset due to pause")
-
 
 			if (state['smart_proximity']
 				and state['timestamps'] and not state['is_txt']
@@ -1976,7 +2008,7 @@ def main(stdscr):
 					state['max_wrapped_offset'] = max(0, len(wrapped) - lyrics_area_height)
 					state['window_width'] = window_w
 			
-			# ─── Calculate current lyric index ────────────────────────────────────────────
+			# Calculate current lyric index 
 			if state['smart_tracking'] == 1:
 				current_idx = -1
 
@@ -1989,14 +2021,14 @@ def main(stdscr):
 							continuous_position,
 							state['timestamps'],
 							#CONFIG["ui"]["bisect_offset"] + sync_compensation
-							CONFIG["ui"]["bisect_offset"] + offset
+							bisect_offset + offset
 						).result()
 						proximity_idx = sync_exec.submit(
 							proximity_worker,
 							continuous_position,
 							state['timestamps'],
 							#CONFIG["ui"]["proximity_threshold"]
-							CONFIG["ui"]["proximity_threshold"] + offset
+							proximity_threshold + offset
 						).result()
 
 					if abs(bisect_idx - proximity_idx) > 1:
@@ -2005,7 +2037,6 @@ def main(stdscr):
 						chosen_idx = min(bisect_idx, proximity_idx)
 
 					current_idx = max(-1, min(chosen_idx, len(state['timestamps']) - 1))
-
 					if current_idx >= 0:
 						t_cur = state['timestamps'][current_idx]
 						# only compare floats against floats
@@ -2050,9 +2081,6 @@ def main(stdscr):
 				else:
 					current_idx = -1
 					last_position_time = now  # Reset timer to prevent residual elapsed time
-			# ────────────────────────────────────────────────────────────────────────────────
-		
-			#sync_compensation = 0.0
 			
 			# Auto scroll logic
 			if state['last_input'] == 0 and not manual_scroll:
@@ -2115,14 +2143,32 @@ def main(stdscr):
 				state['force_redraw'] = state['force_redraw'] or needs_redraw_input
 				if not cont:
 					break
-			
+					
+		
+			# Determine if we can draw this frame
+			if VRR_ENABLED:
+				if current_time < next_frame_time:
+					# Not yet time for next frame, skip redraw but continue processing
+					skip_redraw_for_vrr = True
+				else:
+					skip_redraw_for_vrr = False
+					next_frame_time += frame_time
+					# catch up if behind
+					while next_frame_time < current_time:
+						next_frame_time += frame_time
+				if current_idx != state['last_idx'] or state['force_redraw']:
+					skip_redraw = False  # always draw if something changed
+			else:
+				skip_redraw_for_vrr = False
+
 			# Update display if needed
 			skip_redraw = (
 				status == "paused" and
 				not manual_scroll and
 				not state['force_redraw'] and
 				current_idx == state['last_idx'] and
-				not state['proximity_active']
+				not state['proximity_active'] and
+				skip_redraw_for_vrr
 			)
 			
 			if not skip_redraw:
@@ -2150,14 +2196,16 @@ def main(stdscr):
 						player_info=state["player_info"],
 					)
 					
-					log_debug(
-						f"Triggered at: {continuous_position}."
-					)
 					draw_end = time.perf_counter()
 					sync_compensation = draw_end - draw_start
 					
+					time_delta = current_time - state['last_pos_time'] - sync_compensation
+					
+					
 					log_debug(
-						f"Compensated: {sync_compensation}"
+						f"Triggered at: {continuous_position}, "
+						f"Compensated: {sync_compensation}, "
+						f"Time_delta: {time_delta}"
 					)
 
 					# Synchronize actual offset used
