@@ -543,31 +543,6 @@ async def fetch_lrclib_async(artist, title, duration=None, session=None):
 			await session.close()
 
 	return None, None
-# async def fetch_lrclib_async(artist, title, duration=None, session=None):
-	# """Async version of LRCLIB fetch using aiohttp"""
-	# base_url = "https://lrclib.net/api/get"
-	# params = {'artist_name': artist, 'track_name': title}
-	# if duration:
-		# params['duration'] = duration
-
-	# try:
-		# # Use existing session if provided, otherwise create one temporarily
-		# async with (session or aiohttp.ClientSession()) as s:
-			# async with s.get(base_url, params=params) as response:
-				# if response.status == 200:
-					# try:
-						# data = await response.json(content_type=None)
-						# if data.get('instrumental', False):
-							# return None, None
-						# return data.get('syncedLyrics') or data.get('plainLyrics'), bool(data.get('syncedLyrics'))
-					# except aiohttp.ContentTypeError:
-						# log_debug("LRCLIB async error: Invalid JSON response")
-				# else:
-					# log_debug(f"LRCLIB async error: HTTP {response.status}")
-	# except aiohttp.ClientError as e:
-		# log_debug(f"LRCLIB async error: {e}")
-	
-	# return None, None
 
 # Added comprehensive debug points throughout code
 log_trace("Initializing configuration manager")
@@ -618,18 +593,7 @@ def sanitize_string(s):
 	"""Normalize strings for comparison"""
 	return re.sub(r'[^a-zA-Z0-9]', '', str(s)).lower()
 
-# def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
-	# """Sync wrapper for async LRCLIB fetch"""
-	# log_debug(f"Querying LRCLIB API: {artist_name} - {track_name}")
-	# try:
-		# return asyncio.run(fetch_lrclib_async(artist_name, track_name, duration))
-# ######################################################################################################
-		# if result[0]:
-			# log_info(f"LRCLIB returned {'synced' if result[1] else 'plain'} lyrics")
-# ######################################################################################################
-	# except Exception as e:
-		# log_error(f"LRCLIB fetch failed: {str(e)}")
-		# return None, None
+
 
 def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
 	"""Sync wrapper for async LRCLIB fetch"""
@@ -643,39 +607,6 @@ def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
 		log_error(f"LRCLIB fetch failed: {str(e)}")
 		return None, None
 
-
-# def parse_lrc_tags(lyrics):
-	# """Extract metadata tags from LRC lyrics"""
-	# tags = {}
-	# for line in lyrics.split('\n'):
-		# match = re.match(r'^\[(ti|ar|al):(.+)\]$', line, re.IGNORECASE)
-		# if match:
-			# key = match.group(1).lower()
-			# value = match.group(2).strip()
-			# tags[key] = value
-	# return tags
-
-# def validate_lyrics(content, artist, title): # Too Harsh
-	# """Basic validation that lyrics match track"""
-	# # Check for timing markers
-	# if re.search(r'\[\d+:\d+\.\d+\]', content):
-		# return True
-		
-	# # Check for instrumental markers
-	# if re.search(r'\b(instrumental)\b', content, re.IGNORECASE):
-		# return True
-
-	# # Normalize strings for comparison
-	# def normalize(s):
-		# return re.sub(r'[^\w]', '', str(s)).lower().replace(' ', '')[:15]
-
-	# norm_title = normalize(title)[:15]
-	# norm_artist = normalize(artist)[:15] if artist else ''
-	# norm_content = normalize(content)
-
-	# # Verify title/artist presence in lyrics
-	# return (norm_title in norm_content if norm_title else True) or \
-		   # (norm_artist in norm_content if norm_artist else True)
 
 def validate_lyrics(content, artist, title):
 	"""More lenient validation"""
@@ -739,7 +670,6 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 		process.join(timeout)
 
 		lyrics, is_synced = result_dict.get("lyrics"), result_dict.get("synced", False)
-################################################################################################################
 		if lyrics:
 			log_debug(f"Found {'synced' if is_synced else 'plain'} lyrics via syncedlyrics")
 			if not validate_lyrics(lyrics, artist_name, track_name):
@@ -747,7 +677,6 @@ def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15
 			return lyrics, is_synced
 		else:
 			log_debug("No lyrics found in syncedlyrics primary search")
-################################################################################################################
 		# Check if lyrics are valid
 		if lyrics and validate_lyrics(lyrics, artist_name, track_name):
 			if is_synced and re.search(r'^\[\d+:\d+\.\d+\]', lyrics, re.MULTILINE):
@@ -973,12 +902,6 @@ def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=No
 						for line in fetched_lyrics.split('\n'))
 		# extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
 		has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
-		# if is_enhanced:
-			# extension = 'a2'
-		# else:
-			# # Check if lyrics actually contain LRC timestamps
-			# has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
-			# extension = 'lrc' if (is_synced and has_lrc_timestamps) else 'txt'
 		if is_enhanced:
 			extension = 'a2'
 		elif is_synced and has_lrc_timestamps:
@@ -1601,8 +1524,6 @@ def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset,
 							  manual_scroll_active, time_adjust, is_fetching, subframe_fraction, alignment, player_info)
 
 
-#executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-#executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 future_lyrics = None  # Holds the async result
 
 def fetch_lyrics_async(audio_file, directory, artist, title, duration):
@@ -1622,19 +1543,6 @@ def fetch_lyrics_async(audio_file, directory, artist, title, duration):
 		update_fetch_status('failed')
 		return ([], []), False, False
 		
-
-# def clean_lyrics(raw_lyrics):
-	# """Ensure lyrics have valid timestamps."""
-	# cleaned = []
-	# last_valid = 0.0
-	# for t, text in raw_lyrics:
-		# if t is None:
-			# cleaned_t = last_valid  # Use last valid timestamp
-		# else:
-			# cleaned_t = max(0.0, float(t))
-			# last_valid = cleaned_t
-		# cleaned.append((cleaned_t, text))
-	# return cleaned
 
 def sync_player_position(status, raw_pos, last_time, time_adjust, duration):
 	now = time.perf_counter()
@@ -1690,28 +1598,6 @@ def proximity_worker(position, timestamps, threshold):
 				idx += 1
 	return idx
 
-# def compute_confidence(continuous_position, ts_value):
-	# """
-	# Compute a confidence score based on the absolute difference between the continuous position and a timestamp.
-	# Lower difference gives higher confidence.
-	# """
-	# diff = abs(continuous_position - ts_value)
-	# return 1.0 / (diff + EPSILON)
-
-# def compute_weighted_index(continuous_position, timestamps, bisect_idx, proximity_idx):
-	# """
-	# Compute a weighted index from two methods using their confidence scores.
-	# If one method returns None, fallback to the other.
-	# """
-	# if bisect_idx is None:
-		# return proximity_idx
-	# if proximity_idx is None:
-		# return bisect_idx
-
-	# conf_bisect = compute_confidence(continuous_position, timestamps[bisect_idx])
-	# conf_proximity = compute_confidence(continuous_position, timestamps[proximity_idx])
-	# weighted = (bisect_idx * conf_bisect + proximity_idx * conf_proximity) / (conf_bisect + conf_proximity)
-	# return int(round(weighted))
 
 def subframe_interpolation(continuous_position, timestamps, index):
 	"""
@@ -1811,6 +1697,7 @@ def main(stdscr):
 		'smart_proximity': CONFIG["ui"].get("smart-proximity", False),
 		'proximity_trigger_time': None,
 		'proximity_active': False,
+		"poll": False,
 	}
 
 	TEMPORARY_REFRESH_SEC = CONFIG["ui"]["smart_refresh_duration"]
@@ -1861,11 +1748,13 @@ def main(stdscr):
 				state['player_info'][1][5] == "playing" and
 				state['lyrics']):
 				stdscr.timeout(smart_refresh_interval)
+				state["poll"] = True
 			else:
 				stdscr.timeout(refresh_interval_2)
+				state["poll"] = False
 
 			# Determine fetch interval with proximity override
-			if state['proximity_active'] and status == "playing":
+			if state['proximity_active'] and status == "playing": # may need to update this part
 				interval = refresh_proximity_interval
 			elif (state.get('resume_trigger_time') and
 				  (current_time - state['resume_trigger_time'] <= TEMPORARY_REFRESH_SEC)):
@@ -1972,13 +1861,6 @@ def main(stdscr):
 				state['force_redraw'] = True
 				state['lyrics_loaded_time'] = None
 
-			# # Update position estimation
-			# if raw_position != last_cmus_position:
-				# last_cmus_position = raw_position
-				# state['last_pos_time'] = now
-				# estimated_position = raw_position
-				# playback_paused = (status == "paused")
-
 			# Track pause state first
 			playback_paused = (status == "paused")
 
@@ -1988,20 +1870,6 @@ def main(stdscr):
 				state['last_pos_time'] = now
 				estimated_position = raw_position
 
-
-			# # Player-specific estimation
-			# if player_type == "cmus":
-				# if status == "playing":
-					# elapsed = now - state['last_pos_time']
-					# estimated_position = raw_position + elapsed
-					# estimated_position = min(estimated_position, duration)
-				# else:
-					# if raw_position != last_cmus_position:
-						# state['last_pos_time'] = now
-					# #state['last_pos_time'] = now
-					# estimated_position = min(estimated_position, duration)
-				# #estimated_position = max(0.0, min(estimated_position, duration))
-				
 			# Player-specific estimation
 			if player_type == "cmus":
 				if not playback_paused:
@@ -2021,9 +1889,6 @@ def main(stdscr):
 			continuous_position = max(0.0, estimated_position + state['time_adjust'] + offset)
 			continuous_position = min(continuous_position, duration)
 			
-			# offset = CONFIG["ui"].get("sync_offset_sec", 0.0) + sync_compensation
-			
-			# sync_compensation = 0.0
 			
 			# ─── End‑of‑track proximity trigger ────────────────────────────────────────────
 			END_TRIGGER_SEC = CONFIG["ui"].get("end_trigger_threshold_sec", 1.0)
@@ -2048,15 +1913,13 @@ def main(stdscr):
 				stdscr.timeout(refresh_interval_2)
 				log_debug("Proximity forcibly reset due to pause")
 
-			# log_debug(f"Continuous position = {continuous_position:.6f} seconds") # debugging purpose
-			
-			# Proximity refresh
-			# state['proximity_active'] = False
+
 			if (state['smart_proximity']
 				and state['timestamps'] and not state['is_txt']
 				and state['last_idx'] >= 0
 				and state['last_idx'] + 1 < len(state['timestamps'])
 				and status == "playing"
+				and not state["poll"] == True
 				and not playback_paused):
 
 				idx = state['last_idx']
@@ -2142,9 +2005,7 @@ def main(stdscr):
 						chosen_idx = min(bisect_idx, proximity_idx)
 
 					current_idx = max(-1, min(chosen_idx, len(state['timestamps']) - 1))
-					# if current_idx >= 0 and continuous_position < state['timestamps'][current_idx]:
-						# current_idx = max(-1, current_idx - 1)
-						# last_position_time = now  # Reset timer to prevent residual elapsed time
+
 					if current_idx >= 0:
 						t_cur = state['timestamps'][current_idx]
 						# only compare floats against floats
@@ -2294,8 +2155,6 @@ def main(stdscr):
 					)
 					draw_end = time.perf_counter()
 					sync_compensation = draw_end - draw_start
-					#sync_compensation = draw_start - draw_end
-					#sync_compensation = 0
 					
 					log_debug(
 						f"Compensated: {sync_compensation}"
@@ -2309,12 +2168,7 @@ def main(stdscr):
 						'last_start_screen_line': start_screen_line,
 						'last_idx': current_idx
 					})
-			# else:
-				# log_debug(
-					# f"Redraw skipped (paused): idx={state['last_idx']}, "
-					# f"manual_scroll={manual_scroll}, force_redraw={state['force_redraw']}"
-				# )
-			
+
 			
 			#cpu destressor
 			if status == "paused" and not manual_scroll and not state['current_file']:
