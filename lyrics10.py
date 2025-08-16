@@ -1940,7 +1940,7 @@ def main(stdscr):
 				log_debug(f"End‑of‑track reached (pos={continuous_position:.3f}s), triggered final redraw")
 
 			# Cancel proximity if playback paused just incase 
-			if status != "playing" and state['proximity_active']:
+			if status != "playing" and state['proximity_active'] or status == "playing" and state["poll"]:
 				state['proximity_active'] = False
 				state['proximity_trigger_time'] = None
 				stdscr.timeout(refresh_interval_2)
