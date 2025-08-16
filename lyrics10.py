@@ -1940,7 +1940,7 @@ def main(stdscr):
 				log_debug(f"End‑of‑track reached (pos={continuous_position:.3f}s), triggered final redraw")
 
 			# Cancel proximity if playback paused just incase 
-			if status != "playing" and state['proximity_active'] or status == "playing" and state["poll"]:
+			if status != "playing" and state['proximity_active']: # addng this status == "playing" and state["poll"] can do a bit of hack that reduces jitters a the bigging, need better implementation than this like when the poll is active for one sec only and then start allowing proximity
 				state['proximity_active'] = False
 				state['proximity_trigger_time'] = None
 				stdscr.timeout(refresh_interval_2)
