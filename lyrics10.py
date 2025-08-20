@@ -23,37 +23,42 @@ Displays time-synced lyrics for cmus music player using multiple lyric sources
 
 Remember fetched lyrics has inaccuracies... this code has a very robust snyc to your current play position you can adjust whatever you want
 """
+#!/usr/bin/env python3
 
 # ==============
 #  DEPENDENCIES
 # ==============
-import curses  # Terminal UI framework
-try:  # Optional Redis import just ignore you dont need to actually need this yet
+import curses
+try:
 	import redis
 except ImportError:
 	redis = None
-import aiohttp  # Async HTTP client
-import threading # For tracking Status
-import concurrent.futures # For concurrent API requests
+import aiohttp
+import threading
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
-import subprocess  # For cmus interaction
-import re  # Regular expressions
-import os  # File system operations
+import subprocess
+import re
+import os
 import sys
-import bisect  # For efficient list searching
-import time  # Timing functions
-import textwrap  # Text formatting
-import requests  # HTTP requests for lyric APIs
-import urllib.parse  # URL encoding
-import urllib.request # Network detection triggers
-import syncedlyrics  # Lyric search library
-import multiprocessing  # Parallel lyric fetching
+import bisect
+import time
+import textwrap
+import requests
+import urllib.parse
+import urllib.request
+import syncedlyrics
+import multiprocessing
 import asyncio
-from datetime import datetime, timedelta  # Time handling for logs
-from mpd import MPDClient  # MPD support
-import socket # used for listening for common mpd port 6600
+from datetime import datetime, timedelta
+from mpd import MPDClient
+import socket
 import json
 from functools import partial
+
+# Suppress output during initialization
+sys.stdout = open(os.devnull, 'w')
+sys.stderr = open(os.devnull, 'w')
 
 # ==============
 #  GLOBALS
@@ -63,6 +68,7 @@ sync_results = {
 	'proximity_index': 0,
 	'lock': threading.Lock()
 }
+
 LOG_LEVELS = {
 	"FATAL": 5,
 	"ERROR": 4,
@@ -72,278 +78,330 @@ LOG_LEVELS = {
 	"TRACE": 0
 }
 
-
 # ==============
 #  CONFIGURATION
 # ==============
-config_files = ["config.json", "config1.json", "config2.json"] # change the configuration name if you wanted, just make sure you sture them in the same directory of this project
+config_files = ["config.json", "config1.json", "config2.json"]
 
-def load_config():
-	"""Load and merge configuration from file and environment"""
-	default_config = {
-		"global": {
-			"logs_dir": "logs",
-			"log_file": "application.log", # useless line but incase i decided to update the code
-			"log_level": "FATAL", # a list of log levels shown above in LOG_LEVELS dictionary
-			"lyrics_timeout_log": "lyrics_timeouts.log", # stored under that logs_dir
-			"debug_log": "debug.log", # stored under that logs_dir
-			"log_retention_days": 10, # resets the songs that in timedout log in days
-			"max_debug_count": 100, # just incase the log fire gets abdnormally big.
-			"max_log_count": 100,
-			"enable_debug": {"env": "DEBUG", "default": "0"}  # debug environment can be enabled through terminal:  DEBUG=1 python lyrics.py very useful for ease of debugging
-		},
-		"player": {
-			"prioritize_cmus": True, # Highly customizable 
-			"mpd": { # just incase you need to change them by default it should work
-				"host": {"env": "MPD_HOST", "default": "localhost"},
-				"port": {"env": "MPD_PORT", "default": 6600},
-				"password": {"env": "MPD_PASSWORD", "default": None},
-				"timeout": 10
-			}
-		},
-		"redis": { # need to implement more robust system for this for now just ignore
-			"enabled": False,
-			"host": {"env": "REDIS_HOST", "default": "localhost"},
-			"port": {"env": "REDIS_PORT", "default": 6379}
-		},
-		"status_messages": { # ignore these but if you wanted custom msg there you go then
-			"start": "Starting lyric search...",
-			"local": "Checking local files",
-			"synced": "Searching online sources",
-			"lrc_lib": "Checking LRCLIB database",
-			"instrumental": "Instrumental track detected",
-			"time_out": "In time-out log",
-			"failed": "No lyrics found",
-			"mpd": "scanning for MPD activity",
-			"cmus": "loading cmus",
-			"done": "Loaded",
-			"clear": ""
-		},
-		"terminal_states": ["done", "instrumental", "time_out", "failed", "mpd", "clear", "cmus"], # ignore these too
-		"lyrics": { # possible tweakings for poor networks
-			"search_timeout": 15,
-			"cache_dir": "synced_lyrics",
-			"local_extensions": ["a2", "lrc", "txt"], # a2 currently broken dont use that yet
-			"validation": {"title_match_length": 15, "artist_match_length": 15}
-		},
-		"ui": {
-			"alignment": "left",  # Options: "left", "center", "right" you get thee idea
-			"name": True, # Do false if you wanted to hide the song name whatsover
-			"colors": {
-				"txt": {
-					"active": {"env": "TXT_ACTIVE", "default": "254"},  # or in numbers ranging from 0-256 will add support for hex color
-					"inactive": {"env": "TXT_INACTIVE", "default": "white"}  # Dark gray
-				},
-				"lrc": {
-					"active": {"env": "LRC_ACTIVE", "default": "green"},     # Greenish
-					"inactive": {"env": "LRC_INACTIVE", "default": "250"} # Yellow changed to grey
-				},
-				"error": {"env": "ERROR_COLOR", "default": 196}         # Bright red
-			},
-			"scroll_timeout": 4, # scroll timeout to auto scroll
+class ConfigManager:
+	"""Manage application configuration"""
+	
+	def __init__(self):
+		self.config = self.load_config()
+		self.setup_logging()
+		self.setup_colors()
+		self.setup_player()
+		self.setup_lyrics()
+		self.setup_ui()
 		
-			"sync": {
-				"refresh_interval_ms": 1000, # delays on continuations when nothing is triggered delays on fetching player infos just incase your cpu is absolute bs, dont increase unless its necessary sorry i overcoded this part, increase this if mpd fills up your local bandwidth #100 or 0, I would recommend you to include this ms latency into that snyc offset sec
-				"coolcpu_ms": 100, # cool cpu, your cpu will fill up 100% in one core if set to 0 in my case it will shoot up to 30 the small gains arent worthed it #10 or 100
-				
-				
-				"smart-tracking": 0, # incase you need to enable it, it will certainly lock to the next early but accurate This is not in boolean format because i will implement more sophiscated ones in future
-				"bisect_offset": 0,  # Time offset (in seconds) added to the current position before bisecting.
-										# Helps in slightly anticipating the upcoming timestamp, reducing jitter and improving sync stability.
-										# Value of 0.01 (~10ms) smooths transitions while avoiding premature jumps.
+	def load_config(self):
+		"""Load and merge configuration from file and environment"""
+		default_config = {
+			"global": {
+				"logs_dir": "logs",
+				"log_file": "application.log",
+				"log_level": "FATAL",
+				"lyrics_timeout_log": "lyrics_timeouts.log",
+				"debug_log": "debug.log",
+				"log_retention_days": 10,
+				"max_debug_count": 100,
+				"max_log_count": 100,
+				"enable_debug": {"env": "DEBUG", "default": "0"}
+			},
+			"player": {
+				"prioritize_cmus": True,
+				"mpd": {
+					"host": {"env": "MPD_HOST", "default": "localhost"},
+					"port": {"env": "MPD_PORT", "default": 6600},
+					"password": {"env": "MPD_PASSWORD", "default": None},
+					"timeout": 10
+				}
+			},
+			"redis": {
+				"enabled": False,
+				"host": {"env": "REDIS_HOST", "default": "localhost"},
+				"port": {"env": "REDIS_PORT", "default": 6379}
+			},
+			"status_messages": {
+				"start": "Starting lyric search...",
+				"local": "Checking local files",
+				"synced": "Searching online sources",
+				"lrc_lib": "Checking LRCLIB database",
+				"instrumental": "Instrumental track detected",
+				"time_out": "In time-out log",
+				"failed": "No lyrics found",
+				"mpd": "scanning for MPD activity",
+				"cmus": "loading cmus",
+				"done": "Loaded",
+				"clear": ""
+			},
+			"terminal_states": ["done", "instrumental", "time_out", "failed", "mpd", "clear", "cmus"],
+			"lyrics": {
+				"search_timeout": 15,
+				"cache_dir": "synced_lyrics",
+				"local_extensions": ["a2", "lrc", "txt"],
+				"validation": {"title_match_length": 15, "artist_match_length": 15}
+			},
+			"ui": {
+				"alignment": "left",
+				"name": True,
+				"colors": {
+					"txt": {
+						"active": {"env": "TXT_ACTIVE", "default": "254"},
+						"inactive": {"env": "TXT_INACTIVE", "default": "white"}
+					},
+					"lrc": {
+						"active": {"env": "LRC_ACTIVE", "default": "green"},
+						"inactive": {"env": "LRC_INACTIVE", "default": "250"}
+					},
+					"error": {"env": "ERROR_COLOR", "default": 196}
+				},
+				"scroll_timeout": 4,
+				"sync": {
+					"refresh_interval_ms": 1000,
+					"coolcpu_ms": 100,
+					"smart-tracking": 0,
+					"bisect_offset": 0,
+					"proximity_threshold": 0,
+					"wrap_width_percent": 90,
+					"smart_refresh_duration": 1,
+					"smart_coolcpu_ms": 20,
+					"jump_threshold_sec": 1,
+					"end_trigger_threshold_sec": 1,
+					"proximity": {
+						"smart-proximity": True,
+						"refresh_proximity_interval_ms": 100,
+						"smart_coolcpu_ms_v2": 50,
+						"proximity_threshold_sec": 0.1,
+						"proximity_threshold_percent": 200,
+						"proximity_min_threshold_sec": 0.00,
+						"proximity_max_threshold_sec": 1,
+					},
+					"sync_offset_sec": 0.005,
+					"VRR_R_bol": False,
+					"VRR_bol": False,
+				},
+			},
+			"key_bindings": {
+				"quit": ["q", "Q"],
+				"refresh": "R",
+				"scroll_up": "KEY_UP",
+				"scroll_down": "KEY_DOWN",
+				"time_decrease": ["-", "_"],
+				"time_increase": ["=", "+"],
+				"time_jump_increase": ["]"],
+				"time_jump_decrease": ["["],
+				"time_reset": "0",
+				"align_cycle_forward": "a",
+				"align_cycle_backward": "A",
+				"align_left": "1",
+				"align_center": "2",
+				"align_right": "3"
+			}   
+		}
+		
+		# Merge with found config files
+		for file in config_files:
+			if os.path.exists(file):
+				try:
+					with open(file) as f:
+						file_config = json.load(f).get("config", {})
+						if "global" in file_config and "logs_dir" not in file_config["global"]:
+							file_config["global"]["logs_dir"] = "logs"
+						# Deep merge strategy
+						for key in file_config:
+							if key in default_config:
+								default_config[key].update(file_config[key])
+							else:
+								default_config[key] = file_config[key]
+					print(f"Successfully loaded and merged config from {file}")
+					break 
+				except Exception as e:
+					print(f"Error loading config from {file}: {e}")
+		
+		def resolve(item):
+			if isinstance(item, dict) and "env" in item:
+				return os.environ.get(item["env"], item.get("default"))
+			return item
 
-				"proximity_threshold": 0,  # Fractional threshold used to determine when to switch to the next timestamp line.
-											  # If more than 99% of the current line duration has passed, it allows switching early.
-											  # Value of 0.01 enables precise, stable lyric syncing with minimal visible delay or flicker. Not implemented yet can be changed over if needed
+		for section in ["mpd"]:
+			for key in default_config["player"][section]:
+				default_config["player"][section][key] = resolve(default_config["player"][section][key])
+		
+		for key in default_config["redis"]:
+			default_config["redis"][key] = resolve(default_config["redis"][key])
+
+		default_config["global"]["enable_debug"] = resolve(default_config["global"]["enable_debug"]) == "1"
+
+		return default_config
+	
+	def setup_logging(self):
+		"""Setup logging directory and files"""
+		self.LOG_DIR = self.config["global"]["logs_dir"]
+		try:
+			created = not os.path.exists("logs")
+			os.makedirs("logs", exist_ok=True)
+			if created:
+				print(f"Directory 'logs' created at: {os.path.abspath('logs')}")
+		except Exception as e:
+			print(f"CRITICAL ERROR: Failed to create logs directory - {str(e)}")
+			raise SystemExit(1)
+
+		if not os.path.exists("logs"):
+			print("FATAL: 'logs' directory missing after creation attempt")
+			raise SystemExit(1)
+
+		self.LYRICS_TIMEOUT_LOG = self.config["global"]["lyrics_timeout_log"]
+		self.DEBUG_LOG = self.config["global"]["debug_log"]
+		self.LOG_RETENTION_DAYS = self.config["global"]["log_retention_days"]
+		self.MAX_DEBUG_COUNT = self.config["global"]["max_debug_count"]
+		self.ENABLE_DEBUG_LOGGING = self.config["global"]["enable_debug"]
+		
+		# Debug startup message if enabled
+		if self.ENABLE_DEBUG_LOGGING:
+			debug_msg = "Debug logging ENABLED"
+			print(debug_msg)
+			print("=== Application started ===")
+			print(f"Loaded config: {json.dumps(self.config, indent=2)}")
+	
+	def setup_colors(self):
+		"""Setup color configuration"""
+		self.COLOR_NAMES = {
+			"black": 0, "red": 1, "green": 2, "yellow": 3,
+			"blue": 4, "magenta": 5, "cyan": 6, "white": 7
+		}
+	
+	def setup_player(self):
+		"""Setup player configuration"""
+		self.MPD_HOST = self.config["player"]["mpd"]["host"] 
+		self.MPD_PORT = self.config["player"]["mpd"]["port"] 
+		self.MPD_PASSWORD = self.config["player"]["mpd"]["password"] 
+		self.MPD_TIMEOUT = self.config["player"]["mpd"]["timeout"]
+		self.PRIORITIZE_CMUS = self.config["player"]["prioritize_cmus"]
+	
+	def setup_lyrics(self):
+		"""Setup lyrics configuration"""
+		self.LYRIC_EXTENSIONS = self.config["lyrics"]["local_extensions"]
+		self.LYRIC_CACHE_DIR = self.config["lyrics"]["cache_dir"]
+		self.SEARCH_TIMEOUT = self.config["lyrics"]["search_timeout"]
+		self.VALIDATION_LENGTHS = self.config["lyrics"]["validation"]
+	
+	def setup_ui(self):
+		"""Setup UI configuration"""
+		self.DISPLAY_NAME = self.config["ui"]["name"]
+		self.MESSAGES = self.config["status_messages"]
+		self.TERMINAL_STATES = set(self.config["terminal_states"])
+
+# Initialize configuration
+CONFIG_MANAGER = ConfigManager()
+CONFIG = CONFIG_MANAGER.config
+
+# ================
+#  LOGGING SYSTEM
+# ================
+class Logger:
+	"""Handle application logging"""
+	
+	def __init__(self):
+		self.LOG_DIR = CONFIG_MANAGER.LOG_DIR
+		self.LYRICS_TIMEOUT_LOG = CONFIG_MANAGER.LYRICS_TIMEOUT_LOG
+		self.DEBUG_LOG = CONFIG_MANAGER.DEBUG_LOG
+		self.LOG_RETENTION_DAYS = CONFIG_MANAGER.LOG_RETENTION_DAYS
+		self.MAX_DEBUG_COUNT = CONFIG_MANAGER.MAX_DEBUG_COUNT
+		self.ENABLE_DEBUG_LOGGING = CONFIG_MANAGER.ENABLE_DEBUG_LOGGING
+	
+	def clean_debug_log(self):
+		"""Maintain debug log size by keeping only last 100 entries"""
+		log_path = os.path.join(self.LOG_DIR, self.DEBUG_LOG)
+		
+		if not os.path.exists(log_path):
+			return
+
+		try:
+			# Read existing log contents
+			with open(log_path, 'r', encoding='utf-8') as f:
+				lines = f.readlines()
 			
-			
-				"wrap_width_percent": 90,  # Just incase you need them need better implementations not yet implemented
-				"smart_refresh_duration": 1, # in second hmmm not implemented yet just leave this alone Actually I implemented to define an optional way to where it could trigerr something/s
-				#"smart_refresh_interval": 80, in experimental
-				"smart_coolcpu_ms": 20, # used by triggers , Just keep it like this just to keep the number accurate and syncd
-				"jump_threshold_sec": 1, # Please do adjust this so it does not cause too much cpu cycles, this is at point where the cpu matter the most, cmus updates in seconds  sigmas rizzler
-				"end_trigger_threshold_sec": 1,
-				
-				"proximity": {
-					"smart-proximity": True, # turns the proximity on just to keep up the next line being sync regardless of speed of the lyrics it will use the smart coolcpu ms freq , Might need to separate this with the refresh interval ms somewhere
-					"refresh_proximity_interval_ms": 150, #originally 100
-					"smart_coolcpu_ms_v2": 50, # used by proximity to keep the lyrics sync to patch stupid issue with long refresh interval ms and cmus's 1ms interval updates
+			# Trim if over 100 lines
+			if len(lines) > self.MAX_DEBUG_COUNT:
+				with open(log_path, 'w', encoding='utf-8') as f:
+					f.writelines(lines[-self.MAX_DEBUG_COUNT:])
 					
-					"proximity_threshold_sec": 0.1, # original 0.1
-					"proximity_threshold_percent": 500, # original 2
-					"proximity_min_threshold_sec": 0.00, # original 0.01
-					#"proximity_min_threshold_sec": 0.2,
-					"proximity_max_threshold_sec": 1, # Just capping originall is 2.0 seems unecessary
-				},
-				
-				"sync_offset_sec": 0.005, # just incase 
-				
-				"VRR_R_bol": False, # Ah finally the "VRR" functionality god bless eyes that fetches and estimate the duration of music player duration but not excatly like fps careful not to use it
-				
-				"VRR_bol": False, # the real fps controller
-			},
-		},
-		"key_bindings": { # Set as "null" if you do not want it assigned 
-			"quit": ["q", "Q"], # kinds of broken in this implementation but i will fix it, its no big deal
-			"refresh": "R",
-			"scroll_up": "KEY_UP", # keep it the same or you wanted it customized
-			"scroll_down": "KEY_DOWN", #same for this too
-			"time_decrease": ["-", "_"],
-			"time_increase": ["=", "+"],
-			"time_jump_increase": ["]"], # you incase you need them.
-			"time_jump_decrease": ["["],
-			"time_reset": "0",
-			"align_cycle_forward": "a",
-			"align_cycle_backward": "A",
-			"align_left": "1",
-			"align_center": "2",
-			"align_right": "3"
-		}	
-	}
-	
-	# Merge with found config files
-	for file in config_files:
-		if os.path.exists(file):
-			try:
-				with open(file) as f:
-					file_config = json.load(f).get("config", {})
-					if "global" in file_config and "logs_dir" not in file_config["global"]:
-						file_config["global"]["logs_dir"] = "logs"
-					# Deep merge strategy
-					for key in file_config:
-						if key in default_config:
-							default_config[key].update(file_config[key])
-						else:
-							default_config[key] = file_config[key]
-				print(f"Successfully loaded and merged config from {file}")
-				break 
-			except Exception as e:
-				pass
-		else:
-			pass
+		except Exception as e:
+			print(f"Error cleaning debug log: {e}")
 
-
-	def resolve(item):
-		if isinstance(item, dict) and "env" in item:
-			return os.environ.get(item["env"], item.get("default"))
-		return item
-
-	for section in ["mpd"]:
-		for key in default_config["player"][section]:
-			default_config["player"][section][key] = resolve(default_config["player"][section][key])
-	
-	for key in default_config["redis"]:
-		default_config["redis"][key] = resolve(default_config["redis"][key])
-
-	default_config["global"]["enable_debug"] = resolve(default_config["global"]["enable_debug"]) == "1"
-
-	return default_config
-
-CONFIG = load_config()
-
-# ==============
-#  INITIALIZATION
-# ==============
-
-LOG_DIR = CONFIG["global"]["logs_dir"]
-try:
-	created = not os.path.exists("logs")
-	os.makedirs("logs", exist_ok=True)
-	if created:
-		print(f"Directory 'logs' created at: {os.path.abspath('logs')}")
-
-except Exception as e:
-	print(f"CRITICAL ERROR: Failed to create logs directory - {str(e)}")
-	raise SystemExit(1)
-
-if not os.path.exists("logs"):
-	print("FATAL: 'logs' directory missing after creation attempt")
-	raise SystemExit(1)
-
-LYRICS_TIMEOUT_LOG = CONFIG["global"]["lyrics_timeout_log"]
-DEBUG_LOG = CONFIG["global"]["debug_log"]
-LOG_RETENTION_DAYS = CONFIG["global"]["log_retention_days"]
-MAX_DEBUG_COUNT = CONFIG["global"]["max_debug_count"]
-
-ENABLE_DEBUG_LOGGING = CONFIG["global"]["enable_debug"]
-# Debug startup message if enabled
-if ENABLE_DEBUG_LOGGING:
-	debug_msg = "Debug logging ENABLED"
-	print(debug_msg)  # Confirm in console
-	print("=== Application started ===")
-	print(f"Loaded config: {json.dumps(CONFIG, indent=2)}")
-
-# Redis connection
-REDIS_ENABLED = CONFIG["redis"]["enabled"] and redis is not None
-redis_client = None
-if REDIS_ENABLED:
-	try:
-		redis_client = redis.Redis(
-			host=CONFIG["redis"]["host"],
-			port=CONFIG["redis"]["port"],
-			decode_responses=True
-		)
-		redis_client.ping()  # Test connection
-		log_info("Redis connected successfully")
-	except Exception as e:
-		REDIS_ENABLED = False
-		print(f"Redis connection failed: {str(e)}. Disabling Redis features.")
-elif CONFIG["redis"]["enabled"]:  # Config enabled but module missing
-	print("Redis enabled in config but package not installed. Install with 'pip install redis'")
-
-# Player configuration
-MPD_HOST = CONFIG["player"]["mpd"]["host"] 
-MPD_PORT = CONFIG["player"]["mpd"]["port"] 
-MPD_PASSWORD = CONFIG["player"]["mpd"]["password"] 
-MPD_TIMEOUT = CONFIG["player"]["mpd"]["timeout"]
-PRIORITIZE_CMUS = CONFIG["player"]["prioritize_cmus"]
-
-# Lyrics configuration
-LYRIC_EXTENSIONS = CONFIG["lyrics"]["local_extensions"]
-LYRIC_CACHE_DIR = CONFIG["lyrics"]["cache_dir"]
-SEARCH_TIMEOUT = CONFIG["lyrics"]["search_timeout"]
-VALIDATION_LENGTHS = CONFIG["lyrics"]["validation"]
-
-# UI configuration
-COLOR_NAMES = {
-	"black": 0, "red": 1, "green": 2, "yellow": 3,
-	"blue": 4, "magenta": 5, "cyan": 6, "white": 7
-}
-
-DISPLAY_NAME = CONFIG["ui"]["name"]
-
-def get_color_value(color_input):
-	"""Convert color input to valid terminal color number (0-255)"""
-	# Get terminal capabilities first
-	curses.start_color()
-	max_colors = curses.COLORS if curses.COLORS > 8 else 8
-	
-	try:
-		# Handle numeric inputs (string or integer)
-		if isinstance(color_input, (int, str)) and str(color_input).isdigit():
-			return max(0, min(int(color_input), max_colors - 1))
+	def clean_log(self):
+		"""Maintain log size by rotating files"""
+		log_path = os.path.join(self.LOG_DIR, CONFIG["global"]["log_file"])
 		
-		# Handle named colors
-		if isinstance(color_input, str):
-			color = color_input.lower()
-			return COLOR_NAMES.get(color, 7)  # Default to white
-			
-		return 7  # Fallback to white
-	except Exception:
-		return 7  # Fallback on any error
+		try:
+			if os.path.exists(log_path):
+				with open(log_path, "r+") as f:
+					lines = f.readlines()
+					if len(lines) > CONFIG["global"]["max_log_count"]:
+						keep = lines[-CONFIG["global"]["max_log_count"]:]
+						f.seek(0)
+						f.truncate()
+						f.writelines(keep)
+		except Exception as e:
+			print(f"Log cleanup failed: {str(e)}", file=sys.stderr)
 
-def resolve_color(setting):
-	"""Resolve color from config with environment override"""
-	# Get value from environment or config
-	raw_value = os.environ.get(
-		setting["env"], 
-		setting.get("default", 7)
-	)
-	return get_color_value(raw_value)
+	def log_message(self, level: str, message: str):
+		"""Unified logging function with level-based filtering and rotation"""
+		# Get config values
+		main_log = os.path.join(self.LOG_DIR, CONFIG["global"]["log_file"])
+		debug_log = os.path.join(self.LOG_DIR, self.DEBUG_LOG)
+		configured_level = LOG_LEVELS.get(CONFIG["global"]["log_level"], 2)
+		message_level = LOG_LEVELS.get(level.upper(), 2)
+		
+		try:
+			# Create log directory if needed
+			os.makedirs(self.LOG_DIR, exist_ok=True)
+			timestamp = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.{int(time.time() * 1000000) % 1000000:06d}"
+			
+			# Always write to debug log if enabled and level <= DEBUG
+			if CONFIG["global"]["enable_debug"] and message_level <= LOG_LEVELS["DEBUG"]:
+				debug_entry = f"{timestamp} | {level.upper()} | {message}\n"
+				with open(debug_log, "a", encoding="utf-8") as f:
+					f.write(debug_entry)
+				self.clean_debug_log()
+
+			# Write to main log if message level >= configured level
+			if message_level >= configured_level:
+				main_entry = f"{timestamp} | {level.upper()} | {message}\n"
+				with open(main_log, "a", encoding="utf-8") as f:
+					f.write(main_entry)
+				
+				# Rotate main log if needed
+				if os.path.getsize(main_log) > CONFIG["global"]["max_log_count"] * 1024:
+					self.clean_log()
+
+		except Exception as e:
+			sys.stderr.write(f"Logging failed: {str(e)}\n")
+
+	# Specific level helpers
+	def log_fatal(self, message: str):
+		self.log_message("FATAL", message)
+
+	def log_error(self, message: str):
+		self.log_message("ERROR", message)
+
+	def log_warn(self, message: str):
+		self.log_message("WARN", message)
+
+	def log_info(self, message: str):
+		self.log_message("INFO", message)
+
+	def log_debug(self, message: str):
+		self.log_message("DEBUG", message)
+
+	def log_trace(self, message: str):
+		self.log_message("TRACE", message)
+
+# Initialize logger
+LOGGER = Logger()
 
 # Status system
-MESSAGES = CONFIG["status_messages"]
-TERMINAL_STATES = set(CONFIG["terminal_states"])
 fetch_status_lock = threading.Lock()
 fetch_status = {
 	"current_step": None,
@@ -352,128 +410,24 @@ fetch_status = {
 	"done_time": None
 }
 
-TERMINAL_STATES = {'done', 'instrumental', 'time_out', 'failed', 'mpd', 'clear','cmus'}  # Ensure this is defined
-
-
-# ================
-#  LOGGING SYSTEM
-# ================
-def clean_debug_log():
-	"""Maintain debug log size by keeping only last 100 entries"""
-	log_dir = os.path.join(os.getcwd(), "logs")
-	log_path = os.path.join(LOG_DIR, DEBUG_LOG)
-	
-	if not os.path.exists(log_path):
-		return
-
-	try:
-		# Read existing log contents
-		with open(log_path, 'r', encoding='utf-8') as f:
-			lines = f.readlines()
-		
-		# Trim if over 100 lines
-		if len(lines) > MAX_DEBUG_COUNT:
-			with open(log_path, 'w', encoding='utf-8') as f:
-				f.writelines(lines[-MAX_DEBUG_COUNT:])
-				
-	except Exception as e:
-		print(f"Error cleaning debug log: {e}")
-
-def clean_log():
-	"""Maintain log size by rotating files"""
-	log_dir = os.path.join(os.getcwd(), CONFIG["global"]["logs_dir"])
-	log_path = os.path.join(log_dir, CONFIG["global"]["log_file"])
-	
-	try:
-		if os.path.exists(log_path):
-			with open(log_path, "r+") as f:
-				lines = f.readlines()
-				if len(lines) > CONFIG["global"]["max_log_count"]:
-					keep = lines[-CONFIG["global"]["max_log_count"]:]
-					f.seek(0)
-					f.truncate()
-					f.writelines(keep)
-	except Exception as e:
-		print(f"Log cleanup failed: {str(e)}", file=sys.stderr)
-
-def log_message(level: str, message: str):
-	"""Unified logging function with level-based filtering and rotation"""
-	# Get config values
-	log_dir = os.path.join(os.getcwd(), CONFIG["global"]["logs_dir"])
-	main_log = os.path.join(log_dir, CONFIG["global"]["log_file"])
-	debug_log = os.path.join(log_dir, DEBUG_LOG)
-	configured_level = LOG_LEVELS.get(CONFIG["global"]["log_level"], 2)
-	message_level = LOG_LEVELS.get(level.upper(), 2)
-	
-	try:
-		# Create log directory if needed
-		os.makedirs(log_dir, exist_ok=True)
-		# timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-		#timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")
-		timestamp = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.{int(time.time() * 1000000) % 1000000:06d}"
-		
-		# Always write to debug log if enabled and level <= DEBUG
-		if CONFIG["global"]["enable_debug"] and message_level <= LOG_LEVELS["DEBUG"]:
-			debug_entry = f"{timestamp} | {level.upper()} | {message}\n"
-			with open(debug_log, "a", encoding="utf-8") as f:
-				f.write(debug_entry)
-			clean_debug_log()
-
-		# Write to main log if message level >= configured level
-		if message_level >= configured_level:
-			main_entry = f"{timestamp} | {level.upper()} | {message}\n"
-			with open(main_log, "a", encoding="utf-8") as f:
-				f.write(main_entry)
-			
-			# Rotate main log if needed
-			if os.path.getsize(main_log) > CONFIG["global"]["max_log_count"] * 1024:
-				clean_log()
-
-	except Exception as e:
-		sys.stderr.write(f"Logging failed: {str(e)}\n")
-
-# Specific level helpers
-def log_fatal(message: str):
-	log_message("FATAL", message)
-
-def log_error(message: str):
-	log_message("ERROR", message)
-
-def log_warn(message: str):
-	log_message("WARN", message)
-
-def log_info(message: str):
-	log_message("INFO", message)
-
-def log_debug(message: str):
-	log_message("DEBUG", message)
-
-def log_trace(message: str):
-	log_message("TRACE", message)
-
 def update_fetch_status(step, lyrics_found=0):
 	with fetch_status_lock:
 		fetch_status.update({
 			'current_step': step,
 			'lyric_count': lyrics_found,
 			'start_time': time.time() if step == 'start' else fetch_status['start_time'],
-			'done_time': time.time() if step in TERMINAL_STATES else None
+			'done_time': time.time() if step in CONFIG_MANAGER.TERMINAL_STATES else None
 		})
 
-def get_current_status(e=None, current_e=None):
+def get_current_status():
 	"""Return a formatted status message"""
-	current_e = e
 	with fetch_status_lock:
-		if current_e != e:
-			return e
-		
 		step = fetch_status['current_step']
 		if not step:
 			return None
 		
-
 		# Hide status after 2 seconds for terminal states
-		if step in TERMINAL_STATES and fetch_status['done_time']:
+		if step in CONFIG_MANAGER.TERMINAL_STATES and fetch_status['done_time']:
 			if time.time() - fetch_status['done_time'] > 2:
 				return ""
 
@@ -481,7 +435,7 @@ def get_current_status(e=None, current_e=None):
 			return ""
 
 		# Return pre-defined message with elapsed time if applicable
-		base_msg = MESSAGES.get(step, step)
+		base_msg = CONFIG_MANAGER.MESSAGES.get(step, step)
 		if fetch_status['start_time'] and step != 'done':
 			# Use done_time if available for terminal states
 			end_time = fetch_status['done_time'] or time.time()
@@ -489,9 +443,12 @@ def get_current_status(e=None, current_e=None):
 			return f"{base_msg} {elapsed:.1f}s"
 		
 		return base_msg
-		
 
+# ================
+#  NETWORK UTILS
+# ================
 def has_internet_global(timeout=3):
+	"""Check internet connectivity with robust error handling"""
 	global_hosts = ["http://www.google.com", "http://1.1.1.1"]
 	china_hosts = ["http://www.baidu.com", "http://www.qq.com"]
 	
@@ -503,12 +460,11 @@ def has_internet_global(timeout=3):
 			continue
 	return False
 
-
 # ================
 #  ASYNC HELPERS
 # ================
 async def fetch_lrclib_async(artist, title, duration=None, session=None):
-	"""Async version of LRCLIB fetch using aiohttp"""
+	"""Async version of LRCLIB fetch using aiohttp with robust error handling"""
 	base_url = "https://lrclib.net/api/get"
 	params = {'artist_name': artist, 'track_name': title}
 	if duration:
@@ -528,57 +484,48 @@ async def fetch_lrclib_async(artist, title, duration=None, session=None):
 					if data.get('instrumental', False):
 						return None, None
 					return data.get('syncedLyrics') or data.get('plainLyrics'), bool(data.get('syncedLyrics'))
-				except aiohttp.ContentTypeError:
+				except (aiohttp.ContentTypeError, json.JSONDecodeError):
 					content = await response.text()
-					log_debug(f"LRCLIB async error: Invalid JSON. Raw response: {content[:200]}")
+					LOGGER.log_debug(f"LRCLIB async error: Invalid JSON. Raw response: {content[:200]}")
 			else:
-				log_debug(f"LRCLIB async error: HTTP {response.status}")
-	except aiohttp.ClientError as e:
-		log_debug(f"LRCLIB async error: {e}")
+				LOGGER.log_debug(f"LRCLIB async error: HTTP {response.status}")
+	except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+		LOGGER.log_debug(f"LRCLIB async error: {e}")
 	finally:
 		if own_session:
 			await session.close()
 
 	return None, None
 
-
-# Added comprehensive debug points throughout code
-log_trace("Initializing configuration manager")
-
-
-
 def log_timeout(artist, title):
-	"""Record failed lyric lookup with duplicate prevention"""
-	timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-	log_entry = f"{timestamp} | Artist: {artist or 'Unknown'} | Title: {title or 'Unknown'}\n"
-	
-	log_dir = os.path.join(os.getcwd(), "logs")
-	os.makedirs(LOG_DIR, exist_ok=True)
-	log_path = os.path.join(LOG_DIR, LYRICS_TIMEOUT_LOG)
+	"""Record failed lyric lookup with duplicate prevention and robust error handling"""
+	try:
+		timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+		log_entry = f"{timestamp} | Artist: {artist or 'Unknown'} | Title: {title or 'Unknown'}\n"
+		
+		log_path = os.path.join(CONFIG_MANAGER.LOG_DIR, CONFIG_MANAGER.LYRICS_TIMEOUT_LOG)
 
-	# Check for existing entry
-	entry_exists = False
-	if os.path.exists(log_path):
-		search_artist = artist or 'Unknown'
-		search_title = title or 'Unknown'
-		with open(log_path, 'r', encoding='utf-8') as f:
-			for line in f:
-				if (
-					f"Artist: {search_artist}" in line and 
-					f"Title: {search_title}" in line
-				):
-					entry_exists = True
-					break
+		# Check for existing entry
+		entry_exists = False
+		if os.path.exists(log_path):
+			search_artist = artist or 'Unknown'
+			search_title = title or 'Unknown'
+			with open(log_path, 'r', encoding='utf-8') as f:
+				for line in f:
+					if (
+						f"Artist: {search_artist}" in line and 
+						f"Title: {search_title}" in line
+					):
+						entry_exists = True
+						break
 
-	# Add new entry if unique
-	if not entry_exists:
-		try:
+		# Add new entry if unique
+		if not entry_exists:
 			with open(log_path, 'a', encoding='utf-8') as f:
 				f.write(log_entry)
-			# clean_old_timeouts()
-			clean_log()
-		except Exception as e:
-			log_debug(f"Failed to write timeout log: {e}")
+			LOGGER.clean_log()
+	except Exception as e:
+		LOGGER.log_error(f"Failed to write timeout log: {e}")
 
 # ======================
 #  CORE LYRIC FUNCTIONS
@@ -592,144 +539,132 @@ def sanitize_string(s):
 	return re.sub(r'[^a-zA-Z0-9]', '', str(s)).lower()
 
 def fetch_lyrics_lrclib(artist_name, track_name, duration=None):
-	"""Sync wrapper for async LRCLIB fetch"""
-	log_debug(f"Querying LRCLIB API: {artist_name} - {track_name}")
+	"""Sync wrapper for async LRCLIB fetch with robust error handling"""
+	LOGGER.log_debug(f"Querying LRCLIB API: {artist_name} - {track_name}")
 	try:
-		result = asyncio.run(fetch_lrclib_async(artist_name, track_name, duration))
+		# Use a dedicated event loop for this thread
+		loop = asyncio.new_event_loop()
+		asyncio.set_event_loop(loop)
+		result = loop.run_until_complete(fetch_lrclib_async(artist_name, track_name, duration))
+		loop.close()
+		
 		if result[0]:
-			log_info(f"LRCLIB returned {'synced' if result[1] else 'plain'} lyrics")
+			LOGGER.log_info(f"LRCLIB returned {'synced' if result[1] else 'plain'} lyrics")
 		return result
 	except Exception as e:
-		log_error(f"LRCLIB fetch failed: {str(e)}")
+		LOGGER.log_error(f"LRCLIB fetch failed: {str(e)}")
 		return None, None
 
-
 def validate_lyrics(content, artist, title):
-	"""More lenient validation"""
-	# Always allow files with timestamps
-	if re.search(r'\[\d+:\d+\.\d+\]', content):
-		return True
+	"""More lenient validation with robust error handling"""
+	try:
+		# Always allow files with timestamps
+		if re.search(r'\[\d+:\d+\.\d+\]', content):
+			return True
+			
+		# Allow empty content for instrumental markers
+		if not content.strip():
+			return True
+			
+		# Normalize comparison parameters
+		norm_content = sanitize_string(content)
 		
-	# Allow empty content for instrumental markers
-	if not content.strip():
-		return True
-		
-	# Normalize comparison parameters
-	norm_content = sanitize_string(content)
-	
-	# log_warn(f"Lyrics validation warning for {artist} - {title}")
-	
-	return True  # Temporary accept all content
+		return True  # Temporary accept all content
+	except Exception as e:
+		LOGGER.log_error(f"Error in validate_lyrics: {str(e)}")
+		return True  # Fallback to accepting content
 
 def fetch_lyrics_syncedlyrics(artist_name, track_name, duration=None, timeout=15):
-	"""Fetch lyrics using syncedlyrics with a fallback"""
-	log_debug(f"Starting syncedlyrics search: {artist_name} - {track_name} ({duration}s)")
+	"""Fetch lyrics using syncedlyrics with robust error handling"""
+	LOGGER.log_debug(f"Starting syncedlyrics search: {artist_name} - {track_name} ({duration}s)")
 	try:
 		def worker(result_dict, search_term, synced=True):
-			log_trace(f"Worker started: {'synced' if synced else 'plain'} search")
-			"""Async worker for lyric search"""
+			"""Async worker for lyric search with proper cleanup"""
 			try: 
-				""" 
-				can be customized I havent implement it yet attach this into these: providers=["NetEase"] 
-				allowed providers:
-					Musixmatch (requires requested api but apparently it actually fetch it for you)
-					Lrclib (my first implementations, im just leaving this implementation as a backward compabilities incase this fails)
-					NetEase
-					Megalobiz
-					Genius
-				"""
 				result = syncedlyrics.search(search_term) if synced else \
 						 syncedlyrics.search(search_term, plain_only=True)
 				result_dict["lyrics"] = result
 				result_dict["synced"] = synced
 			except Exception as e:
-				log_debug(f"Lyrics search error: {e}")
+				LOGGER.log_debug(f"Lyrics search error: {e}")
 				result_dict["lyrics"] = None
 				result_dict["synced"] = False
-				return None, None
 
 		search_term = f"{track_name} {artist_name}".strip()
-		log_trace(f"Formatted search term: '{search_term}'")
-		log_trace(f"Starting synced lyrics search for: {search_term}")
-		
 		if not search_term:
-			log_debug("Empty search term")
+			LOGGER.log_debug("Empty search term")
 			return None, None
 
-		# Shared dictionary for results
+		# Use Manager for process-safe communication
 		manager = multiprocessing.Manager()
 		result_dict = manager.dict()
-
+		
 		# Fetch synced lyrics first
 		process = multiprocessing.Process(target=worker, args=(result_dict, search_term, True))
+		process.daemon = True  # Ensure process doesn't outlive main
 		process.start()
 		process.join(timeout)
 
-		lyrics, is_synced = result_dict.get("lyrics"), result_dict.get("synced", False)
-		if lyrics:
-			log_debug(f"Found {'synced' if is_synced else 'plain'} lyrics via syncedlyrics")
-			if not validate_lyrics(lyrics, artist_name, track_name):
-				log_warn("Lyrics validation failed but using anyway")
-			return lyrics, is_synced
-		else:
-			log_debug("No lyrics found in syncedlyrics primary search")
-		# Check if lyrics are valid
-		if lyrics and validate_lyrics(lyrics, artist_name, track_name):
-			if is_synced and re.search(r'^\[\d+:\d+\.\d+\]', lyrics, re.MULTILINE):
-				return lyrics, True
-			else:
-				return lyrics, False
-
-		# Cleanup in case of timeout
+		# Ensure process cleanup
 		if process.is_alive():
 			process.terminate()
-			process.join()
-			log_debug("Synced lyrics search timed out")
+			process.join(timeout=1)
+			if process.is_alive():
+				process.kill()
+			LOGGER.log_debug("Synced lyrics search timed out")
 
-		# Fallback to plain lyrics
-		log_trace("Initiating plain lyrics fallback search")
-		log_info("Falling back to plain lyrics search")
+		lyrics, is_synced = result_dict.get("lyrics"), result_dict.get("synced", False)
+		
+		if lyrics:
+			LOGGER.log_debug(f"Found {'synced' if is_synced else 'plain'} lyrics via syncedlyrics")
+			if not validate_lyrics(lyrics, artist_name, track_name):
+				LOGGER.log_warn("Lyrics validation failed but using anyway")
+			return lyrics, is_synced
+		
+		# Fallback to plain lyrics with proper cleanup
+		LOGGER.log_trace("Initiating plain lyrics fallback search")
 		process = multiprocessing.Process(target=worker, args=(result_dict, search_term, False))
+		process.daemon = True
 		process.start()
 		process.join(timeout)
 
-		lyrics = result_dict.get("lyrics")
+		# Ensure process cleanup
+		if process.is_alive():
+			process.terminate()
+			process.join(timeout=1)
+			if process.is_alive():
+				process.kill()
+			LOGGER.log_debug("Plain lyrics search timed out")
 
+		lyrics = result_dict.get("lyrics")
 		if lyrics and validate_lyrics(lyrics, artist_name, track_name):
 			return lyrics, False
 
-		# Cleanup in case of timeout
-		if process.is_alive():
-			process.terminate()
-			process.join()
-			log_debug("Plain lyrics search timed out")
-
 		return None, None
+		
 	except Exception as e:
-		log_debug(f"Lyrics fetch error: {e}")
+		LOGGER.log_debug(f"Lyrics fetch error: {e}")
 		return None, None
-
 
 def save_lyrics(lyrics, track_name, artist_name, extension):
-	"""Save lyrics to appropriate file format"""
-	folder = os.path.join(os.getcwd(), "synced_lyrics")
-	os.makedirs(folder, exist_ok=True)
-	
-	# Generate safe filename
-	sanitized_track = sanitize_filename(track_name)
-	sanitized_artist = sanitize_filename(artist_name)
-	filename = f"{sanitized_track}_{sanitized_artist}.{extension}"
-	file_path = os.path.join("synced_lyrics", filename)
-	
+	"""Save lyrics to appropriate file format with robust error handling"""
 	try:
+		folder = os.path.join(os.getcwd(), "synced_lyrics")
+		os.makedirs(folder, exist_ok=True)
+		
+		# Generate safe filename
+		sanitized_track = sanitize_filename(track_name)
+		sanitized_artist = sanitize_filename(artist_name)
+		filename = f"{sanitized_track}_{sanitized_artist}.{extension}"
+		file_path = os.path.join("synced_lyrics", filename)
+		
 		with open(file_path, "w", encoding="utf-8") as f:
 			f.write(lyrics)
-		log_info(f"Saved lyrics to: {file_path}")
-		log_trace(f"Lyrics content sample: {lyrics[:200]}...")
+		LOGGER.log_info(f"Saved lyrics to: {file_path}")
+		LOGGER.log_trace(f"Lyrics content sample: {lyrics[:200]}...")
 		return file_path
 	except Exception as e:
-		log_debug(f"Lyric save error: {e}")
-		log_error(f"Failed to save lyrics: {str(e)}")
+		LOGGER.log_error(f"Failed to save lyrics: {str(e)}")
 		return None
 
 def get_cmus_info():
@@ -739,10 +674,10 @@ def get_cmus_info():
 							   capture_output=True, 
 							   text=True, 
 							   check=True).stdout.splitlines()
-		log_debug("Cmus-remote polling...")
+		LOGGER.log_debug("Cmus-remote polling...")
 	except subprocess.CalledProcessError:
-		log_debug("Error occurred. Aborting...")
-		return None, 0, None, None, 0, "stopped"
+		LOGGER.log_debug("Error occurred. Aborting...")
+		return (None, 0, None, None, 0, "stopped")
 
 	# Parse cmus output
 	data = {
@@ -778,7 +713,7 @@ def get_cmus_info():
 
 def is_lyrics_timed_out(artist_name, track_name):
 	"""Check if track is in timeout log"""
-	log_path = os.path.join("logs", LYRICS_TIMEOUT_LOG)
+	log_path = os.path.join("logs", CONFIG_MANAGER.LYRICS_TIMEOUT_LOG)
 
 	if not os.path.exists(log_path):
 		return False
@@ -791,139 +726,140 @@ def is_lyrics_timed_out(artist_name, track_name):
 						return True
 		return False
 	except Exception as e:
-		log_debug(f"Timeout check error: {e}")
+		LOGGER.log_debug(f"Timeout check error: {e}")
 		return False
 
 def find_lyrics_file(audio_file, directory, artist_name, track_name, duration=None):
-	"""Locate or fetch lyrics for current track"""
+	"""Locate or fetch lyrics for current track with robust error handling"""
 	update_fetch_status('local')
-	log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
-	base_name, _ = os.path.splitext(os.path.basename(audio_file))
+	LOGGER.log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
 	
-	local_files = [
-		(os.path.join(directory, f"{base_name}.a2"), 'a2'),
-		(os.path.join(directory, f"{base_name}.lrc"), 'lrc'),
-		(os.path.join(directory, f"{base_name}.txt"), 'txt')
-	]
+	try:
+		base_name, _ = os.path.splitext(os.path.basename(audio_file))
+		
+		local_files = [
+			(os.path.join(directory, f"{base_name}.a2"), 'a2'),
+			(os.path.join(directory, f"{base_name}.lrc"), 'lrc'),
+			(os.path.join(directory, f"{base_name}.txt"), 'txt')
+		]
 
-	# Validate existing files
-	for file_path, ext in local_files:
-		if os.path.exists(file_path):
-			try:
-				with open(file_path, 'r', encoding='utf-8') as f:
-					content = f.read()
-				
-				if validate_lyrics(content, artist_name, track_name):
-					# log_debug(f"Validated local {ext} file")
-					log_info(f"Using validated lyrics file: {file_path}")
-					return file_path
-				else:
-					# log_debug(f"Using unvalidated local {ext} file")
-					log_info(f"Using unvalidated local {ext} file")
-					return file_path
-			except Exception as e:
-				log_debug(f"File read error: {file_path} - {e}")
-				continue
-
-	# Handle instrumental tracks
-	is_instrumental = (
-		"instrumental" in track_name.lower() or 
-		(artist_name and "instrumental" in artist_name.lower())
-	)
-	
-	sanitized_track = sanitize_filename(track_name)
-	sanitized_artist = sanitize_filename(artist_name)
-	possible_filenames = [
-		f"{sanitized_track}.a2",
-		f"{sanitized_track}.lrc",
-		f"{sanitized_track}.txt",
-		f"{sanitized_track}_{sanitized_artist}.a2",
-		f"{sanitized_track}_{sanitized_artist}.lrc",
-		f"{sanitized_track}_{sanitized_artist}.txt"
-	]
-
-	synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
-
-	for dir_path in [directory, synced_dir]:
-		for filename in possible_filenames:
-			file_path = os.path.join(dir_path, filename)
+		# Validate existing files
+		for file_path, ext in local_files:
 			if os.path.exists(file_path):
 				try:
 					with open(file_path, 'r', encoding='utf-8') as f:
 						content = f.read()
+					
 					if validate_lyrics(content, artist_name, track_name):
-						log_debug(f"Using validated file: {file_path}")
+						LOGGER.log_info(f"Using validated lyrics file: {file_path}")
 						return file_path
 					else:
-						log_debug(f"Skipping invalid file: {file_path}")
+						LOGGER.log_info(f"Using unvalidated local {ext} file")
+						return file_path
 				except Exception as e:
-					log_debug(f"Error reading {file_path}: {e}")
+					LOGGER.log_debug(f"File read error: {file_path} - {e}")
 					continue
-	
-	if is_instrumental:
-		log_debug("Instrumental track detected")
-		update_fetch_status('instrumental')
-		return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
 
-	
-	# Check timeout status
-	if is_lyrics_timed_out(artist_name, track_name):
-		update_fetch_status('time_out')
-		log_debug(f"Lyrics timeout active for {artist_name} - {track_name}")
-		return None
+		# Handle instrumental tracks
+		is_instrumental = (
+			"instrumental" in track_name.lower() or 
+			(artist_name and "instrumental" in artist_name.lower())
+		)
+		
+		sanitized_track = sanitize_filename(track_name)
+		sanitized_artist = sanitize_filename(artist_name)
+		possible_filenames = [
+			f"{sanitized_track}.a2",
+			f"{sanitized_track}.lrc",
+			f"{sanitized_track}.txt",
+			f"{sanitized_track}_{sanitized_artist}.a2",
+			f"{sanitized_track}_{sanitized_artist}.lrc",
+			f"{sanitized_track}_{sanitized_artist}.txt"
+		]
 
-	update_fetch_status('synced')
-	# Fetch from syncedlyrics
-	log_debug("Fetching from syncedlyrics...")
-	search_start = time.time()
-	log_info(f"Searching online sources for: {artist_name} - {track_name}")
-	fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
-	if fetched_lyrics:
-		search_time = time.time() - search_start
-		log_debug(f"Online search completed in {search_time:.3f}s")
+		synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
+
+		for dir_path in [directory, synced_dir]:
+			for filename in possible_filenames:
+				file_path = os.path.join(dir_path, filename)
+				if os.path.exists(file_path):
+					try:
+						with open(file_path, 'r', encoding='utf-8') as f:
+							content = f.read()
+						if validate_lyrics(content, artist_name, track_name):
+							LOGGER.log_debug(f"Using validated file: {file_path}")
+							return file_path
+						else:
+							LOGGER.log_debug(f"Skipping invalid file: {file_path}")
+					except Exception as e:
+						LOGGER.log_debug(f"Error reading {file_path}: {e}")
+						continue
 		
-		log_info(f"Found {'synced' if is_synced else 'plain'} lyrics online")
-		# Add validation warning if needed
-		if not validate_lyrics(fetched_lyrics, artist_name, track_name):
-			log_debug("Validation warning - possible mismatch")
-			fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
+		if is_instrumental:
+			LOGGER.log_debug("Instrumental track detected")
+			update_fetch_status('instrumental')
+			return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
+
 		
-		line_count = len(fetched_lyrics.split('\n'))
-		log_debug(f"Lyrics stats - Lines: {line_count}, "
-				 f"Chars: {len(fetched_lyrics)}, "
-				 f"Synced: {is_synced}")
-		
-		# Determine file format
-		is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) 
+		# Check timeout status
+		if is_lyrics_timed_out(artist_name, track_name):
+			update_fetch_status('time_out')
+			LOGGER.log_debug(f"Lyrics timeout active for {artist_name} - {track_name}")
+			return None
+
+		update_fetch_status('synced')
+		# Fetch from syncedlyrics
+		LOGGER.log_debug("Fetching from syncedlyrics...")
+		search_start = time.time()
+		LOGGER.log_info(f"Searching online sources for: {artist_name} - {track_name}")
+		fetched_lyrics, is_synced = fetch_lyrics_syncedlyrics(artist_name, track_name, duration)
+		if fetched_lyrics:
+			search_time = time.time() - search_start
+			LOGGER.log_debug(f"Online search completed in {search_time:.3f}s")
+			
+			LOGGER.log_info(f"Found {'synced' if is_synced else 'plain'} lyrics online")
+			# Add validation warning if needed
+			if not validate_lyrics(fetched_lyrics, artist_name, track_name):
+				LOGGER.log_debug("Validation warning - possible mismatch")
+				fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
+			
+			line_count = len(fetched_lyrics.split('\n'))
+			LOGGER.log_debug(f"Lyrics stats - Lines: {line_count}, "
+					 f"Chars: {len(fetched_lyrics)}, "
+					 f"Synced: {is_synced}")
+			
+			# Determine file format
+			is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) 
 						for line in fetched_lyrics.split('\n'))
-		# extension = 'a2' if is_enhanced else ('lrc' if is_synced else 'txt')
-		has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
-		if is_enhanced:
-			extension = 'a2'
-		elif is_synced and has_lrc_timestamps:
-			extension = 'lrc'
-		else:
-			extension = 'txt'
-		return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-	
-	# Fallback to LRCLIB
-	if fetched_result is None:
-		log_debug("Error occurred during lyric fetch, skipping to next source")
+			has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
+			if is_enhanced:
+				extension = 'a2'
+			elif is_synced and has_lrc_timestamps:
+				extension = 'lrc'
+			else:
+				extension = 'txt'
+			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+		
+		# Fallback to LRCLIB
 		update_fetch_status("lrc_lib")
-	# update_fetch_status("lrc_lib")
-	log_debug("Fetching from LRCLIB...")
-	fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
-	if fetched_lyrics:
-		search_time = time.time() - search_start
-		log_debug(f"Online search completed in {search_time:.3f}s")
-		extension = 'lrc' if is_synced else 'txt'
-		return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-	
-	log_debug("No lyrics found from any source")
-	update_fetch_status("failed")
-	if has_internet_global():
-		log_timeout(artist_name, track_name)
-	return None
+		LOGGER.log_debug("Fetching from LRCLIB...")
+		fetched_lyrics, is_synced = fetch_lyrics_lrclib(artist_name, track_name, duration)
+		if fetched_lyrics:
+			search_time = time.time() - search_start
+			LOGGER.log_debug(f"Online search completed in {search_time:.3f}s")
+			extension = 'lrc' if is_synced else 'txt'
+			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+		
+		LOGGER.log_debug("No lyrics found from any source")
+		update_fetch_status("failed")
+		if has_internet_global():
+			log_timeout(artist_name, track_name)
+		return None
+		
+	except Exception as e:
+		LOGGER.log_error(f"Error in find_lyrics_file: {str(e)}")
+		update_fetch_status("failed")
+		return None
 
 def parse_time_to_seconds(time_str):
 	"""Convert various timestamp formats to seconds with millisecond precision."""
@@ -947,10 +883,10 @@ def parse_time_to_seconds(time_str):
 	raise ValueError(f"Invalid time format: {time_str}")
 
 def load_lyrics(file_path):
-	"""Parse lyric file into time-text pairs"""
+	"""Parse lyric file into time-text pairs with robust error handling"""
 	lyrics = []
 	errors = []
-	log_trace(f"Parsing lyrics file: {file_path}")
+	LOGGER.log_trace(f"Parsing lyrics file: {file_path}")
 	try:
 		try:
 			with open(file_path, 'r', encoding="utf-8") as f:
@@ -973,24 +909,32 @@ def load_lyrics(file_path):
 				# Parse line timing
 				line_match = line_pattern.match(line)
 				if line_match:
-					line_time = parse_time_to_seconds(line_match.group(1))
-					lyrics.append((line_time, None))
-					content = line_match.group(2)
-					
-					# Parse word-level timing
-					words = word_pattern.findall(content)
-					for start_str, text, end_str in words:
-						start = parse_time_to_seconds(start_str)
-						end = parse_time_to_seconds(end_str)
-						clean_text = re.sub(r'<.*?>', '', text).strip()
-						if clean_text:
-							lyrics.append((start, (clean_text, end)))
-					
-					# Handle remaining text
-					remaining = re.sub(word_pattern, '', content).strip()
-					if remaining:
-						lyrics.append((line_time, (remaining, line_time)))
-					lyrics.append((line_time, None))
+					try:
+						line_time = parse_time_to_seconds(line_match.group(1))
+						lyrics.append((line_time, None))
+						content = line_match.group(2)
+						
+						# Parse word-level timing
+						words = word_pattern.findall(content)
+						for start_str, text, end_str in words:
+							try:
+								start = parse_time_to_seconds(start_str)
+								end = parse_time_to_seconds(end_str)
+								clean_text = re.sub(r'<.*?>', '', text).strip()
+								if clean_text:
+									lyrics.append((start, (clean_text, end)))
+							except ValueError as e:
+								errors.append(f"Invalid word timestamp format: {e}")
+								continue
+						
+						# Handle remaining text
+						remaining = re.sub(word_pattern, '', content).strip()
+						if remaining:
+							lyrics.append((line_time, (remaining, line_time)))
+						lyrics.append((line_time, None))
+					except ValueError as e:
+						errors.append(f"Invalid line timestamp format: {e}")
+						continue
 
 		# Plain Text Format
 		elif file_path.endswith('.txt'):
@@ -1003,57 +947,37 @@ def load_lyrics(file_path):
 				raw_line = line.rstrip('\n')
 				line_match = re.match(r'\[(\d+:\d+\.\d+)\](.*)', raw_line)
 				if line_match:
-					line_time = parse_time_to_seconds(line_match.group(1))
-					lyric_content = line_match.group(2).strip()
-					lyrics.append((line_time, lyric_content))
+					try:
+						line_time = parse_time_to_seconds(line_match.group(1))
+						lyric_content = line_match.group(2).strip()
+						lyrics.append((line_time, lyric_content))
+					except ValueError as e:
+						errors.append(f"Invalid timestamp format: {e}")
+						continue
 				else:
 					lyrics.append((None, raw_line))
 		
 		return lyrics, errors
-
 	except Exception as e:
+		errors.append(f"Unexpected parsing error: {str(e)}")
 		if errors:
-			log_warn(f"Found {len(errors)} parsing errors")
+			LOGGER.log_warn(f"Found {len(errors)} parsing errors")
 		return lyrics, errors
 
 # ==============
 #  PLAYER DETECTION
 # ==============
-def get_player_info():
-	"""Detect active player (CMUS or MPD)"""
-	# Try CMUS first
-	cmus_info = get_cmus_info()
-	if cmus_info[0] is not None:
-		return 'cmus', cmus_info
-	
-	# Fallback to MPD
-	try:
-		mpd_info = get_mpd_info()
-		#log_debug(f"CMUS status: {cmus_info[5]}, MPD status: {mpd_info[5]}")
-		if mpd_info[0] is not None:
-			return 'mpd', mpd_info
-	except (base.ConnectionError, socket.error) as e:
-		# log_debug(f"MPD connection error: {str(e)}")
-		log_error(f"MPD connection failed: {str(e)}")
-	except base.CommandError as e:
-		log_error(f"MPD command error: {str(e)}")
-	except Exception as e:
-		log_error(f"Unexpected MPD error: {str(e)}")
-		log_fatal("No active music player detected")
-
-	return None, (None, 0, None, None, 0, "stopped")
-
 def get_mpd_info():
 	"""Get current playback info from MPD, handling password authentication."""
 	client = MPDClient()
-	client.timeout = MPD_TIMEOUT
+	client.timeout = CONFIG_MANAGER.MPD_TIMEOUT
 	
 	try:
-		client.connect(MPD_HOST, MPD_PORT)
+		client.connect(CONFIG_MANAGER.MPD_HOST, CONFIG_MANAGER.MPD_PORT)
 		
 		# Authenticate if a password is set
-		if MPD_PASSWORD:
-			client.password(MPD_PASSWORD)
+		if CONFIG_MANAGER.MPD_PASSWORD:
+			client.password(CONFIG_MANAGER.MPD_PASSWORD)
 		
 		status = client.status()
 		current_song = client.currentsong()
@@ -1079,16 +1003,70 @@ def get_mpd_info():
 				data["title"], data["duration"], data["status"])
 
 	except (socket.error, ConnectionRefusedError) as e:
-		log_debug(f"MPD connection error: {str(e)}")
+		LOGGER.log_debug(f"MPD connection error: {str(e)}")
 	except Exception as e:
-		log_debug(f"Unexpected MPD error: {str(e)}")
+		LOGGER.log_debug(f"Unexpected MPD error: {str(e)}")
 
 	update_fetch_status("mpd")
 	return (None, 0, None, None, 0, "stopped")
 
+def get_player_info():
+	"""Detect active player (CMUS or MPD)"""
+	# Try CMUS first if prioritized
+	if CONFIG_MANAGER.PRIORITIZE_CMUS:
+		cmus_info = get_cmus_info()
+		if cmus_info[0] is not None:
+			return 'cmus', cmus_info
+	
+	# Try MPD
+	try:
+		mpd_info = get_mpd_info()
+		if mpd_info[0] is not None:
+			return 'mpd', mpd_info
+	except Exception as e:
+		LOGGER.log_debug(f"MPD detection failed: {str(e)}")
+	
+	# Fallback to CMUS if not prioritized earlier
+	if not CONFIG_MANAGER.PRIORITIZE_CMUS:
+		cmus_info = get_cmus_info()
+		if cmus_info[0] is not None:
+			return 'cmus', cmus_info
+	
+	LOGGER.log_debug("No active music player detected")
+	return None, (None, 0, None, None, 0, "stopped")
+
 # ==============
 #  UI RENDERING
 # ==============
+def get_color_value(color_input):
+	"""Convert color input to valid terminal color number (0-255)"""
+	# Get terminal capabilities first
+	curses.start_color()
+	max_colors = curses.COLORS if curses.COLORS > 8 else 8
+	
+	try:
+		# Handle numeric inputs (string or integer)
+		if isinstance(color_input, (int, str)) and str(color_input).isdigit():
+			return max(0, min(int(color_input), max_colors - 1))
+		
+		# Handle named colors
+		if isinstance(color_input, str):
+			color = color_input.lower()
+			return CONFIG_MANAGER.COLOR_NAMES.get(color, 7)  # Default to white
+			
+		return 7  # Fallback to white
+	except Exception:
+		return 7  # Fallback on any error
+
+def resolve_color(setting):
+	"""Resolve color from config with environment override"""
+	# Get value from environment or config
+	raw_value = os.environ.get(
+		setting["env"], 
+		setting.get("default", 7)
+	)
+	return get_color_value(raw_value)
+
 def display_lyrics( 
 		stdscr,
 		lyrics,
@@ -1127,6 +1105,7 @@ def display_lyrics(
 		# Also clear the stdscr so no old content remains
 		stdscr.clear()
 		# *** End resize handling ***
+		stdscr.refresh()
 
 		display_lyrics._dims = (height, width)
 		# Create/Recreate sub‑windows for each section
@@ -1277,7 +1256,7 @@ def display_lyrics(
 
 	# --- 4) Status bar ---
 	status_win.erase()
-	if globals().get('DISPLAY_NAME'):
+	if CONFIG_MANAGER.DISPLAY_NAME:
 		# Build player status text
 		if player_info:
 			_, data = player_info
@@ -1359,7 +1338,7 @@ def display_lyrics(
 	curses.doupdate()
 	# Return scroll start for caller
 	return start_screen_line
-	
+
 # ================
 #  INPUT HANDLING
 # ================
@@ -1436,15 +1415,12 @@ def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw,
 
 	# Time adjustments
 	elif key in key_bindings["time_decrease"]:
-		# time_adjust = max(-10.0, time_adjust - 0.1)
 		time_adjust = time_adjust - 0.1
 		input_processed = True
 		time_adjust_input = True
 	elif key in key_bindings["time_increase"]:
-		# time_adjust = min(10.0, time_adjust + 0.1)
 		time_adjust = time_adjust + 0.1
 		input_processed = True
-		time_adjust_input = True
 	elif key in key_bindings["time_reset"]:
 		time_adjust = 0.0
 		input_processed = True
@@ -1457,7 +1433,6 @@ def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw,
 		time_adjust = time_adjust - 5.0
 		input_processed = True
 		time_adjust_input = True
-	# add your custom binding here what you wanted, imaginary is your limitation
 
 	# Direct alignment selection
 	elif key in key_bindings["align_left"]:
@@ -1499,15 +1474,10 @@ def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw,
 		needs_redraw = True
 	return True, manual_offset, last_input_time, needs_redraw, time_adjust, new_alignment
 
-
 def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, 
 				   is_txt_format, is_a2_format, current_idx, manual_scroll_active, 
 				   time_adjust=0, is_fetching=False, subframe_fraction=0.0,alignment='center', player_info = None):
-	"""Update display based on current state.
-	
-	Now includes subframe_fraction for fine-grained progress within a lyric line.
-	"""
-	# log_debug(f"Display params - Manual offset: {manual_offset}, Time adjust: {time_adjust}")
+	"""Update display based on current state."""
 	if is_txt_format:
 		return display_lyrics(stdscr, lyrics, errors, position, 
 							  os.path.basename(audio_file), manual_offset, 
@@ -1519,11 +1489,11 @@ def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset,
 							  is_txt_format, is_a2_format, current_idx, 
 							  manual_scroll_active, time_adjust, is_fetching, subframe_fraction, alignment, player_info)
 
-
-future_lyrics = None  # Holds the async result
-
+# ================
+#  LYRIC FETCHING
+# ================
 def fetch_lyrics_async(audio_file, directory, artist, title, duration):
-	"""Function to fetch lyrics in a separate thread"""
+	"""Function to fetch lyrics in a separate thread with robust error handling"""
 	try:
 		lyrics_file = find_lyrics_file(audio_file, directory, artist, title, duration)
 		if lyrics_file:
@@ -1535,10 +1505,13 @@ def fetch_lyrics_async(audio_file, directory, artist, title, duration):
 		update_fetch_status('failed')
 		return ([], []), False, False
 	except Exception as e:
-		log_debug(f"Async fetch error: {e}")
+		LOGGER.log_error(f"{title} lyrics fetch error: {e}")
 		update_fetch_status('failed')
 		return ([], []), False, False
-		
+
+# ================
+#  SYNC UTILITIES
+# ================
 def sync_player_position(status, raw_pos, last_time, time_adjust, duration):
 	now = time.perf_counter()
 	elapsed = now - last_time
@@ -1547,7 +1520,7 @@ def sync_player_position(status, raw_pos, last_time, time_adjust, duration):
 		estimated = raw_pos + elapsed + time_adjust
 	else:
 		estimated = raw_pos + time_adjust
-	log_debug(f"Position sync - Raw: {raw_pos}, Adjusted: {estimated}")
+	LOGGER.log_debug(f"Position sync - Raw: {raw_pos}, Adjusted: {estimated}")
 	return max(0.0, min(estimated, duration)), now
 
 def find_current_lyric_index(position, timestamps):
@@ -1564,8 +1537,6 @@ def find_current_lyric_index(position, timestamps):
 			return idx + 1
 	
 	return idx
-
-EPSILON = 1e-3  # Small constant to avoid division by zero
 
 def bisect_worker(position, timestamps, offset):
 	"""Returns the closest index using bisect based on a given offset."""
@@ -1609,66 +1580,68 @@ def subframe_interpolation(continuous_position, timestamps, index):
 	return index, fraction
 
 def get_monitor_refresh_rate():
-    try:
-        # Query active monitor mode
-        xrandr_output = subprocess.check_output(["xrandr"]).decode()
-        # Find the line with '*' which marks the active mode
-        match = re.search(r"(\d+\.\d+)\*", xrandr_output)
-        if match:
-            return float(match.group(1))
-    except Exception as e:
-        print("Could not detect refresh rate:", e)
-    return 60.0  # fallback
+	try:
+		# Query active monitor mode
+		xrandr_output = subprocess.check_output(["xrandr"]).decode()
+		# Find the line with '*' which marks the active mode
+		match = re.search(r"(\d+\.\d+)\*", xrandr_output)
+		if match:
+			return float(match.group(1))
+	except Exception as e:
+		print("Could not detect refresh rate:", e)
+	return 60.0  # fallback
 
+# ================
+#  MAIN APPLICATION
+# ================
 def main(stdscr):
 	# Initialize colors and UI
-	log_info("Initializing colors and UI")
+	LOGGER.log_info("Initializing colors and UI")
 
 	curses.start_color()
 	use_256 = curses.COLORS >= 256
 	color_config = CONFIG["ui"]["colors"]
 
 	# Resolve color configurations
-	error_color		= resolve_color(color_config["error"])
-	txt_active		= resolve_color(color_config["txt"]["active"])
-	txt_inactive 	= resolve_color(color_config["txt"]["inactive"])
-	lrc_active		= resolve_color(color_config["lrc"]["active"])
-	lrc_inactive	= resolve_color(color_config["lrc"]["inactive"])
+	error_color     = resolve_color(color_config["error"])
+	txt_active      = resolve_color(color_config["txt"]["active"])
+	txt_inactive    = resolve_color(color_config["txt"]["inactive"])
+	lrc_active      = resolve_color(color_config["lrc"]["active"])
+	lrc_inactive    = resolve_color(color_config["lrc"]["inactive"])
 
 	# Load intervals and thresholds
-	refresh_interval_ms				= CONFIG["ui"]["sync"]["refresh_interval_ms"]
-	refresh_interval				= refresh_interval_ms / 1000.0
-	refresh_interval_2				= CONFIG["ui"]["sync"]["coolcpu_ms"]
+	refresh_interval_ms             = CONFIG["ui"]["sync"]["refresh_interval_ms"]
+	refresh_interval                = refresh_interval_ms / 1000.0
+	refresh_interval_2              = CONFIG["ui"]["sync"]["coolcpu_ms"]
 	
-	smart_refresh_interval			= CONFIG["ui"]["sync"]["smart_coolcpu_ms"]
+	smart_refresh_interval          = CONFIG["ui"]["sync"]["smart_coolcpu_ms"]
 	
-	smart_refresh_interval_v2		= CONFIG["ui"]["sync"]["proximity"]["smart_coolcpu_ms_v2"] # can be directly replaced anyway actually i will need to add another option
-	refresh_proximity_interval		= CONFIG["ui"]["sync"]["proximity"]["smart_coolcpu_ms_v2"]
+	smart_refresh_interval_v2       = CONFIG["ui"]["sync"]["proximity"]["smart_coolcpu_ms_v2"]
+	refresh_proximity_interval      = CONFIG["ui"]["sync"]["proximity"]["smart_coolcpu_ms_v2"]
 	
-	JUMP_THRESHOLD					= CONFIG["ui"]["sync"].get("jump_threshold_sec", 1.0)
-	refresh_proximity_interval_ms	= CONFIG["ui"]["sync"].get("refresh_proximity_interval_ms", 200)
-	TEMPORARY_REFRESH_SEC			= CONFIG["ui"]["sync"]["smart_refresh_duration"]
+	JUMP_THRESHOLD                  = CONFIG["ui"]["sync"].get("jump_threshold_sec", 1.0)
+	refresh_proximity_interval_ms   = CONFIG["ui"]["sync"].get("refresh_proximity_interval_ms", 200)
+	TEMPORARY_REFRESH_SEC           = CONFIG["ui"]["sync"]["smart_refresh_duration"]
 
-	smart_tracking_bol				= CONFIG["ui"]["sync"].get("smart-tracking")
+	smart_tracking_bol              = CONFIG["ui"]["sync"].get("smart-tracking")
 
-	proximity_threshold				= CONFIG["ui"]["sync"]["proximity_threshold"]
-	smart_proximity_bol				= CONFIG["ui"]["sync"]["proximity"].get("smart-proximity", False)
-	PROXIMITY_THRESHOLD_SEC			= CONFIG["ui"]["sync"]["proximity"].get("proximity_threshold_sec", 0.05)
-	PROXIMITY_THRESHOLD_PERCENT		= CONFIG["ui"]["sync"]["proximity"].get("proximity_threshold_percent", 0.05)
-	PROXIMITY_MIN_THRESHOLD_SEC 	= CONFIG["ui"]["sync"]["proximity"].get("proximity_min_threshold_sec", 1.0)
-	PROXIMITY_MAX_THRESHOLD_SEC		= CONFIG["ui"]["sync"]["proximity"].get("proximity_max_threshold_sec", 2.0)
+	proximity_threshold             = CONFIG["ui"]["sync"]["proximity_threshold"]
+	smart_proximity_bol             = CONFIG["ui"]["sync"]["proximity"].get("smart-proximity", False)
+	PROXIMITY_THRESHOLD_SEC         = CONFIG["ui"]["sync"]["proximity"].get("proximity_threshold_sec", 0.05)
+	PROXIMITY_THRESHOLD_PERCENT     = CONFIG["ui"]["sync"]["proximity"].get("proximity_threshold_percent", 0.05)
+	PROXIMITY_MIN_THRESHOLD_SEC     = CONFIG["ui"]["sync"]["proximity"].get("proximity_min_threshold_sec", 1.0)
+	PROXIMITY_MAX_THRESHOLD_SEC     = CONFIG["ui"]["sync"]["proximity"].get("proximity_max_threshold_sec", 2.0)
 
-	END_TRIGGER_SEC					= CONFIG["ui"]["sync"].get("end_trigger_threshold_sec", 1.0)
-	SCROLL_TIMEOUT					= CONFIG["ui"]["scroll_timeout"]
-	WRAP_WIDTH_PERCENT				= CONFIG["ui"]["sync"]["wrap_width_percent"]
-	base_offset						= CONFIG["ui"]["sync"].get("sync_offset_sec", 0.0)
-	bisect_offset					= CONFIG["ui"]["sync"]["bisect_offset"]
+	END_TRIGGER_SEC                 = CONFIG["ui"]["sync"].get("end_trigger_threshold_sec", 1.0)
+	SCROLL_TIMEOUT                  = CONFIG["ui"]["scroll_timeout"]
+	WRAP_WIDTH_PERCENT              = CONFIG["ui"]["sync"]["wrap_width_percent"]
+	base_offset                     = CONFIG["ui"]["sync"].get("sync_offset_sec", 0.0)
+	bisect_offset                   = CONFIG["ui"]["sync"]["bisect_offset"]
 	
 	# New: initialize synchronization compensation variable
-	# This will store the last measured redraw duration (in seconds)
 	sync_compensation = 0.0
 	
-	VRR_ENABLED						= CONFIG["ui"]["sync"].get("VRR_bol", False)
+	VRR_ENABLED                     = CONFIG["ui"]["sync"].get("VRR_bol", False)
 	
 	if CONFIG["ui"]["sync"].get("VRR_R_bol", False):
 		refresh_rate = get_monitor_refresh_rate()
@@ -1682,6 +1655,8 @@ def main(stdscr):
 		refresh_interval = min(frame_time_sec * NORMAL_POLL_FRAMES, refresh_interval)
 		refresh_proximity_interval = min(frame_time_sec * PROX_POLL_FRAMES, refresh_proximity_interval)
 
+	next_frame_time = 0
+	
 	if VRR_ENABLED:
 		refresh_rate = get_monitor_refresh_rate()
 		frame_time = 1.0 / refresh_rate  # Target time per frame (seconds)
@@ -1735,7 +1710,8 @@ def main(stdscr):
 		"poll": False,
 	}
 
-	executor = ThreadPoolExecutor(max_workers=1)
+	executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="LyricFetcher")
+	
 	future_lyrics = None
 	last_cmus_position = 0.0
 	estimated_position = 0.0
@@ -1812,15 +1788,15 @@ def main(stdscr):
 					drift = abs(new_raw - estimated_position)
 					if drift > JUMP_THRESHOLD and status_val == "playing":
 						state['resume_trigger_time'] = time.perf_counter()
-						log_debug(f"Jump detected: {drift:.3f}s")
+						LOGGER.log_debug(f"Jump detected: {drift:.3f}s")
 						needs_redraw = True
 
 					if (p_type == "cmus" and prev_status == "paused" and status_val == "playing"):
 						state['resume_trigger_time'] = time.perf_counter()
-						log_debug("Pause→play refresh")
+						LOGGER.log_debug("Pause→play refresh")
 						needs_redraw = True
 				except Exception as e:
-					log_debug("Error getting player info: " + str(e))
+					LOGGER.log_debug("Error getting player info: " + str(e))
 				state['last_player_update'] = current_time
 
 			# Unpack the (possibly cached) player info
@@ -1832,7 +1808,7 @@ def main(stdscr):
 
 			# Handle track changes
 			if audio_file != state['current_file']:
-				log_info(f"New track detected: {os.path.basename(audio_file)}")
+				LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
 				state.update({
 					'current_file': audio_file,
 					'lyrics': [],
@@ -1864,11 +1840,10 @@ def main(stdscr):
 				try:
 					(new_lyrics, errors), is_txt, is_a2 = future_lyrics.result()
 					if errors:  # This checks if the list is non-empty
-						log_debug(errors)
+						LOGGER.log_debug(errors)
 					state.update({
 						'lyrics': new_lyrics,
 						'errors': [],  # Keep errors empty to prevent display
-						#'errors': errors,
 						'timestamps': ([] if (is_txt or is_a2)
 									   else sorted(t for t, _ in new_lyrics if t is not None)),
 						'valid_indices': [i for i, (t, _) in enumerate(new_lyrics) if t is not None],
@@ -1882,7 +1857,7 @@ def main(stdscr):
 					})
 					if status == "playing" and player_type == "cmus":
 						state['resume_trigger_time'] = time.perf_counter()
-						log_debug("Refresh triggered by new lyrics loading")
+						LOGGER.log_debug("Refresh triggered by new lyrics loading")
 					estimated_position = raw_position
 					future_lyrics = None
 				except Exception as e:
@@ -1922,7 +1897,7 @@ def main(stdscr):
 			else:
 				playback_paused = (status == "pause")
 
-			offset = base_offset + sync_compensation
+			offset = base_offset + sync_compensation + next_frame_time
 
 			continuous_position = max(0.0, estimated_position + state['time_adjust'] + offset)
 			
@@ -1937,14 +1912,14 @@ def main(stdscr):
 
 				state["end_triggered"] = True
 				state["force_redraw"] = True
-				log_debug(f"End‑of‑track reached (pos={continuous_position:.3f}s), triggered final redraw")
+				LOGGER.log_debug(f"End‑of‑track reached (pos={continuous_position:.3f}s), triggered final redraw")
 
 			# Cancel proximity if playback paused just incase 
-			if status != "playing" and state['proximity_active']: # addng this status == "playing" and state["poll"] can do a bit of hack that reduces jitters a the bigging, need better implementation than this like when the poll is active for one sec only and then start allowing proximity
+			if status != "playing" and state['proximity_active']:
 				state['proximity_active'] = False
 				state['proximity_trigger_time'] = None
 				stdscr.timeout(refresh_interval_2)
-				log_debug("Proximity forcibly reset due to pause")
+				LOGGER.log_debug("Proximity forcibly reset due to pause")
 
 			if (state['smart_proximity']
 				and state['timestamps'] and not state['is_txt']
@@ -1971,7 +1946,7 @@ def main(stdscr):
 					state['proximity_active'] = True
 					stdscr.timeout(refresh_proximity_interval_ms)  # use ms
 					state['last_player_update'] = 0.0
-					log_debug(
+					LOGGER.log_debug(
 						f"Proximity TRIG: time_to_next={time_to_next:.3f}s "
 						f"within [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]"
 					)
@@ -1982,7 +1957,7 @@ def main(stdscr):
 					stdscr.timeout(refresh_interval_2)
 					state['proximity_trigger_time'] = None
 					state['proximity_active'] = False
-					log_debug(
+					LOGGER.log_debug(
 						f"Proximity RESET: time_to_next={time_to_next:.3f}s "
 						f"outside [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]"
 					)
@@ -2015,19 +1990,16 @@ def main(stdscr):
 				if state['timestamps'] and not state['is_txt']:
 					# LRC synchronization logic
 					with ThreadPoolExecutor(max_workers=2) as sync_exec:
-					#with ThreadPoolExecutor(max_workers=1) as sync_exec:
 						bisect_idx = sync_exec.submit(
 							bisect_worker,
 							continuous_position,
 							state['timestamps'],
-							#CONFIG["ui"]["bisect_offset"] + sync_compensation
 							bisect_offset + offset
 						).result()
 						proximity_idx = sync_exec.submit(
 							proximity_worker,
 							continuous_position,
 							state['timestamps'],
-							#CONFIG["ui"]["proximity_threshold"]
 							proximity_threshold + offset
 						).result()
 
@@ -2060,8 +2032,6 @@ def main(stdscr):
 			else:
 				if state['timestamps'] and not state['is_txt']:
 					ts     = state['timestamps']
-					# include sync_compensation in your manual‑offset branch too
-					# offset = CONFIG["ui"].get("sync_offset_sec", 0.0) + sync_compensation
 					idx    = bisect.bisect_right(ts, continuous_position + offset) - 1
 
 					if idx >= 0:
@@ -2173,7 +2143,7 @@ def main(stdscr):
 			
 			if not skip_redraw:
 				if new_input or needs_redraw or state['force_redraw'] or (current_idx != state['last_idx']):
-					log_debug(
+					LOGGER.log_debug(
 						f"Redraw triggered: new_input={new_input}, "
 						f"needs_redraw={needs_redraw}, force_redraw={state['force_redraw']}, "
 						f"idx={state['last_idx']} → {current_idx}, paused={status == 'paused'}"
@@ -2201,8 +2171,7 @@ def main(stdscr):
 					
 					time_delta = current_time - state['last_pos_time'] - sync_compensation
 					
-					
-					log_debug(
+					LOGGER.log_debug(
 						f"Triggered at: {continuous_position}, "
 						f"Compensated: {sync_compensation}, "
 						f"Time_delta: {time_delta}"
@@ -2235,11 +2204,11 @@ def main(stdscr):
 				stdscr.timeout(refresh_interval_2)
 			
 		except Exception as e:
-			log_debug(f"Main loop error: {str(e)}")
+			LOGGER.log_debug(f"Main loop error: {str(e)}")
 			
 			time.sleep(1)
 			stdscr.timeout(400)
-			log_debug("Systemfault /s")
+			LOGGER.log_debug("Systemfault /s")
 
 if __name__ == "__main__":
 	while True:
@@ -2247,11 +2216,7 @@ if __name__ == "__main__":
 			curses.wrapper(main)
 		except KeyboardInterrupt:
 			print("Exited by user (Ctrl+C).")
-			exit() # Please do not delete this
-			# raise KeyboardInterrupt
+			exit()
 		except Exception as e:
-			log_debug(f"Fatal error: {str(e)}")
+			LOGGER.log_debug(f"Fatal error: {str(e)}")
 			time.sleep(1)
-		
-
-
