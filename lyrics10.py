@@ -81,7 +81,7 @@ LOG_LEVELS = {
 # ==============
 #  CONFIGURATION
 # ==============
-config_files = ["config.json", "config1.json", "config2.json"]
+config_files = ["config.json", "config1.json", "config2.json"] # Update this anything you wanted you will want that default and look into it
 
 class ConfigManager:
 	"""Manage application configuration"""
