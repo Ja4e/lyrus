@@ -29,6 +29,7 @@ Remember fetched lyrics has inaccuracies... this code has a very robust snyc to 
 #  DEPENDENCIES
 # ==============
 import curses
+import argparse
 try:
 	import redis
 except ImportError:
@@ -51,10 +52,8 @@ import socket
 import json
 import appdirs
 import pathlib
-
-# Suppress output during initialization
-sys.stdout = open(os.devnull, 'w')
-sys.stderr = open(os.devnull, 'w')
+import unicodedata
+from wcwidth import wcswidth
 
 # ==============
 #  GLOBALS
@@ -77,21 +76,32 @@ LOG_LEVELS = {
 # ==============
 #  CONFIGURATION
 # ==============
+VERSION = "1.0.0"
+
 config_dir = "~/.config/lyrus"
 
 config_files = ["config.json", "config1.json", "config2.json"]  # filenames to look for under ~/.config/lyrus
 
+
+def parse_args():
+	parser = argparse.ArgumentParser(description="Lyrus - cmus Lyrics synchronization project")
+	parser.add_argument("-c", "--config", help="Path to configuration file")
+	parser.add_argument("--version", action="version", version=VERSION)
+	return parser.parse_args()
+
 class ConfigManager:
 	"""Manage application configuration"""
 
-	def __init__(self, use_user_dirs=True):
+	def __init__(self, use_user_dirs=True, config_path=None):
 		"""
 		use_user_dirs: if True, logs and cache go to ~/.local/... 
 					   if False, logs and cache stay in project directory
+		config_path: if provided, use this specific config file
 		"""
 		self.use_user_dirs = use_user_dirs
 		self.user_config_dir = os.path.expanduser(config_dir)
 		os.makedirs(self.user_config_dir, exist_ok=True)
+		self.config_path = config_path
 		self.config = self.load_config()
 		self.setup_logging()
 		self.setup_colors()
@@ -211,24 +221,43 @@ class ConfigManager:
 				"align_right": "3"
 			}   
 		}
-		
-		# Only merge configs if they exist under ~/.config/lyrus
-		for file_name in config_files:
-			user_path = os.path.join(self.user_config_dir, file_name)
-			if os.path.exists(user_path):
+		if self.config_path:
+			config_path = os.path.expanduser(self.config_path)
+			if os.path.exists(config_path):
 				try:
-					with open(user_path, "r") as f:
+					with open(config_path, "r") as f:
 						file_config = json.load(f).get("config", {})
+					# Deep merge with default config
+					for key in file_config:
+						if key in default_config:
+							default_config[key].update(file_config[key])
+						else:
+							default_config[key] = file_config[key]
+					print(f"Loaded config from {config_path}")
+				except Exception as e:
+					print(f"Error loading config from {config_path}: {e}")
+					sys.exit(1)
+			else:
+				print(f"Config file not found: {config_path}")
+				sys.exit(1)
+		else:
+			# Only merge configs if they exist under ~/.config/lyrus
+			for file_name in config_files:
+				user_path = os.path.join(self.user_config_dir, file_name)
+				if os.path.exists(user_path):
+					try:
+						with open(user_path, "r") as f:
+							file_config = json.load(f).get("config", {})
 						# Deep merge
 						for key in file_config:
 							if key in default_config:
 								default_config[key].update(file_config[key])
 							else:
 								default_config[key] = file_config[key]
-					print(f"Loaded config from {user_path}")
-					break  # stop after first found file
-				except Exception as e:
-					print(f"Error loading config from {user_path}: {e}")
+						print(f"Loaded config from {user_path}")
+						break  # stop after first found file
+					except Exception as e:
+						print(f"Error loading config from {user_path}: {e}")
 
 		# Resolve environment variables
 		def resolve(item):
@@ -1125,13 +1154,15 @@ def display_lyrics(
 				break
 			line = a2_lines[idx]
 			line_str = " ".join(text for _, (text, _) in line)
-			# Alignment
+			
+			# Compute x for alignment
 			if alignment == 'right':
-				x = max(0, width - len(line_str) - 1)
+				x = max(0, width - wcswidth(txt) - 1)
 			elif alignment == 'center':
-				x = max(0, (width - len(line_str)) // 2)
+				x = max(0, (width - wcswidth(txt)) // 2)
 			else:
 				x = 1
+			
 			# Draw words in line
 			cursor = 0
 			for _, (text, _) in line:
@@ -1144,7 +1175,8 @@ def display_lyrics(
 					lyrics_win.addstr(y, x + cursor, txt, color)
 				except curses.error:
 					break
-				cursor += len(txt) + 1
+				# cursor += len(txt) + 1
+				cursor += wcswidth(txt) + 1
 			y += 1
 		start_screen_line = start_line
 
@@ -1186,12 +1218,14 @@ def display_lyrics(
 			if y >= avail:
 				break
 			txt = line.strip()[:width-1]
+			disp_width = wcswidth(txt)
 			if alignment == 'right':
-				x = max(0, width - len(txt) - 1)
+				x = max(0, width - disp_width - 1)
 			elif alignment == 'center':
-				x = max(0, (width - len(txt))//2)
+				x = max(0, (width - disp_width) // 2)
 			else:
 				x = 1
+	
 			if is_txt_format:
 				color = curses.color_pair(4) if wrapped[start_screen_line+y][0]==current_idx else curses.color_pair(5)
 			else:
@@ -1563,7 +1597,10 @@ def get_monitor_refresh_rate():
 # ================
 #  MAIN APPLICATION
 # ================
-async def main_async(stdscr):
+async def main_async(stdscr, config_path=None):
+	# Suppress output during initialization
+	sys.stdout = open(os.devnull, 'w')
+	sys.stderr = open(os.devnull, 'w')
 	# Initialize colors and UI
 	LOGGER.log_info("Initializing colors and UI")
 
@@ -2190,17 +2227,28 @@ async def main_async(stdscr):
 			stdscr.timeout(400)
 			LOGGER.log_debug("Systemfault /s")
 
-def main(stdscr):
+def main(stdscr, config_path=None):
 	"""Main function that runs the async event loop"""
+	# Remove the global declaration and reinitialize everything locally
+	CONFIG_MANAGER = ConfigManager(config_path=config_path)
+	CONFIG = CONFIG_MANAGER.config
+	LOGGER = Logger()
+	
 	asyncio.run(main_async(stdscr))
 
 if __name__ == "__main__":
+	args = parse_args()
+	
 	while True:
 		try:
-			curses.wrapper(main)
+			# Pass the config path to the wrapper function
+			curses.wrapper(lambda stdscr: main(stdscr, config_path=args.config))
 		except KeyboardInterrupt:
 			print("Exited by user (Ctrl+C).")
 			exit()
 		except Exception as e:
-			LOGGER.log_debug(f"Fatal error: {str(e)}")
+			# Create a temporary logger for error reporting
+			temp_config = ConfigManager(config_path=args.config)
+			temp_logger = Logger()
+			temp_logger.log_debug(f"Fatal error: {str(e)}")
 			time.sleep(1)
