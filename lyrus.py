@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 """
 MIT License
 Copyright (c) 2025 Saul Gman
@@ -23,7 +24,6 @@ Displays time-synced lyrics for cmus music player using multiple lyric sources
 
 Remember fetched lyrics has inaccuracies... this code has a very robust snyc to your current play position you can adjust whatever you want
 """
-#!/usr/bin/env python3
 
 # ==============
 #  DEPENDENCIES
