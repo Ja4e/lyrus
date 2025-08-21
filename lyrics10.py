@@ -28,33 +28,29 @@ Remember fetched lyrics has inaccuracies... this code has a very robust snyc to 
 # ==============
 #  DEPENDENCIES
 # ==============
-import curses  # Terminal UI framework
-try:  # Optional Redis import just ignore you dont need to actually need this yet
-	import redis
+import curses
+try:
+    import redis
 except ImportError:
-	redis = None
-import aiohttp  # Async HTTP client
-import threading # For tracking Status
-import concurrent.futures # For concurrent API requests
+    redis = None
+import aiohttp
+import threading
+import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
-import subprocess  # For cmus interaction
-import re  # Regular expressions
-import os  # File system operations
+import subprocess
+import re
+import os
 import sys
-import bisect  # For efficient list searching
-import time  # Timing functions
-import textwrap  # Text formatting
-import requests  # HTTP requests for lyric APIs
-import urllib.parse  # URL encoding
-import urllib.request # Network detection triggers
-import syncedlyrics  # Lyric search library
-import multiprocessing  # Parallel lyric fetching
+import bisect
+import time
+import textwrap
 import asyncio
-from datetime import datetime, timedelta  # Time handling for logs
-from mpd import MPDClient  # MPD support
-import socket # used for listening for common mpd port 6600
+from datetime import datetime
+from mpd import MPDClient
+import socket
 import json
-from functools import partial
+
+# This program targets developers to experiment with it the other one is specifically made for linux
 
 # Suppress output during initialization
 sys.stdout = open(os.devnull, 'w')
