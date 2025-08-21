@@ -1,4 +1,4 @@
-{ // I allowed commenting 
+{ // Moving those comments into a Wiki
 	"global": {
 		"logs_dir": "logs",
 		"log_file": "application.log", // useless line but incase i decided to update the code
