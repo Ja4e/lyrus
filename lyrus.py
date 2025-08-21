@@ -77,6 +77,8 @@ LOG_LEVELS = {
 # ==============
 #  CONFIGURATION
 # ==============
+config_dir = "~/.config/lyrus"
+
 config_files = ["config.json", "config1.json", "config2.json"]  # filenames to look for under ~/.config/lyrus
 
 class ConfigManager:
@@ -88,7 +90,7 @@ class ConfigManager:
 					   if False, logs and cache stay in project directory
 		"""
 		self.use_user_dirs = use_user_dirs
-		self.user_config_dir = os.path.expanduser("~/.config/lyrus")
+		self.user_config_dir = os.path.expanduser(config_dir)
 		os.makedirs(self.user_config_dir, exist_ok=True)
 		self.config = self.load_config()
 		self.setup_logging()
