@@ -47,7 +47,10 @@ import time
 import textwrap
 import asyncio
 from datetime import datetime
-from mpd import MPDClient
+try:
+	from mpd import MPDClient
+except ImportError:
+	pass
 import socket
 import json
 import appdirs
