@@ -4,3 +4,4 @@ requests>=2.31.0
 syncedlyrics>=0.5.0
 python-mpd2>=3.1.0
 appdirs
+wcwidth
