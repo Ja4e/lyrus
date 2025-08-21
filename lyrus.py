@@ -30,9 +30,9 @@ Remember fetched lyrics has inaccuracies... this code has a very robust snyc to 
 # ==============
 import curses
 try:
-    import redis
+	import redis
 except ImportError:
-    redis = None
+	redis = None
 import aiohttp
 import threading
 import concurrent.futures
@@ -80,29 +80,29 @@ LOG_LEVELS = {
 config_files = ["config.json", "config1.json", "config2.json"]  # filenames to look for under ~/.config/lyrus
 
 class ConfigManager:
-    """Manage application configuration"""
+	"""Manage application configuration"""
 
-    def __init__(self, use_user_dirs=True):
-        """
-        use_user_dirs: if True, logs and cache go to ~/.local/... 
-                       if False, logs and cache stay in project directory
-        """
-        self.use_user_dirs = use_user_dirs
-        self.user_config_dir = os.path.expanduser("~/.config/lyrus")
-        os.makedirs(self.user_config_dir, exist_ok=True)
-        self.config = self.load_config()
-        self.setup_logging()
-        self.setup_colors()
-        self.setup_player()
-        self.setup_lyrics()
-        self.setup_ui()
+	def __init__(self, use_user_dirs=True):
+		"""
+		use_user_dirs: if True, logs and cache go to ~/.local/... 
+					   if False, logs and cache stay in project directory
+		"""
+		self.use_user_dirs = use_user_dirs
+		self.user_config_dir = os.path.expanduser("~/.config/lyrus")
+		os.makedirs(self.user_config_dir, exist_ok=True)
+		self.config = self.load_config()
+		self.setup_logging()
+		self.setup_colors()
+		self.setup_player()
+		self.setup_lyrics()
+		self.setup_ui()
 	
-    @staticmethod
-    def normalize_path(path: str) -> str:
-        path = os.path.expanduser(path)
-        if os.path.isabs(path):
-            return os.path.normpath(path)
-        return os.path.normpath(os.path.abspath(path))
+	@staticmethod
+	def normalize_path(path: str) -> str:
+		path = os.path.expanduser(path)
+		if os.path.isabs(path):
+			return os.path.normpath(path)
+		return os.path.normpath(os.path.abspath(path))
 		
 	def load_config(self):
 		"""Load and merge configuration from file and environment"""
@@ -210,85 +210,85 @@ class ConfigManager:
 			}   
 		}
 		
-        # Only merge configs if they exist under ~/.config/lyrus
-        for file_name in config_files:
-            user_path = os.path.join(self.user_config_dir, file_name)
-            if os.path.exists(user_path):
-                try:
-                    with open(user_path, "r") as f:
-                        file_config = json.load(f).get("config", {})
-                        # Deep merge
-                        for key in file_config:
-                            if key in default_config:
-                                default_config[key].update(file_config[key])
-                            else:
-                                default_config[key] = file_config[key]
-                    print(f"Loaded config from {user_path}")
-                    break  # stop after first found file
-                except Exception as e:
-                    print(f"Error loading config from {user_path}: {e}")
+		# Only merge configs if they exist under ~/.config/lyrus
+		for file_name in config_files:
+			user_path = os.path.join(self.user_config_dir, file_name)
+			if os.path.exists(user_path):
+				try:
+					with open(user_path, "r") as f:
+						file_config = json.load(f).get("config", {})
+						# Deep merge
+						for key in file_config:
+							if key in default_config:
+								default_config[key].update(file_config[key])
+							else:
+								default_config[key] = file_config[key]
+					print(f"Loaded config from {user_path}")
+					break  # stop after first found file
+				except Exception as e:
+					print(f"Error loading config from {user_path}: {e}")
 
-        # Resolve environment variables
-        def resolve(item):
-            if isinstance(item, dict) and "env" in item:
-                return os.environ.get(item["env"], item.get("default"))
-            return item
+		# Resolve environment variables
+		def resolve(item):
+			if isinstance(item, dict) and "env" in item:
+				return os.environ.get(item["env"], item.get("default"))
+			return item
 
-        for section in ["mpd"]:
-            if section in default_config["player"]:
-                for key in default_config["player"][section]:
-                    default_config["player"][section][key] = resolve(default_config["player"]["mpd"][key])
+		for section in ["mpd"]:
+			if section in default_config["player"]:
+				for key in default_config["player"][section]:
+					default_config["player"][section][key] = resolve(default_config["player"]["mpd"][key])
 
-        for key in default_config["redis"]:
-            default_config["redis"][key] = resolve(default_config["redis"][key])
+		for key in default_config["redis"]:
+			default_config["redis"][key] = resolve(default_config["redis"][key])
 
-        default_config["global"]["enable_debug"] = resolve(default_config["global"]["enable_debug"]) == "1"
+		default_config["global"]["enable_debug"] = resolve(default_config["global"]["enable_debug"]) == "1"
 
-        return default_config
+		return default_config
 
-    def setup_logging(self):
-        logs_dir = self.config["global"]["logs_dir"]
-        if not self.use_user_dirs and logs_dir.startswith("~"):
-            logs_dir = os.path.join(os.getcwd(), os.path.basename(logs_dir))
-        self.LOG_DIR = self.normalize_path(logs_dir)
-        os.makedirs(self.LOG_DIR, exist_ok=True)
+	def setup_logging(self):
+		logs_dir = self.config["global"]["logs_dir"]
+		if not self.use_user_dirs and logs_dir.startswith("~"):
+			logs_dir = os.path.join(os.getcwd(), os.path.basename(logs_dir))
+		self.LOG_DIR = self.normalize_path(logs_dir)
+		os.makedirs(self.LOG_DIR, exist_ok=True)
 
-        self.LYRICS_TIMEOUT_LOG = self.config["global"]["lyrics_timeout_log"]
-        self.DEBUG_LOG = self.config["global"]["debug_log"]
-        self.LOG_RETENTION_DAYS = self.config["global"]["log_retention_days"]
-        self.MAX_DEBUG_COUNT = self.config["global"]["max_debug_count"]
-        self.ENABLE_DEBUG_LOGGING = self.config["global"]["enable_debug"]
+		self.LYRICS_TIMEOUT_LOG = self.config["global"]["lyrics_timeout_log"]
+		self.DEBUG_LOG = self.config["global"]["debug_log"]
+		self.LOG_RETENTION_DAYS = self.config["global"]["log_retention_days"]
+		self.MAX_DEBUG_COUNT = self.config["global"]["max_debug_count"]
+		self.ENABLE_DEBUG_LOGGING = self.config["global"]["enable_debug"]
 
-        if self.ENABLE_DEBUG_LOGGING:
-            print("Debug logging ENABLED")
+		if self.ENABLE_DEBUG_LOGGING:
+			print("Debug logging ENABLED")
 
-    def setup_colors(self):
-        self.COLOR_NAMES = {
-            "black": 0, "red": 1, "green": 2, "yellow": 3,
-            "blue": 4, "magenta": 5, "cyan": 6, "white": 7
-        }
+	def setup_colors(self):
+		self.COLOR_NAMES = {
+			"black": 0, "red": 1, "green": 2, "yellow": 3,
+			"blue": 4, "magenta": 5, "cyan": 6, "white": 7
+		}
 
-    def setup_player(self):
-        self.MPD_HOST = self.config["player"]["mpd"]["host"]
-        self.MPD_PORT = self.config["player"]["mpd"]["port"]
-        self.MPD_PASSWORD = self.config["player"]["mpd"]["password"]
-        self.MPD_TIMEOUT = self.config["player"]["mpd"]["timeout"]
-        self.PRIORITIZE_CMUS = self.config["player"]["prioritize_cmus"]
+	def setup_player(self):
+		self.MPD_HOST = self.config["player"]["mpd"]["host"]
+		self.MPD_PORT = self.config["player"]["mpd"]["port"]
+		self.MPD_PASSWORD = self.config["player"]["mpd"]["password"]
+		self.MPD_TIMEOUT = self.config["player"]["mpd"]["timeout"]
+		self.PRIORITIZE_CMUS = self.config["player"]["prioritize_cmus"]
 
-    def setup_lyrics(self):
-        self.LYRIC_EXTENSIONS = self.config["lyrics"]["local_extensions"]
-        cache_dir = self.config["lyrics"]["cache_dir"]
-        if not self.use_user_dirs and cache_dir.startswith("~"):
-            cache_dir = os.path.join(os.getcwd(), os.path.basename(cache_dir))
-        self.LYRIC_CACHE_DIR = self.normalize_path(cache_dir)
-        os.makedirs(self.LYRIC_CACHE_DIR, exist_ok=True)
-        self.SEARCH_TIMEOUT = self.config["lyrics"]["search_timeout"]
-        self.VALIDATION_LENGTHS = self.config["lyrics"]["validation"]
+	def setup_lyrics(self):
+		self.LYRIC_EXTENSIONS = self.config["lyrics"]["local_extensions"]
+		cache_dir = self.config["lyrics"]["cache_dir"]
+		if not self.use_user_dirs and cache_dir.startswith("~"):
+			cache_dir = os.path.join(os.getcwd(), os.path.basename(cache_dir))
+		self.LYRIC_CACHE_DIR = self.normalize_path(cache_dir)
+		os.makedirs(self.LYRIC_CACHE_DIR, exist_ok=True)
+		self.SEARCH_TIMEOUT = self.config["lyrics"]["search_timeout"]
+		self.VALIDATION_LENGTHS = self.config["lyrics"]["validation"]
 
-    def setup_ui(self):
-        self.DISPLAY_NAME = self.config["ui"]["name"]
-        self.MESSAGES = self.config["status_messages"]
-        self.TERMINAL_STATES = set(self.config["terminal_states"])
+	def setup_ui(self):
+		self.DISPLAY_NAME = self.config["ui"]["name"]
+		self.MESSAGES = self.config["status_messages"]
+		self.TERMINAL_STATES = set(self.config["terminal_states"])
 
 # Initialize configuration
 CONFIG_MANAGER = ConfigManager()
