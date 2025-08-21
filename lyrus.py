@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
 """
 MIT License
 Copyright (c) 2025 Saul Gman
