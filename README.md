@@ -1,4 +1,4 @@
-# lyrus cmus lyric player
+# Lyrus cmus lyric player
 featuring fully fledged cmus, mpd lyric player
 automatic lyrics fetcher
 supports wide range of lyric sources
