@@ -30,9 +30,9 @@ Remember fetched lyrics has inaccuracies... this code has a very robust snyc to 
 # ==============
 import curses
 try:
-    import redis
+	import redis
 except ImportError:
-    redis = None
+	redis = None
 import aiohttp
 import threading
 import concurrent.futures
@@ -49,6 +49,8 @@ from datetime import datetime
 from mpd import MPDClient
 import socket
 import json
+import appdirs
+import pathlib
 
 # Suppress output during initialization
 sys.stdout = open(os.devnull, 'w')
@@ -75,24 +77,42 @@ LOG_LEVELS = {
 # ==============
 #  CONFIGURATION
 # ==============
-config_files = ["config.json", "config1.json", "config2.json"] # Update this anything you wanted you will want that default and look into it
+config_files = ["config.json", "config1.json", "config2.json"]
 
 class ConfigManager:
 	"""Manage application configuration"""
-	
-	def __init__(self):
+
+	def __init__(self, use_user_dirs=True):
+		"""
+		use_user_dirs: if True, logs and cache go to ~/.local/...
+					   if False, logs and cache stay in project directory
+		"""
+		self.use_user_dirs = use_user_dirs
 		self.config = self.load_config()
 		self.setup_logging()
 		self.setup_colors()
 		self.setup_player()
 		self.setup_lyrics()
 		self.setup_ui()
-		
+
+	@staticmethod
+	def normalize_path(path: str) -> str:
+		"""
+		Normalize a path:
+		- Expand ~
+		- Absolute paths starting with / stay absolute
+		- Relative paths become absolute relative to cwd
+		"""
+		path = os.path.expanduser(path)
+		if os.path.isabs(path):
+			return os.path.normpath(path)
+		return os.path.normpath(os.path.abspath(path))
+
 	def load_config(self):
 		"""Load and merge configuration from file and environment"""
 		default_config = {
 			"global": {
-				"logs_dir": "logs",
+				"logs_dir": "~/.local/state/lyrus", # ./logs
 				"log_file": "application.log",
 				"log_level": "FATAL",
 				"lyrics_timeout_log": "lyrics_timeouts.log",
@@ -132,7 +152,7 @@ class ConfigManager:
 			"terminal_states": ["done", "instrumental", "time_out", "failed", "mpd", "clear", "cmus"],
 			"lyrics": {
 				"search_timeout": 15,
-				"cache_dir": "synced_lyrics",
+				"cache_dir": "~/.local/share/lyrus/synced_lyrics", # ./synced_lyrics
 				"local_extensions": ["a2", "lrc", "txt"],
 				"validation": {"title_match_length": 15, "artist_match_length": 15}
 			},
@@ -140,41 +160,13 @@ class ConfigManager:
 				"alignment": "left",
 				"name": True,
 				"colors": {
-					"txt": {
-						"active": {"env": "TXT_ACTIVE", "default": "254"},
-						"inactive": {"env": "TXT_INACTIVE", "default": "white"}
-					},
-					"lrc": {
-						"active": {"env": "LRC_ACTIVE", "default": "green"},
-						"inactive": {"env": "LRC_INACTIVE", "default": "250"}
-					},
+					"txt": {"active": {"env": "TXT_ACTIVE", "default": "254"},
+							"inactive": {"env": "TXT_INACTIVE", "default": "white"}},
+					"lrc": {"active": {"env": "LRC_ACTIVE", "default": "green"},
+							"inactive": {"env": "LRC_INACTIVE", "default": "250"}},
 					"error": {"env": "ERROR_COLOR", "default": 196}
 				},
-				"scroll_timeout": 4,
-				"sync": {
-					"refresh_interval_ms": 1000,
-					"coolcpu_ms": 100,
-					"smart-tracking": 0,
-					"bisect_offset": 0,
-					"proximity_threshold": 0,
-					"wrap_width_percent": 90,
-					"smart_refresh_duration": 1,
-					"smart_coolcpu_ms": 20,
-					"jump_threshold_sec": 1,
-					"end_trigger_threshold_sec": 1,
-					"proximity": {
-						"smart-proximity": True,
-						"refresh_proximity_interval_ms": 100,
-						"smart_coolcpu_ms_v2": 50,
-						"proximity_threshold_sec": 0.1,
-						"proximity_threshold_percent": 200,
-						"proximity_min_threshold_sec": 0.00,
-						"proximity_max_threshold_sec": 1,
-					},
-					"sync_offset_sec": 0.005,
-					"VRR_R_bol": False,
-					"VRR_bol": False,
-				},
+				"scroll_timeout": 4
 			},
 			"key_bindings": {
 				"quit": ["q", "Q"],
@@ -191,17 +183,15 @@ class ConfigManager:
 				"align_left": "1",
 				"align_center": "2",
 				"align_right": "3"
-			}   
+			}
 		}
-		
-		# Merge with found config files
+
+		# Merge user config files
 		for file in config_files:
 			if os.path.exists(file):
 				try:
 					with open(file) as f:
 						file_config = json.load(f).get("config", {})
-						if "global" in file_config and "logs_dir" not in file_config["global"]:
-							file_config["global"]["logs_dir"] = "logs"
 						# Deep merge strategy
 						for key in file_config:
 							if key in default_config:
@@ -209,10 +199,11 @@ class ConfigManager:
 							else:
 								default_config[key] = file_config[key]
 					print(f"Successfully loaded and merged config from {file}")
-					break 
+					break
 				except Exception as e:
 					print(f"Error loading config from {file}: {e}")
-		
+
+		# Resolve env variables
 		def resolve(item):
 			if isinstance(item, dict) and "env" in item:
 				return os.environ.get(item["env"], item.get("default"))
@@ -221,69 +212,64 @@ class ConfigManager:
 		for section in ["mpd"]:
 			for key in default_config["player"][section]:
 				default_config["player"][section][key] = resolve(default_config["player"][section][key])
-		
 		for key in default_config["redis"]:
 			default_config["redis"][key] = resolve(default_config["redis"][key])
-
 		default_config["global"]["enable_debug"] = resolve(default_config["global"]["enable_debug"]) == "1"
 
 		return default_config
-	
+
 	def setup_logging(self):
 		"""Setup logging directory and files"""
-		self.LOG_DIR = self.config["global"]["logs_dir"]
-		try:
-			created = not os.path.exists("logs")
-			os.makedirs("logs", exist_ok=True)
-			if created:
-				print(f"Directory 'logs' created at: {os.path.abspath('logs')}")
-		except Exception as e:
-			print(f"CRITICAL ERROR: Failed to create logs directory - {str(e)}")
-			raise SystemExit(1)
+		logs_dir = self.config["global"]["logs_dir"]
+		if not self.use_user_dirs and logs_dir.startswith("~"):
+			# convert to relative project directory
+			logs_dir = os.path.join(os.getcwd(), os.path.basename(logs_dir))
+		self.LOG_DIR = os.path.expanduser(logs_dir)
 
-		if not os.path.exists("logs"):
-			print("FATAL: 'logs' directory missing after creation attempt")
-			raise SystemExit(1)
-
-		self.LYRICS_TIMEOUT_LOG = self.config["global"]["lyrics_timeout_log"]
-		self.DEBUG_LOG = self.config["global"]["debug_log"]
+		os.makedirs(self.LOG_DIR, exist_ok=True)
+		self.LYRICS_TIMEOUT_LOG = os.path.join(self.LOG_DIR, self.config["global"]["lyrics_timeout_log"])
+		self.DEBUG_LOG = os.path.join(self.LOG_DIR, self.config["global"]["debug_log"])
 		self.LOG_RETENTION_DAYS = self.config["global"]["log_retention_days"]
 		self.MAX_DEBUG_COUNT = self.config["global"]["max_debug_count"]
 		self.ENABLE_DEBUG_LOGGING = self.config["global"]["enable_debug"]
-		
-		# Debug startup message if enabled
+
 		if self.ENABLE_DEBUG_LOGGING:
-			debug_msg = "Debug logging ENABLED"
-			print(debug_msg)
+			print("Debug logging ENABLED")
 			print("=== Application started ===")
-	
+
 	def setup_colors(self):
 		"""Setup color configuration"""
 		self.COLOR_NAMES = {
 			"black": 0, "red": 1, "green": 2, "yellow": 3,
 			"blue": 4, "magenta": 5, "cyan": 6, "white": 7
 		}
-	
+
 	def setup_player(self):
 		"""Setup player configuration"""
-		self.MPD_HOST = self.config["player"]["mpd"]["host"] 
-		self.MPD_PORT = self.config["player"]["mpd"]["port"] 
-		self.MPD_PASSWORD = self.config["player"]["mpd"]["password"] 
+		self.MPD_HOST = self.config["player"]["mpd"]["host"]
+		self.MPD_PORT = self.config["player"]["mpd"]["port"]
+		self.MPD_PASSWORD = self.config["player"]["mpd"]["password"]
 		self.MPD_TIMEOUT = self.config["player"]["mpd"]["timeout"]
 		self.PRIORITIZE_CMUS = self.config["player"]["prioritize_cmus"]
-	
+
 	def setup_lyrics(self):
 		"""Setup lyrics configuration"""
 		self.LYRIC_EXTENSIONS = self.config["lyrics"]["local_extensions"]
-		self.LYRIC_CACHE_DIR = self.config["lyrics"]["cache_dir"]
 		self.SEARCH_TIMEOUT = self.config["lyrics"]["search_timeout"]
 		self.VALIDATION_LENGTHS = self.config["lyrics"]["validation"]
-	
+
+		cache_dir = self.config["lyrics"]["cache_dir"]
+		if not self.use_user_dirs and cache_dir.startswith("~"):
+			cache_dir = os.path.join(os.getcwd(), os.path.basename(cache_dir))
+		self.LYRIC_CACHE_DIR = os.path.expanduser(cache_dir)
+		os.makedirs(self.LYRIC_CACHE_DIR, exist_ok=True)
+
 	def setup_ui(self):
 		"""Setup UI configuration"""
 		self.DISPLAY_NAME = self.config["ui"]["name"]
 		self.MESSAGES = self.config["status_messages"]
 		self.TERMINAL_STATES = set(self.config["terminal_states"])
+
 
 # Initialize configuration
 CONFIG_MANAGER = ConfigManager()
@@ -609,25 +595,26 @@ async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None
 		return None, None
 
 def save_lyrics(lyrics, track_name, artist_name, extension):
-	"""Save lyrics to appropriate file format with robust error handling"""
+	"""Save lyrics to configured cache dir (dynamic project vs user-local)"""
 	try:
-		folder = os.path.join(os.getcwd(), "synced_lyrics")
+		folder = CONFIG_MANAGER.LYRIC_CACHE_DIR
 		os.makedirs(folder, exist_ok=True)
-		
-		# Generate safe filename
+
 		sanitized_track = sanitize_filename(track_name)
 		sanitized_artist = sanitize_filename(artist_name)
 		filename = f"{sanitized_track}_{sanitized_artist}.{extension}"
-		file_path = os.path.join("synced_lyrics", filename)
-		
+		file_path = os.path.join(folder, filename)
+
 		with open(file_path, "w", encoding="utf-8") as f:
 			f.write(lyrics)
+
 		LOGGER.log_info(f"Saved lyrics to: {file_path}")
 		LOGGER.log_trace(f"Lyrics content sample: {lyrics[:200]}...")
 		return file_path
 	except Exception as e:
 		LOGGER.log_error(f"Failed to save lyrics: {str(e)}")
 		return None
+
 
 def get_cmus_info():
 	"""Get current playback info from cmus"""
@@ -692,26 +679,29 @@ def is_lyrics_timed_out(artist_name, track_name):
 		return False
 
 async def find_lyrics_file_async(audio_file, directory, artist_name, track_name, duration=None):
-	"""Async version of find_lyrics_file with non-blocking operations"""
+	"""Find lyrics in user-configurable directories (project or user-local)"""
 	update_fetch_status('local')
 	LOGGER.log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
-	
+
 	try:
 		base_name, _ = os.path.splitext(os.path.basename(audio_file))
-		
-		local_files = [
-			(os.path.join(directory, f"{base_name}.a2"), 'a2'),
-			(os.path.join(directory, f"{base_name}.lrc"), 'lrc'),
-			(os.path.join(directory, f"{base_name}.txt"), 'txt')
+
+		lyric_dirs = [
+			directory,
+			CONFIG_MANAGER.LYRIC_CACHE_DIR
 		]
 
-		# Validate existing files
+		local_files = [
+			(os.path.join(d, f"{base_name}.{ext}"), ext)
+			for d in lyric_dirs
+			for ext in CONFIG_MANAGER.LYRIC_EXTENSIONS
+		]
+
 		for file_path, ext in local_files:
 			if os.path.exists(file_path):
 				try:
 					with open(file_path, 'r', encoding='utf-8') as f:
 						content = f.read()
-					
 					if validate_lyrics(content, artist_name, track_name):
 						LOGGER.log_info(f"Using validated lyrics file: {file_path}")
 						return file_path
@@ -722,26 +712,15 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 					LOGGER.log_debug(f"File read error: {file_path} - {e}")
 					continue
 
-		# Handle instrumental tracks
-		is_instrumental = (
-			"instrumental" in track_name.lower() or 
-			(artist_name and "instrumental" in artist_name.lower())
-		)
-		
 		sanitized_track = sanitize_filename(track_name)
 		sanitized_artist = sanitize_filename(artist_name)
 		possible_filenames = [
-			f"{sanitized_track}.a2",
-			f"{sanitized_track}.lrc",
-			f"{sanitized_track}.txt",
-			f"{sanitized_track}_{sanitized_artist}.a2",
-			f"{sanitized_track}_{sanitized_artist}.lrc",
-			f"{sanitized_track}_{sanitized_artist}.txt"
+			f"{sanitized_track}.{ext}" for ext in CONFIG_MANAGER.LYRIC_EXTENSIONS
+		] + [
+			f"{sanitized_track}_{sanitized_artist}.{ext}" for ext in CONFIG_MANAGER.LYRIC_EXTENSIONS
 		]
 
-		synced_dir = os.path.join(os.getcwd(), "synced_lyrics")
-
-		for dir_path in [directory, synced_dir]:
+		for dir_path in lyric_dirs:
 			for filename in possible_filenames:
 				file_path = os.path.join(dir_path, filename)
 				if os.path.exists(file_path):
@@ -756,13 +735,12 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 					except Exception as e:
 						LOGGER.log_debug(f"Error reading {file_path}: {e}")
 						continue
-		
+
 		if is_instrumental:
 			LOGGER.log_debug("Instrumental track detected")
 			update_fetch_status('instrumental')
 			return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
 
-		
 		# Check timeout status
 		if is_lyrics_timed_out(artist_name, track_name):
 			update_fetch_status('time_out')
@@ -778,21 +756,20 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 		if fetched_lyrics:
 			search_time = time.time() - search_start
 			LOGGER.log_debug(f"Online search completed in {search_time:.3f}s")
-			
+
 			LOGGER.log_info(f"Found {'synced' if is_synced else 'plain'} lyrics online")
 			# Add validation warning if needed
 			if not validate_lyrics(fetched_lyrics, artist_name, track_name):
 				LOGGER.log_debug("Validation warning - possible mismatch")
 				fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
-			
+
 			line_count = len(fetched_lyrics.split('\n'))
 			LOGGER.log_debug(f"Lyrics stats - Lines: {line_count}, "
-					 f"Chars: {len(fetched_lyrics)}, "
-					 f"Synced: {is_synced}")
-			
+							 f"Chars: {len(fetched_lyrics)}, "
+							 f"Synced: {is_synced}")
+
 			# Determine file format
-			is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) 
-						for line in fetched_lyrics.split('\n'))
+			is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
 			has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
 			if is_enhanced:
 				extension = 'a2'
@@ -800,8 +777,10 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 				extension = 'lrc'
 			else:
 				extension = 'txt'
+
+			# Save using ConfigManager cache dir
 			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-		
+
 		# Fallback to LRCLIB
 		update_fetch_status("lrc_lib")
 		LOGGER.log_debug("Fetching from LRCLIB...")
@@ -811,17 +790,19 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			LOGGER.log_debug(f"Online search completed in {search_time:.3f}s")
 			extension = 'lrc' if is_synced else 'txt'
 			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-		
+
 		LOGGER.log_debug("No lyrics found from any source")
 		update_fetch_status("failed")
 		if has_internet_global():
 			log_timeout(artist_name, track_name)
 		return None
-		
+
 	except Exception as e:
 		LOGGER.log_error(f"Error in find_lyrics_file: {str(e)}")
 		update_fetch_status("failed")
 		return None
+
+
 
 def parse_time_to_seconds(time_str):
 	"""Convert various timestamp formats to seconds with millisecond precision."""
