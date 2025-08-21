@@ -4,7 +4,9 @@ automatic lyrics fetcher
 supports wide range of lyric sources
 ncurses, scrollable
 
-do use lyrics10.py file
+use PKGBUILD  and  makepkg -si (currently on arch works)
+
+other linux do use make sure use virual environment to get it working (it should)
 
 customizable through this local where this program installed.
 
