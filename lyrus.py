@@ -109,6 +109,8 @@ import appdirs
 import pathlib
 import unicodedata
 from wcwidth import wcswidth
+import os, json, sys
+import argparse
 
 # ==============
 #  GLOBALS
@@ -137,7 +139,6 @@ config_dir = "~/.config/lyrus"
 config_files = ["config.json", "config1.json", "config2.json"]
 
 def parse_args():
-	import argparse
 	parser = argparse.ArgumentParser(description="Lyrus - cmus Lyrics synchronization project")
 	parser.add_argument("-c", "--config", help="Path to configuration file")
 	parser.add_argument("--version", action="version", version=VERSION)
@@ -153,13 +154,11 @@ def deep_merge_dicts(base, updates):
 def resolve_value(item):
 	"""Resolve {"env": ..., "default": ...} into actual value"""
 	if isinstance(item, dict) and "env" in item and "default" in item:
-		import os
 		return os.environ.get(item["env"], item["default"])
 	return item
 
 class ConfigManager:
 	def __init__(self, use_user_dirs=True, config_path=None):
-		import os, sys
 		self.use_user_dirs = use_user_dirs
 		self.user_config_dir = os.path.expanduser(config_dir)
 		os.makedirs(self.user_config_dir, exist_ok=True)
@@ -173,14 +172,12 @@ class ConfigManager:
 
 	@staticmethod
 	def normalize_path(path: str) -> str:
-		import os
 		path = os.path.expanduser(path)
 		if os.path.isabs(path):
 			return os.path.normpath(path)
 		return os.path.normpath(os.path.abspath(path))
 
 	def load_config(self):
-		import os, json, sys
 
 		# Default configuration
 		default_config = {
@@ -319,7 +316,6 @@ class ConfigManager:
 		self.COLOR_ERROR = resolve_value(colors["error"])
 
 	def setup_logging(self):
-		import os
 		logs_dir = self.config["global"]["logs_dir"]
 		if not self.use_user_dirs and logs_dir.startswith("~"):
 			logs_dir = os.path.join(os.getcwd(), os.path.basename(logs_dir))
@@ -346,7 +342,6 @@ class ConfigManager:
 		self.PRIORITIZE_CMUS = self.config["player"]["prioritize_cmus"]
 
 	def setup_lyrics(self):
-		import os
 		self.LYRIC_EXTENSIONS = self.config["lyrics"]["local_extensions"]
 		cache_dir = self.config["lyrics"]["cache_dir"]
 		if not self.use_user_dirs and cache_dir.startswith("~"):
