@@ -974,6 +974,7 @@ def get_mpd_info():
 	client.timeout = CONFIG_MANAGER.MPD_TIMEOUT
 	
 	try:
+		LOGGER.log_debug("mpd polling...")
 		client.connect(CONFIG_MANAGER.MPD_HOST, CONFIG_MANAGER.MPD_PORT)
 		
 		# Authenticate if a password is set
