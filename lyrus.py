@@ -1646,7 +1646,7 @@ async def main_async(stdscr, config_path=None):
 	WRAP_WIDTH_PERCENT              = CONFIG["ui"]["sync"]["wrap_width_percent"]
 	base_offset                     = CONFIG["ui"]["sync"].get("sync_offset_sec", 0.0)
 	bisect_offset                   = CONFIG["ui"]["sync"]["bisect_offset"]
-	
+
 	# New: initialize synchronization compensation variable
 	sync_compensation = 0.0
 	
@@ -1728,6 +1728,8 @@ async def main_async(stdscr, config_path=None):
 	# Unpack initial player info
 	player_type, (audio_file, raw_pos, artist, title, duration, status) = state["player_info"]
 
+	current_idx = -1
+
 	# Main application loop
 	while True:
 		try:
@@ -1783,8 +1785,7 @@ async def main_async(stdscr, config_path=None):
 				else:
 					interval = refresh_interval
 
-			# Refresh player info when due
-			if current_time - state['last_player_update'] >= interval:
+			if (current_time - state['last_player_update'] >= interval) or state.get('force_proximity_update', False):
 				try:
 					prev_status = state['player_info'][1][5]
 					p_type, p_data = get_player_info()
@@ -1802,9 +1803,20 @@ async def main_async(stdscr, config_path=None):
 						state['resume_trigger_time'] = time.perf_counter()
 						LOGGER.log_debug("Pause→play refresh")
 						needs_redraw = True
+
+					# optionally update player_status_changed here
+					if p_data[5] != prev_status:
+						state['player_status_changed'] = True
+
+					# safe update for current_idx
+					if state.get('current_idx', -1) != -1:
+						state['last_known_idx'] = state['current_idx']
+
 				except Exception as e:
-					LOGGER.log_debug("Error getting player info: " + str(e))
-				state['last_player_update'] = current_time
+					LOGGER.log_debug(f"Error refreshing player info: {e}")
+				finally:
+					state['last_player_update'] = current_time
+					state['force_proximity_update'] = False
 
 			# Unpack the (possibly cached) player info
 			player_type, (audio_file, raw_pos, artist, title, duration, status) = state["player_info"]
@@ -1920,7 +1932,6 @@ async def main_async(stdscr, config_path=None):
 			
 			continuous_position = min(continuous_position, duration)
 			
-
 			# End‑of‑track proximity trigger 
 			# only run once per track
 			if duration > 0 \
@@ -1942,6 +1953,7 @@ async def main_async(stdscr, config_path=None):
 				and state['timestamps'] and not state['is_txt']
 				and state['last_idx'] >= 0
 				and state['last_idx'] + 1 < len(state['timestamps'])
+				and state['last_idx'] == max(state['last_idx'], 0)
 				and status == "playing"
 				and not state["poll"] == True
 				and not playback_paused):
@@ -1962,7 +1974,8 @@ async def main_async(stdscr, config_path=None):
 					state['proximity_trigger_time'] = now
 					state['proximity_active'] = True
 					stdscr.timeout(refresh_proximity_interval_ms)  # use ms
-					state['last_player_update'] = 0.0
+					#state['last_player_update'] = 0.0
+					state['force_proximity_update'] = True
 					LOGGER.log_debug(
 						f"Proximity TRIG: time_to_next={time_to_next:.3f}s "
 						f"within [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]"
@@ -2026,6 +2039,7 @@ async def main_async(stdscr, config_path=None):
 						chosen_idx = min(bisect_idx, proximity_idx)
 
 					current_idx = max(-1, min(chosen_idx, len(state['timestamps']) - 1))
+
 					if current_idx >= 0:
 						t_cur = state['timestamps'][current_idx]
 						# only compare floats against floats
@@ -2037,8 +2051,10 @@ async def main_async(stdscr, config_path=None):
 				elif state['is_txt'] and state['wrapped_lines'] and duration > 0:
 					# TXT file synchronization (unchanged)
 					num_wrapped = len(state['wrapped_lines'])
+					
 					target_idx  = int((continuous_position / duration) * num_wrapped)
 					current_idx = max(0, min(target_idx, num_wrapped - 1))
+					
 					last_position_time = now  # Reset timer to prevent residual elapsed time
 
 				else:
@@ -2204,7 +2220,7 @@ async def main_async(stdscr, config_path=None):
 					})
 
 			
-			#cpu destressor
+			# CPU destressor
 			if status == "paused" and not manual_scroll and not state['current_file']:
 				time_since_input = current_time - state['last_input']
 				if time_since_input > 5.0:
@@ -2216,13 +2232,18 @@ async def main_async(stdscr, config_path=None):
 				else:
 					sleep_time = 0.1
 					stdscr.timeout(250)
-				# Use asyncio.sleep instead of time.sleep to avoid blocking
-				await asyncio.sleep(sleep_time)
+					
+				sleep_time = 0.002
 			else:
 				stdscr.timeout(refresh_interval_2)
-				# Small non-blocking sleep to allow other tasks
-				await asyncio.sleep(0.001)
-			
+				sleep_time = 0.001
+
+			# If polling or proximity is active, override for high-frequency updates
+			if state['poll'] or state['proximity_active']:
+				sleep_time = 0.000
+
+			await asyncio.sleep(sleep_time)
+
 		except Exception as e:
 			LOGGER.log_debug(f"Main loop error: {str(e)}")
 			
