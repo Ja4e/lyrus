@@ -89,6 +89,7 @@ config_files = ["config.json", "config1.json", "config2.json"]
 def parse_args():
 	parser = argparse.ArgumentParser(description="Lyrus - cmus Lyrics synchronization project")
 	parser.add_argument("-c", "--config", help="Path to configuration file")
+	parser.add_argument("-d", "--default", action="store_true", help="Use default settings without loading a config file")
 	parser.add_argument("--version", action="version", version=VERSION)
 	return parser.parse_args()
 
@@ -106,10 +107,11 @@ def resolve_value(item):
 	return item
 
 class ConfigManager:
-	def __init__(self, use_user_dirs=True, config_path=None):
+	def __init__(self, use_user_dirs=True, config_path=None, use_default=False):
 		self.use_user_dirs = use_user_dirs
 		self.user_config_dir = os.path.expanduser(config_dir)
 		os.makedirs(self.user_config_dir, exist_ok=True)
+		self.use_default = use_default
 		self.config_path = config_path
 		self.config = self.load_config()
 		self.setup_logging()
@@ -117,6 +119,7 @@ class ConfigManager:
 		self.setup_player()
 		self.setup_lyrics()
 		self.setup_ui()
+
 
 	@staticmethod
 	def normalize_path(path: str) -> str:
@@ -234,20 +237,18 @@ class ConfigManager:
 
 		merged_config = default_config
 
-		# Load user-provided config or fallback to config files
-		config_paths = [self.config_path] if self.config_path else [os.path.join(self.user_config_dir, f) for f in config_files]
+		if not self.use_default:
+			config_paths = [self.config_path] if self.config_path else [os.path.join(self.user_config_dir, f) for f in config_files]
+			for path in config_paths:
+				if path and os.path.exists(os.path.expanduser(path)):
+					try:
+						with open(os.path.expanduser(path), "r") as f:
+							file_config = json.load(f)
+						deep_merge_dicts(merged_config, file_config)
+						break
+					except Exception as e:
+						print(f"Error loading config from {path}: {e}")
 
-		for path in config_paths:
-			if path and os.path.exists(os.path.expanduser(path)):
-				try:
-					with open(os.path.expanduser(path), "r") as f:
-						file_config = json.load(f)  # <-- Use top-level JSON directly
-					deep_merge_dicts(merged_config, file_config)
-					break
-				except Exception as e:
-					print(f"Error loading config from {path}: {e}")
-
-		# Resolve environment variables for enable_debug
 		merged_config["global"]["enable_debug"] = str(resolve_value(merged_config["global"]["enable_debug"])) == "1"
 		return merged_config
 
@@ -2239,28 +2240,30 @@ async def main_async(stdscr, config_path=None):
 			stdscr.timeout(400)
 			LOGGER.log_debug("Systemfault /s")
 
-def main(stdscr, config_path=None):
-	"""Main function that runs the async event loop"""
-	# Remove the global declaration and reinitialize everything locally
-	CONFIG_MANAGER = ConfigManager(config_path=config_path)
-	CONFIG = CONFIG_MANAGER.config
-	LOGGER = Logger()
-	
-	asyncio.run(main_async(stdscr))
+def main(stdscr, config_path=None, use_default=False):
+    """Main function that runs the async event loop"""
+    CONFIG_MANAGER = ConfigManager(config_path=config_path, use_default=use_default)
+    CONFIG = CONFIG_MANAGER.config
+    LOGGER = Logger()
+    
+    asyncio.run(main_async(stdscr))
+
+
+def run_main(stdscr):
+    main(stdscr, config_path=args.config, use_default=args.default)
+
 
 if __name__ == "__main__":
-	args = parse_args()
-	
-	while True:
-		try:
-			# Pass the config path to the wrapper function
-			curses.wrapper(lambda stdscr: main(stdscr, config_path=args.config))
-		except KeyboardInterrupt:
-			print("Exited by user (Ctrl+C).")
-			exit()
-		except Exception as e:
-			# Create a temporary logger for error reporting
-			temp_config = ConfigManager(config_path=args.config)
-			temp_logger = Logger()
-			temp_logger.log_debug(f"Fatal error: {str(e)}")
-			time.sleep(1)
+    args = parse_args()
+
+    while True:
+        try:
+            curses.wrapper(run_main)
+        except KeyboardInterrupt:
+            print("Exited by user (Ctrl+C).")
+            exit()
+        except Exception as e:
+            temp_config = ConfigManager(config_path=args.config, use_default=args.default)
+            temp_logger = Logger()
+            temp_logger.log_debug(f"Fatal error: {str(e)}")
+            time.sleep(1)
