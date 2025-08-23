@@ -57,58 +57,6 @@ import appdirs
 import pathlib
 import unicodedata
 from wcwidth import wcswidth
-
-# ==============
-#  GLOBALS
-# ==============
-sync_results = {
-	'bisect_index': 0,
-	'proximity_index': 0,
-	'lock': threading.Lock()
-}
-
-LOG_LEVELS = {
-	"FATAL": 5,
-	"ERROR": 4,
-	"WARN": 3,
-	"INFO": 2,
-	"DEBUG": 1,
-	"TRACE": 0
-}
-
-
-# ==============
-#  DEPENDENCIES
-# ==============
-import curses
-import argparse
-try:
-	import redis
-except ImportError:
-	redis = None
-import aiohttp
-import threading
-import concurrent.futures
-from concurrent.futures import ThreadPoolExecutor
-import subprocess
-import re
-import os
-import sys
-import bisect
-import time
-import textwrap
-import asyncio
-from datetime import datetime
-try:
-	from mpd import MPDClient
-except ImportError:
-	pass
-import socket
-import json
-import appdirs
-import pathlib
-import unicodedata
-from wcwidth import wcswidth
 import os, json, sys
 import argparse
 
