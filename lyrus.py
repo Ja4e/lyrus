@@ -1719,6 +1719,7 @@ async def main_async(stdscr, config_path=None):
 		'proximity_active': False,
 		"poll": False,
 		'lyric_future': None,  # For async lyric fetching
+		"force_proximity_update": False,
 	}
 
 	last_cmus_position = 0.0
@@ -2214,7 +2215,7 @@ async def main_async(stdscr, config_path=None):
 						f"Time_delta: {time_delta}"
 					)
 
-					sync_compensation = sync_compensation * 0.8
+					sync_compensation = sync_compensation * 0.9
 					
 					# Synchronize actual offset used
 					state['manual_offset'] = start_screen_line
