@@ -1927,8 +1927,11 @@ async def main_async(stdscr, config_path=None):
 			else:
 				playback_paused = (status == "pause")
 
-			offset = base_offset + sync_compensation + next_frame_time
+			if player_type == "mpd":
+				sync_compensation = 0.0
 
+			offset = base_offset + sync_compensation + next_frame_time
+			
 			continuous_position = max(0.0, estimated_position + state['time_adjust'] + offset)
 			
 			continuous_position = min(continuous_position, duration)
@@ -2211,6 +2214,8 @@ async def main_async(stdscr, config_path=None):
 						f"Time_delta: {time_delta}"
 					)
 
+					sync_compensation = sync_compensation * 0.8
+					
 					# Synchronize actual offset used
 					state['manual_offset'] = start_screen_line
 					state.update({
