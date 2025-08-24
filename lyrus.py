@@ -699,21 +699,6 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 					except Exception as e:
 						LOGGER.log_debug(f"File read error: {file_path} - {e}")
 						continue
-			for dir_path in directory:
-				for filename in possible_filenames:
-					file_path = os.path.join(dir_path, filename)
-					if os.path.exists(file_path):
-						try:
-							with open(file_path, 'r', encoding='utf-8') as f:
-								content = f.read()
-							if validate_lyrics(content, artist_name, track_name):
-								LOGGER.log_debug(f"Using validated file: {file_path}")
-								return file_path
-							else:
-								LOGGER.log_debug(f"Skipping invalid file: {file_path}")
-						except Exception as e:
-							LOGGER.log_debug(f"Error reading {file_path}: {e}")
-							continue
 
 		# Handle instrumental tracks
 		is_instrumental = (
@@ -734,7 +719,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 
 		synced_dir = CONFIG_MANAGER.LYRIC_CACHE_DIR
 
-		for dir_path in [synced_dir]:
+		for dir_path in [directory, synced_dir]:
 			for filename in possible_filenames:
 				file_path = os.path.join(dir_path, filename)
 				if os.path.exists(file_path):
