@@ -1701,7 +1701,6 @@ async def main_async(stdscr, config_path=None):
 		'proximity_active': False,
 		"poll": False,
 		'lyric_future': None,  # For async lyric fetching
-		"force_proximity_update": False,
 	}
 
 	last_cmus_position = 0.0
@@ -1760,8 +1759,6 @@ async def main_async(stdscr, config_path=None):
 			if state['proximity_active'] and status == "playing":
 				# Keep normal polling but also trigger proximity updates
 				interval = refresh_interval
-				if (current_time - state.get('last_player_update', 0)) >= refresh_proximity_interval:
-					state['force_proximity_update'] = True
 			else:
 				if (state.get('resume_trigger_time') and
 					(current_time - state['resume_trigger_time'] <= TEMPORARY_REFRESH_SEC)):
@@ -1769,7 +1766,7 @@ async def main_async(stdscr, config_path=None):
 				else:
 					interval = refresh_interval
 
-			if (current_time - state['last_player_update'] >= interval) or state.get('force_proximity_update', False):
+			if (current_time - state['last_player_update'] >= interval):
 				try:
 					prev_status = state['player_info'][1][5]
 					p_type, p_data = get_player_info()
@@ -1800,7 +1797,6 @@ async def main_async(stdscr, config_path=None):
 					LOGGER.log_debug(f"Error refreshing player info: {e}")
 				finally:
 					state['last_player_update'] = current_time
-					state['force_proximity_update'] = False
 
 			# Unpack the (possibly cached) player info
 			player_type, (audio_file, raw_pos, artist, title, duration, status) = state["player_info"]
@@ -1961,8 +1957,7 @@ async def main_async(stdscr, config_path=None):
 					state['proximity_trigger_time'] = now
 					state['proximity_active'] = True
 					stdscr.timeout(refresh_proximity_interval_ms)  # use ms
-					#state['last_player_update'] = 0.0
-					state['force_proximity_update'] = True
+					state['last_player_update'] = 0.0
 					LOGGER.log_debug(
 						f"Proximity TRIG: time_to_next={time_to_next:.3f}s "
 						f"within [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]"
