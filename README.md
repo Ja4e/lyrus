@@ -1,6 +1,6 @@
 # lyrus cmus lyric player
 featuring fully fledged cmus, mpd lyric player
-automatic lyrics fetcher
+automatic lyrics fetcher and supports local lyrics player, txt and lrc scrolling
 supports wide range of lyric sources
 ncurses, scrollable
 
