@@ -1,7 +1,7 @@
 # Maintainer: Ja4e <Jakie101@proton.me>
 pkgname=lyrus-git
 pkgver=1.0.0
-pkgrel=1
+pkgrel=2
 pkgdesc="A python lyrics player for cmus"
 arch=('any')
 url="https://github.com/Ja4e/Lyrus"
@@ -17,7 +17,8 @@ depends=(
 )
 
 optdepends=(
-    'python-mpd2: optional mpd support'
+    'python-mpd2: optional mpd support (allows local)'
+    'playerctl: optional MPRIS support (for other)'
 )
 
 makedepends=('git')
