@@ -165,7 +165,7 @@ class ConfigManager:
 				"instrumental": "Instrumental track detected",
 				"time_out": "In time-out log",
 				"failed": "No lyrics found",
-				"mpd": "scanning for MPD activity",
+				"no_player": "scanning for activity",
 				"cmus": "loading cmus",
 				"done": "Loaded",
 				"clear": ""
@@ -650,50 +650,6 @@ def save_lyrics(lyrics, track_name, artist_name, extension):
 		LOGGER.log_error(f"Failed to save lyrics: {str(e)}")
 		return None
 
-def get_cmus_info():
-	"""Get current playback info from cmus"""
-	try:
-		output = subprocess.run(['cmus-remote', '-Q'], 
-							   capture_output=True, 
-							   text=True, 
-							   check=True).stdout.splitlines()
-		LOGGER.log_debug("Cmus-remote polling...")
-	except subprocess.CalledProcessError:
-		LOGGER.log_debug("Error occurred. Aborting...")
-		return (None, 0, None, None, 0, "stopped")
-
-	# Parse cmus output
-	data = {
-		"file": None,
-		"position": 0,
-		"artist": None,
-		"title": None,
-		"duration": 0,
-		"status": "stopped",
-		"tags": {}
-	}
-
-	for line in output:
-		if line.startswith("file "):
-			data["file"] = line[5:].strip()
-		elif line.startswith("status "):
-			data["status"] = line[7:].strip()
-		elif line.startswith("position "):
-			data["position"] = int(line[9:].strip())
-		elif line.startswith("duration "):
-			data["duration"] = int(line[9:].strip())
-		elif line.startswith("tag "):
-			parts = line.split(" ", 2)
-			if len(parts) == 3:
-				tag_name, tag_value = parts[1], parts[2].strip()
-				data["tags"][tag_name] = tag_value
-
-	data["artist"] = data["tags"].get("artist")
-	data["title"] = data["tags"].get("title")
-
-	return (data["file"], data["position"], data["artist"], 
-			data["title"], data["duration"], data["status"])
-
 def is_lyrics_timed_out(artist_name, track_name):
 	"""Check if track is in timeout log"""
 	log_path = os.path.join(CONFIG_MANAGER.LOG_DIR, CONFIG_MANAGER.LYRICS_TIMEOUT_LOG)
@@ -718,30 +674,46 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 	LOGGER.log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
 	
 	try:
-		base_name, _ = os.path.splitext(os.path.basename(audio_file))
+		if audio_file and audio_file != "None":
+			base_name, _ = os.path.splitext(os.path.basename(audio_file))
 		
-		local_files = [
-			(os.path.join(directory, f"{base_name}.a2"), 'a2'),
-			(os.path.join(directory, f"{base_name}.lrc"), 'lrc'),
-			(os.path.join(directory, f"{base_name}.txt"), 'txt')
-		]
+			local_files = [
+				(os.path.join(directory, f"{base_name}.a2"), 'a2'),
+				(os.path.join(directory, f"{base_name}.lrc"), 'lrc'),
+				(os.path.join(directory, f"{base_name}.txt"), 'txt')
+			]
 
-		# Validate existing files
-		for file_path, ext in local_files:
-			if os.path.exists(file_path):
-				try:
-					with open(file_path, 'r', encoding='utf-8') as f:
-						content = f.read()
-					
-					if validate_lyrics(content, artist_name, track_name):
-						LOGGER.log_info(f"Using validated lyrics file: {file_path}")
-						return file_path
-					else:
-						LOGGER.log_info(f"Using unvalidated local {ext} file")
-						return file_path
-				except Exception as e:
-					LOGGER.log_debug(f"File read error: {file_path} - {e}")
-					continue
+			# Validate existing files
+			for file_path, ext in local_files:
+				if os.path.exists(file_path):
+					try:
+						with open(file_path, 'r', encoding='utf-8') as f:
+							content = f.read()
+						
+						if validate_lyrics(content, artist_name, track_name):
+							LOGGER.log_info(f"Using validated lyrics file: {file_path}")
+							return file_path
+						else:
+							LOGGER.log_info(f"Using unvalidated local {ext} file")
+							return file_path
+					except Exception as e:
+						LOGGER.log_debug(f"File read error: {file_path} - {e}")
+						continue
+			for dir_path in directory:
+				for filename in possible_filenames:
+					file_path = os.path.join(dir_path, filename)
+					if os.path.exists(file_path):
+						try:
+							with open(file_path, 'r', encoding='utf-8') as f:
+								content = f.read()
+							if validate_lyrics(content, artist_name, track_name):
+								LOGGER.log_debug(f"Using validated file: {file_path}")
+								return file_path
+							else:
+								LOGGER.log_debug(f"Skipping invalid file: {file_path}")
+						except Exception as e:
+							LOGGER.log_debug(f"Error reading {file_path}: {e}")
+							continue
 
 		# Handle instrumental tracks
 		is_instrumental = (
@@ -762,7 +734,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 
 		synced_dir = CONFIG_MANAGER.LYRIC_CACHE_DIR
 
-		for dir_path in [directory, synced_dir]:
+		for dir_path in [synced_dir]:
 			for filename in possible_filenames:
 				file_path = os.path.join(dir_path, filename)
 				if os.path.exists(file_path):
@@ -843,6 +815,8 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 		LOGGER.log_error(f"Error in find_lyrics_file: {str(e)}")
 		update_fetch_status("failed")
 		return None
+		
+
 
 def parse_time_to_seconds(time_str):
 	"""Convert various timestamp formats to seconds with millisecond precision."""
@@ -950,6 +924,50 @@ def load_lyrics(file_path):
 # ==============
 #  PLAYER DETECTION
 # ==============
+def get_cmus_info():
+	"""Get current playback info from cmus"""
+	try:
+		output = subprocess.run(['cmus-remote', '-Q'], 
+							   capture_output=True, 
+							   text=True, 
+							   check=True).stdout.splitlines()
+		LOGGER.log_debug("Cmus-remote polling...")
+	except subprocess.CalledProcessError:
+		LOGGER.log_debug("Error occurred. Aborting...")
+		return (None, 0, None, None, 0, "stopped")
+
+	# Parse cmus output
+	data = {
+		"file": None,
+		"position": 0,
+		"artist": None,
+		"title": None,
+		"duration": 0,
+		"status": "stopped",
+		"tags": {}
+	}
+
+	for line in output:
+		if line.startswith("file "):
+			data["file"] = line[5:].strip()
+		elif line.startswith("status "):
+			data["status"] = line[7:].strip()
+		elif line.startswith("position "):
+			data["position"] = int(line[9:].strip())
+		elif line.startswith("duration "):
+			data["duration"] = int(line[9:].strip())
+		elif line.startswith("tag "):
+			parts = line.split(" ", 2)
+			if len(parts) == 3:
+				tag_name, tag_value = parts[1], parts[2].strip()
+				data["tags"][tag_name] = tag_value
+
+	data["artist"] = data["tags"].get("artist")
+	data["title"] = data["tags"].get("title")
+
+	return (data["file"], data["position"], data["artist"], 
+			data["title"], data["duration"], data["status"])
+
 def get_mpd_info():
 	"""Get current playback info from MPD, handling password authentication."""
 	client = MPDClient()
@@ -992,7 +1010,55 @@ def get_mpd_info():
 		LOGGER.log_debug(f"Unexpected MPD error: {str(e)}")
 
 	update_fetch_status("mpd")
-	return (None, 0, None, None, 0, "stopped")
+	return (None, 0.0, None, None, 0.0, "stopped")
+
+def get_playerctl_info():
+	"""Get current playback info from any player via playerctl."""
+	try:
+		# Query metadata
+		LOGGER.log_debug("playerctl polling...")
+		
+		artist_proc = subprocess.run(
+			["playerctl", "metadata", "artist"],
+			capture_output=True, text=True, timeout=1
+		)
+		title_proc = subprocess.run(
+			["playerctl", "metadata", "title"],
+			capture_output=True, text=True, timeout=1
+		)
+		duration_proc = subprocess.run(
+			["playerctl", "metadata", "mpris:length"],
+			capture_output=True, text=True, timeout=1
+		)
+		position_proc = subprocess.run(
+			["playerctl", "position"],
+			capture_output=True, text=True, timeout=1
+		)
+		status_proc = subprocess.run(
+			["playerctl", "status"],
+			capture_output=True, text=True, timeout=1
+		)
+
+		# Extract and normalize values
+		artist = artist_proc.stdout.strip() or "Unknown"
+		title = title_proc.stdout.strip() or "Unknown"
+		duration_sec = float(duration_proc.stdout.strip()) / 1e6 if duration_proc.stdout.strip() else 0.0
+		position_sec = float(position_proc.stdout.strip()) if position_proc.stdout.strip() else 0.0
+		status = status_proc.stdout.strip().lower() if status_proc.stdout.strip() else "stopped"
+
+		# Maintain the same tuple order as MPD/CMUS: (file, position, artist, title, duration, status)
+		audio_file = "None"  # playerctl cannot provide actual file path
+
+		return (audio_file, position_sec, artist, title, duration_sec, status)
+
+	except subprocess.TimeoutExpired:
+		LOGGER.log_debug("playerctl timeout expired")
+	except Exception as e:
+		LOGGER.log_debug(f"playerctl error: {str(e)}")
+
+	# fallback if playerctl fails
+	return (None, 0.0, None, None, 0.0, "stopped")
+
 
 def get_player_info():
 	"""Detect active player (CMUS or MPD)"""
@@ -1016,7 +1082,17 @@ def get_player_info():
 		if cmus_info[0] is not None:
 			return 'cmus', cmus_info
 	
+	try:
+		# Fallback to playerctl
+		playerctl_info = get_playerctl_info()
+		if playerctl_info[3] is not None:
+			return "playerctl", playerctl_info # ive set this as mpd because i hardcoded when there it reports player position by milisecond in main loop
+	except Exception as e:
+		LOGGER.log_debug(f"Mpris detection failed: {str(e)}")
+
+	update_fetch_status("no_player")
 	LOGGER.log_debug("No active music player detected")
+	
 	return None, (None, 0, None, None, 0, "stopped")
 
 # ==============
@@ -1056,7 +1132,7 @@ def display_lyrics(
 		lyrics,
 		errors,
 		position,
-		track_info,
+		current_title,
 		manual_offset,
 		is_txt_format,
 		is_a2_format,
@@ -1247,10 +1323,23 @@ def display_lyrics(
 	status_win.erase()
 	if CONFIG_MANAGER.DISPLAY_NAME:
 		# Build player status text
+		# if player_info:
+			# _, data = player_info
+			# artist = data[2] or 'Unknown Artist'
+			# title = data[3] or os.path.basename(data[0]) or 'Unknown Track'
+			# is_inst = any(x in title.lower() for x in ['instrumental','karaoke'])
+			# ps = f"{title} - {artist}"
 		if player_info:
 			_, data = player_info
 			artist = data[2] or 'Unknown Artist'
-			title = data[3] or os.path.basename(data[0]) or 'Unknown Track'
+			# Safely handle the file path which might be None
+			file_basename = 'Unknown Track'
+			if data[0] and data[0] != "None":
+				try:
+					file_basename = os.path.basename(data[0])
+				except (TypeError, AttributeError):
+					file_basename = 'Unknown Track'
+			title = data[3] or file_basename
 			is_inst = any(x in title.lower() for x in ['instrumental','karaoke'])
 			ps = f"{title} - {artist}"
 		else:
@@ -1463,18 +1552,18 @@ def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw,
 		needs_redraw = True
 	return True, manual_offset, last_input_time, needs_redraw, time_adjust, new_alignment
 
-def update_display(stdscr, lyrics, errors, position, audio_file, manual_offset, 
+def update_display(stdscr, lyrics, errors, position, current_title, manual_offset, 
 				   is_txt_format, is_a2_format, current_idx, manual_scroll_active, 
 				   time_adjust=0, is_fetching=False, subframe_fraction=0.0,alignment='center', player_info = None):
 	"""Update display based on current state."""
 	if is_txt_format:
 		return display_lyrics(stdscr, lyrics, errors, position, 
-							  os.path.basename(audio_file), manual_offset, 
+							  current_title, manual_offset, 
 							  is_txt_format, is_a2_format, current_idx, True, 
 							  time_adjust, is_fetching, subframe_fraction, alignment, player_info)
 	else:
 		return display_lyrics(stdscr, lyrics, errors, position, 
-							  os.path.basename(audio_file), manual_offset, 
+							  current_title, manual_offset, 
 							  is_txt_format, is_a2_format, current_idx, 
 							  manual_scroll_active, time_adjust, is_fetching, subframe_fraction, alignment, player_info)
 
@@ -1497,6 +1586,8 @@ async def fetch_lyrics_async(audio_file, directory, artist, title, duration):
 		LOGGER.log_error(f"{title} lyrics fetch error: {e}")
 		update_fetch_status('failed')
 		return ([], []), False, False
+		
+
 
 # ================
 #  SYNC UTILITIES
@@ -1672,7 +1763,7 @@ async def main_async(stdscr, config_path=None):
 
 	# Initialize application state
 	state = {
-		'current_file': None,
+		'current_title': None,
 		'lyrics': [],
 		'errors': [],
 		'manual_offset': 0,
@@ -1701,6 +1792,7 @@ async def main_async(stdscr, config_path=None):
 		'proximity_active': False,
 		"poll": False,
 		'lyric_future': None,  # For async lyric fetching
+		'lyrics_loaded_time': None,
 	}
 
 	last_cmus_position = 0.0
@@ -1710,6 +1802,9 @@ async def main_async(stdscr, config_path=None):
 	skip_redraw_for_vrr = False
 	# Unpack initial player info
 	player_type, (audio_file, raw_pos, artist, title, duration, status) = state["player_info"]
+	
+	if audio_file in ("None", ""):
+		audio_file = None
 
 	current_idx = -1
 
@@ -1800,16 +1895,26 @@ async def main_async(stdscr, config_path=None):
 
 			# Unpack the (possibly cached) player info
 			player_type, (audio_file, raw_pos, artist, title, duration, status) = state["player_info"]
+			if audio_file in ("None", ""):
+				audio_file = None
+			
 			raw_position = float(raw_pos or 0.0)
 			duration = float(duration or 0.0)
 			estimated_position = raw_position
 			now = time.perf_counter()
 
 			# Handle track changes
-			if audio_file != state['current_file']:
-				LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
+			if title != state['current_title']:
+				# LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
+				if audio_file and audio_file != "None":
+					try:
+						LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
+					except (TypeError, AttributeError):
+						LOGGER.log_info(f"New track detected: Unknown File")
+				else:
+					LOGGER.log_info(f"New track detected: {title or 'Unknown Track'}")
 				state.update({
-					'current_file': audio_file,
+					'current_title': title or "Unknown Track",
 					'lyrics': [],
 					'errors': [],
 					'last_raw_pos': raw_position,
@@ -1827,17 +1932,22 @@ async def main_async(stdscr, config_path=None):
 				if state['lyric_future'] and not state['lyric_future'].done():
 					state['lyric_future'].cancel()
 				
+				search_directory = None
+				if audio_file and os.path.exists(audio_file):
+					search_directory = os.path.dirname(audio_file) if player_type == 'cmus' else None
+				
 				# Start async lyric fetching
-				if audio_file:
-					state['lyric_future'] = asyncio.create_task(
-						fetch_lyrics_async(
-							audio_file,
-							os.path.dirname(audio_file) if player_type == 'cmus' else "",
-							artist or "Unknown",
-							title or os.path.basename(audio_file),
-							duration
-						)
+				state['lyric_future'] = asyncio.create_task(
+					fetch_lyrics_async(
+						audio_file=audio_file,
+						directory=search_directory,
+						artist=artist or "Unknown",
+						title=title or "Unknown Track",
+						duration=duration
 					)
+				)
+				LOGGER.log_debug(f"{audio_file}, {artist}, {title}, {duration}")
+				
 				last_cmus_position = raw_position
 				estimated_position = raw_position
 
@@ -1894,7 +2004,7 @@ async def main_async(stdscr, config_path=None):
 
 				
 			# Player-specific estimation
-			if player_type == "cmus":
+			if player_type == "cmus" or player_type == "mpd" or player_type == "playerctl":
 				if not playback_paused:
 					elapsed = now - state['last_pos_time']
 					estimated_position = raw_position + elapsed
@@ -1906,7 +2016,7 @@ async def main_async(stdscr, config_path=None):
 			else:
 				playback_paused = (status == "pause")
 
-			if player_type == "mpd":
+			if player_type == "mpd" or player_type == "playerctl":
 				sync_compensation = 0.0
 
 			offset = base_offset + sync_compensation + next_frame_time
@@ -2052,7 +2162,7 @@ async def main_async(stdscr, config_path=None):
 					if idx >= 0:
 						current_idx         = idx
 						continuous_position = ts[idx]
-						if status == "paused" and not manual_scroll and not state['current_file']:
+						if status == "paused" and not manual_scroll and not state['current_title']:
 							last_position_time = now  # Reset timer to prevent residual elapsed time
 					else:
 						current_idx = -1
@@ -2169,7 +2279,7 @@ async def main_async(stdscr, config_path=None):
 						state['wrapped_lines'] if state['is_txt'] else state['lyrics'],
 						state['errors'],
 						continuous_position,
-						state['current_file'],
+						state['current_title'],
 						state['manual_offset'],
 						state['is_txt'],
 						state['is_a2'],
@@ -2205,7 +2315,7 @@ async def main_async(stdscr, config_path=None):
 
 			
 			# CPU destressor
-			if status == "paused" and not manual_scroll and not state['current_file']:
+			if status == "paused" and not manual_scroll and not state['current_title']:
 				time_since_input = current_time - state['last_input']
 				if time_since_input > 5.0:
 					sleep_time = 0.5
@@ -2236,29 +2346,29 @@ async def main_async(stdscr, config_path=None):
 			LOGGER.log_debug("Systemfault /s")
 
 def main(stdscr, config_path=None, use_default=False):
-    """Main function that runs the async event loop"""
-    CONFIG_MANAGER = ConfigManager(config_path=config_path, use_default=use_default)
-    CONFIG = CONFIG_MANAGER.config
-    LOGGER = Logger()
-    
-    asyncio.run(main_async(stdscr))
+	"""Main function that runs the async event loop"""
+	CONFIG_MANAGER = ConfigManager(config_path=config_path, use_default=use_default)
+	CONFIG = CONFIG_MANAGER.config
+	LOGGER = Logger()
+	
+	asyncio.run(main_async(stdscr))
 
 
 def run_main(stdscr):
-    main(stdscr, config_path=args.config, use_default=args.default)
+	main(stdscr, config_path=args.config, use_default=args.default)
 
 
 if __name__ == "__main__":
-    args = parse_args()
+	args = parse_args()
 
-    while True:
-        try:
-            curses.wrapper(run_main)
-        except KeyboardInterrupt:
-            print("Exited by user (Ctrl+C).")
-            exit()
-        except Exception as e:
-            temp_config = ConfigManager(config_path=args.config, use_default=args.default)
-            temp_logger = Logger()
-            temp_logger.log_debug(f"Fatal error: {str(e)}")
-            time.sleep(1)
+	while True:
+		try:
+			curses.wrapper(run_main)
+		except KeyboardInterrupt:
+			print("Exited by user (Ctrl+C).")
+			exit()
+		except Exception as e:
+			temp_config = ConfigManager(config_path=args.config, use_default=args.default)
+			temp_logger = Logger()
+			temp_logger.log_debug(f"Fatal error: {str(e)}")
+			time.sleep(1)
