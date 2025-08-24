@@ -672,40 +672,45 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 	"""Async version of find_lyrics_file with non-blocking operations"""
 	update_fetch_status('local')
 	LOGGER.log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
-	
+
 	try:
-		if audio_file and audio_file != "None":
+		LOGGER.log_debug(f"{audio_file}, {directory}, {artist_name}, {track_name}, {duration}")
+
+		# --- Instrumental early check ---
+		is_instrumental = (
+			"instrumental" in track_name.lower() or 
+			(artist_name and "instrumental" in artist_name.lower())
+		)
+		if is_instrumental:
+			LOGGER.log_debug("Instrumental track detected")
+			update_fetch_status('instrumental')
+			return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
+
+		# --- Local file search (direct audio_file base name) ---
+		if audio_file and directory and audio_file != "None":
 			base_name, _ = os.path.splitext(os.path.basename(audio_file))
-		
 			local_files = [
 				(os.path.join(directory, f"{base_name}.a2"), 'a2'),
 				(os.path.join(directory, f"{base_name}.lrc"), 'lrc'),
 				(os.path.join(directory, f"{base_name}.txt"), 'txt')
 			]
 
-			# Validate existing files
 			for file_path, ext in local_files:
 				if os.path.exists(file_path):
 					try:
 						with open(file_path, 'r', encoding='utf-8') as f:
 							content = f.read()
-						
 						if validate_lyrics(content, artist_name, track_name):
 							LOGGER.log_info(f"Using validated lyrics file: {file_path}")
 							return file_path
 						else:
-							LOGGER.log_info(f"Using unvalidated local {ext} file")
+							LOGGER.log_info(f"Using unvalidated local {ext} file: {file_path}")
 							return file_path
 					except Exception as e:
 						LOGGER.log_debug(f"File read error: {file_path} - {e}")
 						continue
 
-		# Handle instrumental tracks
-		is_instrumental = (
-			"instrumental" in track_name.lower() or 
-			(artist_name and "instrumental" in artist_name.lower())
-		)
-		
+		# --- Build possible filename patterns ---
 		sanitized_track = sanitize_filename(track_name)
 		sanitized_artist = sanitize_filename(artist_name)
 		possible_filenames = [
@@ -717,9 +722,9 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			f"{sanitized_track}_{sanitized_artist}.txt"
 		]
 
-		synced_dir = CONFIG_MANAGER.LYRIC_CACHE_DIR
-
-		for dir_path in [directory, synced_dir]:
+		# --- Search in directory + cache dir ---
+		dirs_to_check = [d for d in [directory, CONFIG_MANAGER.LYRIC_CACHE_DIR] if d]
+		for dir_path in dirs_to_check:
 			for filename in possible_filenames:
 				file_path = os.path.join(dir_path, filename)
 				if os.path.exists(file_path):
@@ -730,47 +735,44 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 							LOGGER.log_debug(f"Using validated file: {file_path}")
 							return file_path
 						else:
-							LOGGER.log_debug(f"Skipping invalid file: {file_path}")
+							LOGGER.log_debug(f"Using unvalidated file: {file_path}")
+							return file_path
 					except Exception as e:
 						LOGGER.log_debug(f"Error reading {file_path}: {e}")
 						continue
-		
-		if is_instrumental:
-			LOGGER.log_debug("Instrumental track detected")
-			update_fetch_status('instrumental')
-			return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
 
-		
-		# Check timeout status
+		# --- Timeout check ---
 		if is_lyrics_timed_out(artist_name, track_name):
 			update_fetch_status('time_out')
 			LOGGER.log_debug(f"Lyrics timeout active for {artist_name} - {track_name}")
 			return None
 
+		# --- Online fetch: SyncedLyrics ---
 		update_fetch_status('synced')
-		# Fetch from syncedlyrics
 		LOGGER.log_debug("Fetching from syncedlyrics...")
 		search_start = time.time()
 		LOGGER.log_info(f"Searching online sources for: {artist_name} - {track_name}")
 		fetched_lyrics, is_synced = await fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration)
+
 		if fetched_lyrics:
 			search_time = time.time() - search_start
 			LOGGER.log_debug(f"Online search completed in {search_time:.3f}s")
-			
 			LOGGER.log_info(f"Found {'synced' if is_synced else 'plain'} lyrics online")
-			# Add validation warning if needed
+
+			# Validation warning (but don’t discard)
 			if not validate_lyrics(fetched_lyrics, artist_name, track_name):
 				LOGGER.log_debug("Validation warning - possible mismatch")
 				fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
-			
+
+			# Stats
 			line_count = len(fetched_lyrics.split('\n'))
 			LOGGER.log_debug(f"Lyrics stats - Lines: {line_count}, "
-					 f"Chars: {len(fetched_lyrics)}, "
-					 f"Synced: {is_synced}")
-			
-			# Determine file format
+							 f"Chars: {len(fetched_lyrics)}, "
+							 f"Synced: {is_synced}")
+
+			# File format detection
 			is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) 
-						for line in fetched_lyrics.split('\n'))
+							  for line in fetched_lyrics.split('\n'))
 			has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
 			if is_enhanced:
 				extension = 'a2'
@@ -779,23 +781,25 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			else:
 				extension = 'txt'
 			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-		
-		# Fallback to LRCLIB
+
+		# --- Online fetch: LRCLIB fallback ---
 		update_fetch_status("lrc_lib")
 		LOGGER.log_debug("Fetching from LRCLIB...")
 		fetched_lyrics, is_synced = await fetch_lyrics_lrclib_async(artist_name, track_name, duration)
+
 		if fetched_lyrics:
 			search_time = time.time() - search_start
 			LOGGER.log_debug(f"Online search completed in {search_time:.3f}s")
 			extension = 'lrc' if is_synced else 'txt'
 			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-		
+
+		# --- No result ---
 		LOGGER.log_debug("No lyrics found from any source")
 		update_fetch_status("failed")
 		if has_internet_global():
 			log_timeout(artist_name, track_name)
 		return None
-		
+
 	except Exception as e:
 		LOGGER.log_error(f"Error in find_lyrics_file: {str(e)}")
 		update_fetch_status("failed")
@@ -1032,7 +1036,8 @@ def get_playerctl_info():
 		status = status_proc.stdout.strip().lower() if status_proc.stdout.strip() else "stopped"
 
 		# Maintain the same tuple order as MPD/CMUS: (file, position, artist, title, duration, status)
-		audio_file = "None"  # playerctl cannot provide actual file path
+		# audio_file = "None"  # playerctl cannot provide actual file path
+		audio_file = None
 
 		return (audio_file, position_sec, artist, title, duration_sec, status)
 
