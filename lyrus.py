@@ -923,7 +923,7 @@ def get_cmus_info():
 							   check=True).stdout.splitlines()
 		LOGGER.log_debug("Cmus-remote polling...")
 	except subprocess.CalledProcessError:
-		LOGGER.log_debug("Error occurred. Aborting...")
+		#LOGGER.log_debug("Error occurred. Aborting...")
 		return (None, 0, None, None, 0, "stopped")
 
 	# Parse cmus output
@@ -964,8 +964,8 @@ def get_mpd_info():
 	client.timeout = CONFIG_MANAGER.MPD_TIMEOUT
 	
 	try:
-		LOGGER.log_debug("mpd polling...")
 		client.connect(CONFIG_MANAGER.MPD_HOST, CONFIG_MANAGER.MPD_PORT)
+		LOGGER.log_debug("mpd polling...")
 		
 		# Authenticate if a password is set
 		if CONFIG_MANAGER.MPD_PASSWORD:
@@ -995,7 +995,8 @@ def get_mpd_info():
 				data["title"], data["duration"], data["status"])
 
 	except (socket.error, ConnectionRefusedError) as e:
-		LOGGER.log_debug(f"MPD connection error: {str(e)}")
+		#LOGGER.log_debug(f"MPD connection error: {str(e)}")
+		pass
 	except Exception as e:
 		LOGGER.log_debug(f"Unexpected MPD error: {str(e)}")
 
@@ -1005,97 +1006,48 @@ def get_mpd_info():
 def get_playerctl_info():
 	"""Get current playback info from any player via playerctl."""
 	try:
-		# Query metadata
-		#LOGGER.log_debug("playerctl polling...")
-		
-		artist_proc = subprocess.run(
-			["playerctl", "metadata", "--format", "'{{playerName}}, {{ artist }}, {{ title }}, {{ duration(position) }}, {{ uc(status) }},{{ duration(mpris:length) }}'"],
-			capture_output=True, text=True, timeout=1
-		)
-		
-		print(f"executing: {artist_proc}")
-
-		# Extract and normalize values
-		artist = artist_proc.stdout.strip() or ""
-		title = title_proc.stdout.strip() or ""
-		duration_sec = float(duration_proc.stdout.strip()) / 1e6 if duration_proc.stdout.strip() else 0.0
-		position_sec = float(position_proc.stdout.strip()) if position_proc.stdout.strip() else 0.0
-		status = status_proc.stdout.strip().lower() if status_proc.stdout.strip() else "stopped"
-
-		# Maintain the same tuple order as MPD/CMUS: (file, position, artist, title, duration, status)
-		# audio_file = "None"  # playerctl cannot provide actual file path
-		audio_file = None
-
-		return (audio_file, position_sec, artist, title, duration_sec, status)
-
-	except subprocess.TimeoutExpired:
-		#LOGGER.log_debug("playerctl timeout expired")
-		pass
-	except Exception as e:
-		#LOGGER.log_debug(f"playerctl error: {str(e)}")'
-		pass
-
-	# fallback if playerctl fails
-	return (None, 0.0, None, None, 0.0, "stopped")
-
-def get_playerctl_info():
-	"""Get current playback info from any player via playerctl."""
-	try:
-		# Query metadata in one shot
-		proc = subprocess.run(
+		# Run playerctl with exact format
+		result = subprocess.run(
 			[
 				"playerctl", "metadata",
-				"--format", "{{playerName}},{{artist}},{{title}},{{duration(position)}},{{uc(status)}},{{duration(mpris:length)}}"
+				"--format",
+				'"{{playerName}}","{{artist}}","{{title}}","{{position}}","{{status}}","{{mpris:length}}"'
 			],
 			capture_output=True, text=True, timeout=1
 		)
 
-		if proc.returncode != 0 or not proc.stdout.strip():
+		output = result.stdout.strip()
+
+		# Handle no players found
+		if "No players found" in output or not output:
+			return (None, 0.0, None, None, 0.0, "stopped")
+		
+		LOGGER.log_debug("playerctl polling...")
+
+		# Remove surrounding quotes and split by "," safely
+		if output.startswith('"') and output.endswith('"'):
+			output = output[1:-1]
+
+		fields = output.split('","')
+		if len(fields) != 6:
+			# Unexpected output, fallback
 			return (None, 0.0, None, None, 0.0, "stopped")
 
-		# Remove extra quotes if present and split
-		line = proc.stdout.strip().strip("'").strip('"')
-		parts = [p.strip() for p in line.split(",")]
+		player_name, artist, title, position, status, duration = fields
 
-		if len(parts) < 6:
-			return (None, 0.0, None, None, 0.0, "stopped")
-
-		# Parse fields
-		player_name, artist, title, position_str, status, duration_str = parts
-			
-		# Convert time strings to seconds
-		def to_seconds(s):
-			if not s:
-				return 0.0
-			if ":" in s:  # mm:ss or hh:mm:ss
-				parts = [float(p) for p in s.split(":")]
-				if len(parts) == 2:
-					return parts[0] * 60 + parts[1]
-				elif len(parts) == 3:
-					return parts[0] * 3600 + parts[1] * 60 + parts[2]
-			try:
-				return float(s)
-			except ValueError:
-				return 0.0
-
-		position_sec = to_seconds(position_str)
-		duration_sec = to_seconds(duration_str)
-		status = status.lower()
-
-		# audio_file is unavailable from playerctl
-		audio_file = None
+		# Convert types
+		position_sec = float(position) if position else 0.0
+		duration_sec = float(duration) / 1e6 if duration else 0.0
+		status = status.lower() if status else "stopped"
+		audio_file = None  # playerctl cannot provide the actual file path
 
 		return (audio_file, position_sec, artist, title, duration_sec, status)
 
 	except subprocess.TimeoutExpired:
-		pass
-	except Exception as e:
-		pass
-
-	# fallback
-	return (None, 0.0, None, None, 0.0, "stopped")
-
-
+		return (None, 0.0, None, None, 0.0, "stopped")
+	except Exception:
+		return (None, 0.0, None, None, 0.0, "stopped")
+		
 
 def get_player_info():
 	"""Detect active player (CMUS or MPD)"""
@@ -1941,7 +1893,7 @@ async def main_async(stdscr, config_path=None):
 			now = time.perf_counter()
 
 			# Handle track changes
-			if title != state['current_title']:
+			if title and title.strip() != "" and title != state['current_title']:
 				# LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
 				if audio_file and audio_file != "None":
 					try:
