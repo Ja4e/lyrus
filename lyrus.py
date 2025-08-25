@@ -166,6 +166,7 @@ class ConfigManager:
 				"time_out": "In time-out log",
 				"failed": "No lyrics found",
 				"no_player": "scanning for activity",
+				"mpd": "",
 				"cmus": "loading cmus",
 				"done": "Loaded",
 				"clear": ""
@@ -1005,32 +1006,18 @@ def get_playerctl_info():
 	"""Get current playback info from any player via playerctl."""
 	try:
 		# Query metadata
-		LOGGER.log_debug("playerctl polling...")
+		#LOGGER.log_debug("playerctl polling...")
 		
 		artist_proc = subprocess.run(
-			["playerctl", "metadata", "artist"],
+			["playerctl", "metadata", "--format", "'{{playerName}}, {{ artist }}, {{ title }}, {{ duration(position) }}, {{ uc(status) }},{{ duration(mpris:length) }}'"],
 			capture_output=True, text=True, timeout=1
 		)
-		title_proc = subprocess.run(
-			["playerctl", "metadata", "title"],
-			capture_output=True, text=True, timeout=1
-		)
-		duration_proc = subprocess.run(
-			["playerctl", "metadata", "mpris:length"],
-			capture_output=True, text=True, timeout=1
-		)
-		position_proc = subprocess.run(
-			["playerctl", "position"],
-			capture_output=True, text=True, timeout=1
-		)
-		status_proc = subprocess.run(
-			["playerctl", "status"],
-			capture_output=True, text=True, timeout=1
-		)
+		
+		print(f"executing: {artist_proc}")
 
 		# Extract and normalize values
-		artist = artist_proc.stdout.strip() or "Unknown"
-		title = title_proc.stdout.strip() or "Unknown"
+		artist = artist_proc.stdout.strip() or ""
+		title = title_proc.stdout.strip() or ""
 		duration_sec = float(duration_proc.stdout.strip()) / 1e6 if duration_proc.stdout.strip() else 0.0
 		position_sec = float(position_proc.stdout.strip()) if position_proc.stdout.strip() else 0.0
 		status = status_proc.stdout.strip().lower() if status_proc.stdout.strip() else "stopped"
@@ -1042,12 +1029,72 @@ def get_playerctl_info():
 		return (audio_file, position_sec, artist, title, duration_sec, status)
 
 	except subprocess.TimeoutExpired:
-		LOGGER.log_debug("playerctl timeout expired")
+		#LOGGER.log_debug("playerctl timeout expired")
+		pass
 	except Exception as e:
-		LOGGER.log_debug(f"playerctl error: {str(e)}")
+		#LOGGER.log_debug(f"playerctl error: {str(e)}")'
+		pass
 
 	# fallback if playerctl fails
 	return (None, 0.0, None, None, 0.0, "stopped")
+
+def get_playerctl_info():
+	"""Get current playback info from any player via playerctl."""
+	try:
+		# Query metadata in one shot
+		proc = subprocess.run(
+			[
+				"playerctl", "metadata",
+				"--format", "{{playerName}},{{artist}},{{title}},{{duration(position)}},{{uc(status)}},{{duration(mpris:length)}}"
+			],
+			capture_output=True, text=True, timeout=1
+		)
+
+		if proc.returncode != 0 or not proc.stdout.strip():
+			return (None, 0.0, None, None, 0.0, "stopped")
+
+		# Remove extra quotes if present and split
+		line = proc.stdout.strip().strip("'").strip('"')
+		parts = [p.strip() for p in line.split(",")]
+
+		if len(parts) < 6:
+			return (None, 0.0, None, None, 0.0, "stopped")
+
+		# Parse fields
+		player_name, artist, title, position_str, status, duration_str = parts
+			
+		# Convert time strings to seconds
+		def to_seconds(s):
+			if not s:
+				return 0.0
+			if ":" in s:  # mm:ss or hh:mm:ss
+				parts = [float(p) for p in s.split(":")]
+				if len(parts) == 2:
+					return parts[0] * 60 + parts[1]
+				elif len(parts) == 3:
+					return parts[0] * 3600 + parts[1] * 60 + parts[2]
+			try:
+				return float(s)
+			except ValueError:
+				return 0.0
+
+		position_sec = to_seconds(position_str)
+		duration_sec = to_seconds(duration_str)
+		status = status.lower()
+
+		# audio_file is unavailable from playerctl
+		audio_file = None
+
+		return (audio_file, position_sec, artist, title, duration_sec, status)
+
+	except subprocess.TimeoutExpired:
+		pass
+	except Exception as e:
+		pass
+
+	# fallback
+	return (None, 0.0, None, None, 0.0, "stopped")
+
 
 
 def get_player_info():
@@ -1076,7 +1123,7 @@ def get_player_info():
 		# Fallback to playerctl
 		playerctl_info = get_playerctl_info()
 		if playerctl_info[3] is not None:
-			return "playerctl", playerctl_info # ive set this as mpd because i hardcoded when there it reports player position by milisecond in main loop
+			return "cmus", playerctl_info # i have set this to cmus necause i have converted the playerctl positions into seconds leaving the oop untouched however this is not the proper way to approach to the dbus systems
 	except Exception as e:
 		LOGGER.log_debug(f"Mpris detection failed: {str(e)}")
 
@@ -1321,14 +1368,14 @@ def display_lyrics(
 			# ps = f"{title} - {artist}"
 		if player_info:
 			_, data = player_info
-			artist = data[2] or 'Unknown Artist'
+			artist = data[2] or ''
 			# Safely handle the file path which might be None
-			file_basename = 'Unknown Track'
+			file_basename = ''
 			if data[0] and data[0] != "None":
 				try:
 					file_basename = os.path.basename(data[0])
 				except (TypeError, AttributeError):
-					file_basename = 'Unknown Track'
+					file_basename = ''
 			title = data[3] or file_basename
 			is_inst = any(x in title.lower() for x in ['instrumental','karaoke'])
 			ps = f"{title} - {artist}"
@@ -1904,7 +1951,7 @@ async def main_async(stdscr, config_path=None):
 				else:
 					LOGGER.log_info(f"New track detected: {title or 'Unknown Track'}")
 				state.update({
-					'current_title': title or "Unknown Track",
+					'current_title': title or "",
 					'lyrics': [],
 					'errors': [],
 					'last_raw_pos': raw_position,
@@ -1931,8 +1978,8 @@ async def main_async(stdscr, config_path=None):
 					fetch_lyrics_async(
 						audio_file=audio_file,
 						directory=search_directory,
-						artist=artist or "Unknown",
-						title=title or "Unknown Track",
+						artist=artist or "",
+						title=title or "",
 						duration=duration
 					)
 				)
