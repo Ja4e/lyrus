@@ -18,7 +18,7 @@ Currently implementing this out
 ```bash
 playerctl metadata --format "{{playerName}}, {{ artist }}, {{ title }}, {{ duration(position) }}, {{ uc(status) }},{{ duration(mpris:length) }}" --follow
 ```
-
+it will be another fall back option when mpd and cmus are not found which enables spotify and many other player lyrics scrolling in real time. It would nice to make this program useable
 
 will add more support in detecting players
 will attempt to get a2 working
