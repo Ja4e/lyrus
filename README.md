@@ -16,11 +16,13 @@ unfortunately it uses traditional polling system couldve used playerctl since th
 
 Currently implementing this out
 ```bash
-playerctl metadata --format "{{playerName}}, {{ artist }}, {{ title }}, {{ duration(position) }}, {{ uc(status) }},{{ duration(mpris:length) }}" --follow
+playerctl metadata --format "{{playerName}}, {{ artist }}, {{ title }}, {{ duration(position) }}, {{ uc(status) }},{{ duration(mpris:length) }}"
 ```
-it will be another fall back option when mpd and cmus are not found which enables spotify and many other player lyrics scrolling in real time. It would nice to make this program useable
+the dbus does not actually implement properly still doing traditional polling, I know this isnt the right approach to the lrc control but I will need to go through some of the documentation before executing all that
 
-will add more support in detecting players
+tbh i am happy to introduce this that this program now works on any music player that works with playerctl
+
+
 will attempt to get a2 working
 
 Scrollable lyrics btw 
