@@ -133,7 +133,7 @@ class ConfigManager:
 		# Default configuration
 		default_config = {
 			"global": {
-				"logs_dir": "~/.local/state/lyrus",
+				"logs_dir": "~/.cache/lyrus",
 				"log_file": "application.log",
 				"log_level": "FATAL",
 				"lyrics_timeout_log": "lyrics_timeouts.log",
@@ -174,7 +174,7 @@ class ConfigManager:
 			"terminal_states": ["done", "instrumental", "time_out", "failed", "mpd", "clear", "cmus"],
 			"lyrics": {
 				"search_timeout": 15,
-				"cache_dir": "~/.local/share/lyrus/synced_lyrics",
+				"cache_dir": "~/.cache/lyrus/synced_lyrics",
 				"local_extensions": ["a2", "lrc", "txt"],
 				"validation": {"title_match_length": 15, "artist_match_length": 15}
 			},
@@ -748,6 +748,17 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			LOGGER.log_debug(f"Lyrics timeout active for {artist_name} - {track_name}")
 			return None
 
+		# --- Online fetch: LRCLIB fallback ---
+		update_fetch_status("lrc_lib")
+		LOGGER.log_debug("Fetching from LRCLIB...")
+		fetched_lyrics, is_synced = await fetch_lyrics_lrclib_async(artist_name, track_name, duration)
+
+		if fetched_lyrics:
+			search_time = time.time() - search_start
+			LOGGER.log_debug(f"Online search completed in {search_time:.3f}s")
+			extension = 'lrc' if is_synced else 'txt'
+			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
+
 		# --- Online fetch: SyncedLyrics ---
 		update_fetch_status('synced')
 		LOGGER.log_debug("Fetching from syncedlyrics...")
@@ -781,17 +792,6 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 				extension = 'lrc'
 			else:
 				extension = 'txt'
-			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-
-		# --- Online fetch: LRCLIB fallback ---
-		update_fetch_status("lrc_lib")
-		LOGGER.log_debug("Fetching from LRCLIB...")
-		fetched_lyrics, is_synced = await fetch_lyrics_lrclib_async(artist_name, track_name, duration)
-
-		if fetched_lyrics:
-			search_time = time.time() - search_start
-			LOGGER.log_debug(f"Online search completed in {search_time:.3f}s")
-			extension = 'lrc' if is_synced else 'txt'
 			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
 
 		# --- No result ---
