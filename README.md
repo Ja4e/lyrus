@@ -12,6 +12,11 @@ customizable through this local where this program installed.
 
 best cmus simple lyrics player out there
 
+unfortunately it uses traditional polling system couldve used playerctl since the beginning
+
+Currently implementing this out
+
+
 will add more support in detecting players
 will attempt to get a2 working
 
