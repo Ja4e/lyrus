@@ -15,6 +15,9 @@ best cmus simple lyrics player out there
 unfortunately it uses traditional polling system couldve used playerctl since the beginning
 
 Currently implementing this out
+```bash
+playerctl metadata --format "{{playerName}}, {{ artist }}, {{ title }}, {{ duration(position) }}, {{ uc(status) }},{{ duration(mpris:length) }}" --follow
+```
 
 
 will add more support in detecting players
