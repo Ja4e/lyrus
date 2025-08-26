@@ -766,6 +766,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 
 		# --- Online fetch: LRCLIB fallback ---
 		update_fetch_status("lrc_lib")
+		search_start = time.time()
 		LOGGER.log_debug("Fetching from LRCLIB...")
 		fetched_lyrics, is_synced = await fetch_lyrics_lrclib_async(artist_name, track_name, duration)
 
