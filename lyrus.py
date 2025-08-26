@@ -90,6 +90,7 @@ def parse_args():
 	parser = argparse.ArgumentParser(description="Lyrus - cmus Lyrics synchronization project")
 	parser.add_argument("-c", "--config", help="Path to configuration file")
 	parser.add_argument("-d", "--default", action="store_true", help="Use default settings without loading a config file")
+	parser.add_argument("-p", "--player", choices=["cmus", "mpd", "playerctl"], help="Specify which player you want to load only")
 	parser.add_argument("--version", action="version", version=VERSION)
 	return parser.parse_args()
 
@@ -107,12 +108,14 @@ def resolve_value(item):
 	return item
 
 class ConfigManager:
-	def __init__(self, use_user_dirs=True, config_path=None, use_default=False):
+	def __init__(self, use_user_dirs=True, config_path=None, use_default=False, player_override=None):
 		self.use_user_dirs = use_user_dirs
 		self.user_config_dir = os.path.expanduser(config_dir)
 		os.makedirs(self.user_config_dir, exist_ok=True)
 		self.use_default = use_default
 		self.config_path = config_path
+		self.player_override = player_override
+		
 		self.config = self.load_config()
 		self.setup_logging()
 		self.setup_colors()
@@ -144,7 +147,9 @@ class ConfigManager:
 				"enable_debug": {"env": "DEBUG", "default": "0"}
 			},
 			"player": {
-				"prioritize_cmus": True,
+				"enable_cmus": True,
+				"enable_mpd": True,
+				"enable_playerctl": True,
 				"mpd": {
 					"host": {"env": "MPD_HOST", "default": "localhost"},
 					"port": {"env": "MPD_PORT", "default": 6600},
@@ -245,6 +250,9 @@ class ConfigManager:
 					try:
 						with open(os.path.expanduser(path), "r") as f:
 							file_config = json.load(f)
+						if self.player_override:
+							if "player" in file_config:
+								del file_config["player"]
 						deep_merge_dicts(merged_config, file_config)
 						break
 					except Exception as e:
@@ -289,7 +297,15 @@ class ConfigManager:
 		self.MPD_PORT = resolve_value(self.config["player"]["mpd"]["port"])
 		self.MPD_PASSWORD = resolve_value(self.config["player"]["mpd"]["password"])
 		self.MPD_TIMEOUT = self.config["player"]["mpd"]["timeout"]
-		self.PRIORITIZE_CMUS = self.config["player"]["prioritize_cmus"]
+		
+		if self.player_override:
+			self.ENABLE_CMUS = self.player_override == "cmus"
+			self.ENABLE_MPD = self.player_override == "mpd"
+			self.ENABLE_PLAYERCTL = self.player_override == "playerctl"
+		else:
+			self.ENABLE_CMUS = self.config["player"]["enable_cmus"]
+			self.ENABLE_MPD = self.config["player"]["enable_mpd"]
+			self.ENABLE_PLAYERCTL = self.config["player"]["enable_playerctl"]
 
 	def setup_lyrics(self):
 		self.LYRIC_EXTENSIONS = self.config["lyrics"]["local_extensions"]
@@ -1017,12 +1033,12 @@ def get_playerctl_info():
 		)
 
 		output = result.stdout.strip()
-
+		
+		LOGGER.log_debug("playerctl polling...")
+		
 		# Handle no players found
 		if "No players found" in output or not output:
 			return (None, 0.0, None, None, 0.0, "stopped")
-		
-		LOGGER.log_debug("playerctl polling...")
 
 		# Remove surrounding quotes and split by "," safely
 		if output.startswith('"') and output.endswith('"'):
@@ -1035,11 +1051,26 @@ def get_playerctl_info():
 
 		player_name, artist, title, position, status, duration = fields
 
-		# Convert types
-		position_sec = float(position) if position else 0.0
-		duration_sec = float(duration) / 1e6 if duration else 0.0
+		# Convert microseconds → seconds with decimals preserved
+		try:
+			position_sec = float(position) / 1_000_000 if position else 0.0
+		except ValueError:
+			position_sec = 0.0
+
+		try:
+			duration_sec = float(duration) / 1_000_000 if duration else 0.0
+		except ValueError:
+			duration_sec = 0.0
+
+		# Normalize status
 		status = status.lower() if status else "stopped"
-		audio_file = None  # playerctl cannot provide the actual file path
+
+		# Sanity check: clamp weird jumps
+		if position_sec < 0 or (duration_sec > 0 and position_sec > duration_sec * 1.5):
+			position_sec = duration_sec if status == "paused" else 0.0
+
+		# playerctl cannot provide file path
+		audio_file = None
 
 		return (audio_file, position_sec, artist, title, duration_sec, status)
 
@@ -1047,37 +1078,35 @@ def get_playerctl_info():
 		return (None, 0.0, None, None, 0.0, "stopped")
 	except Exception:
 		return (None, 0.0, None, None, 0.0, "stopped")
-		
 
 def get_player_info():
 	"""Detect active player (CMUS or MPD)"""
 	# Try CMUS first if prioritized
-	if CONFIG_MANAGER.PRIORITIZE_CMUS:
-		cmus_info = get_cmus_info()
-		if cmus_info[0] is not None:
-			return 'cmus', cmus_info
+	if CONFIG_MANAGER.ENABLE_CMUS:
+		try:
+			cmus_info = get_cmus_info()
+			if cmus_info[0] is not None:
+				return 'cmus', cmus_info
+		except Exception as e:
+			LOGGER.log_debug(f"CMUS detection failed: {str(e)}")
 	
 	# Try MPD
-	try:
-		mpd_info = get_mpd_info()
-		if mpd_info[0] is not None:
-			return 'mpd', mpd_info
-	except Exception as e:
-		LOGGER.log_debug(f"MPD detection failed: {str(e)}")
+	if CONFIG_MANAGER.ENABLE_MPD:	
+		try:
+			mpd_info = get_mpd_info()
+			if mpd_info[0] is not None:
+				return 'mpd', mpd_info
+		except Exception as e:
+			LOGGER.log_debug(f"MPD detection failed: {str(e)}")
 	
-	# Fallback to CMUS if not prioritized earlier
-	if not CONFIG_MANAGER.PRIORITIZE_CMUS:
-		cmus_info = get_cmus_info()
-		if cmus_info[0] is not None:
-			return 'cmus', cmus_info
-	
-	try:
-		# Fallback to playerctl
-		playerctl_info = get_playerctl_info()
-		if playerctl_info[3] is not None:
-			return "cmus", playerctl_info # i have set this to cmus necause i have converted the playerctl positions into seconds leaving the oop untouched however this is not the proper way to approach to the dbus systems
-	except Exception as e:
-		LOGGER.log_debug(f"Mpris detection failed: {str(e)}")
+	if CONFIG_MANAGER.ENABLE_PLAYERCTL:
+		try:
+			# Fallback to playerctl
+			playerctl_info = get_playerctl_info()
+			if playerctl_info[3] is not None:
+				return "cmus", playerctl_info
+		except Exception as e:
+			LOGGER.log_debug(f"Mpris detection failed: {str(e)}")
 
 	update_fetch_status("no_player")
 	LOGGER.log_debug("No active music player detected")
@@ -2005,8 +2034,8 @@ async def main_async(stdscr, config_path=None):
 			else:
 				playback_paused = (status == "pause")
 
-			if player_type == "mpd" or player_type == "playerctl":
-				sync_compensation = 0.0
+			# if player_type == "mpd" or player_type == "playerctl":
+				# sync_compensation = 0.0
 
 			offset = base_offset + sync_compensation + next_frame_time
 			
@@ -2334,9 +2363,14 @@ async def main_async(stdscr, config_path=None):
 			stdscr.timeout(400)
 			LOGGER.log_debug("Systemfault /s")
 
-def main(stdscr, config_path=None, use_default=False):
+def main(stdscr, config_path=None, use_default=False, player=None): #Hacks
 	"""Main function that runs the async event loop"""
-	CONFIG_MANAGER = ConfigManager(config_path=config_path, use_default=use_default)
+	CONFIG_MANAGER = ConfigManager(
+		config_path=config_path, 
+		use_default=use_default, 
+		player_override=player
+	)
+	
 	CONFIG = CONFIG_MANAGER.config
 	LOGGER = Logger()
 	
@@ -2344,7 +2378,12 @@ def main(stdscr, config_path=None, use_default=False):
 
 
 def run_main(stdscr):
-	main(stdscr, config_path=args.config, use_default=args.default)
+	main(
+		stdscr, 
+		config_path=args.config, 
+		use_default=args.default,
+		player=args.player
+	)
 
 
 if __name__ == "__main__":
