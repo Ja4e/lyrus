@@ -23,6 +23,9 @@ the dbus does not actually implement properly still doing traditional polling, I
 tbh i am happy to introduce this that this program now works on any music player that works with playerctl
 
 
+All the timeouts and synced lyrics are stored in ~/.cache/lyrus by default
+
+
 will attempt to get a2 working
 
 Scrollable lyrics btw 
