@@ -25,6 +25,8 @@ tbh i am happy to introduce this that this program now works on any music player
 
 ### All the timeouts, debugs logs and synced lyrics are stored in ``~/.cache/lyrus`` by default
 
+### You can copy paste the default config form the wiki and save it under ``~/.config/lyrus`` make sure you create the directory yourself with ``mkdir ~/.config/lyrus``
+
 
 will attempt to get a2 working
 
