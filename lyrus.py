@@ -1825,7 +1825,7 @@ async def main_async(stdscr, config_path=None):
 	if audio_file in ("None", ""):
 		audio_file = None
 
-	current_idx = -1
+	# current_idx = -1
 
 	# Main application loop
 	while True:
