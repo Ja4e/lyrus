@@ -1040,7 +1040,7 @@ def get_playerctl_info():
 			position_sec = 0.0
 
 		try:
-			duration_sec = float(duration) / 1_000_000 if duration else 0.0
+			duration_sec = float(position) / 1_000_000 if duration else 0.0
 		except ValueError:
 			duration_sec = 0.0
 
@@ -1086,7 +1086,7 @@ def get_player_info():
 			# Fallback to playerctl
 			playerctl_info = get_playerctl_info()
 			if playerctl_info[3] is not None:
-				return "cmus", playerctl_info
+				return "playerctl", playerctl_info
 		except Exception as e:
 			LOGGER.log_debug(f"Mpris detection failed: {str(e)}")
 
@@ -1825,7 +1825,7 @@ async def main_async(stdscr, config_path=None):
 				needs_redraw = True
 
 			# Temporary high-frequency refresh after resume or jump
-			if (state['player_info'][0] == 'cmus' and
+			if ((state['player_info'][0] == 'cmus' or 'playerctl') and
 				state.get('resume_trigger_time') and
 				(current_time - state['resume_trigger_time'] <= TEMPORARY_REFRESH_SEC) and
 				state['player_info'][1][5] == "playing" and
@@ -1856,12 +1856,13 @@ async def main_async(stdscr, config_path=None):
 					_, raw_val, _, _, _, status_val = p_data
 					new_raw = float(raw_val or 0.0)
 					drift = abs(new_raw - estimated_position)
-					if drift > JUMP_THRESHOLD and status_val == "playing":
+					if drift > JUMP_THRESHOLD and status_val == "playing" and p_type != "playerctl":
 						state['resume_trigger_time'] = time.perf_counter()
 						LOGGER.log_debug(f"Jump detected: {drift:.3f}s")
 						needs_redraw = True
 
-					if (p_type == "cmus" and prev_status == "paused" and status_val == "playing"):
+					# (p_type == "cmus" or p_type == "playerctl")
+					if (p_type and prev_status == "paused" and status_val == "playing"):
 						state['resume_trigger_time'] = time.perf_counter()
 						LOGGER.log_debug("Pause→play refresh")
 						needs_redraw = True
@@ -1920,7 +1921,7 @@ async def main_async(stdscr, config_path=None):
 				
 				search_directory = None
 				if audio_file and os.path.exists(audio_file):
-					search_directory = os.path.dirname(audio_file) if player_type == 'cmus' else None
+					search_directory = os.path.dirname(audio_file) if (player_type == 'cmus'or player_type == 'mpd') else None
 				
 				# Start async lyric fetching
 				state['lyric_future'] = asyncio.create_task(
@@ -1957,7 +1958,7 @@ async def main_async(stdscr, config_path=None):
 						'wrapped_lines': [],
 						'max_wrapped_offset': 0
 					})
-					if status == "playing" and player_type == "cmus":
+					if status == "playing" and (player_type == "cmus" or player_type == "mpd"):
 						state['resume_trigger_time'] = time.perf_counter()
 						LOGGER.log_debug("Refresh triggered by new lyrics loading")
 					estimated_position = raw_position
