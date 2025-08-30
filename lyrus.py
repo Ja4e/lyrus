@@ -1467,89 +1467,75 @@ def load_key_bindings(config):
 
 def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw, 
 					   time_adjust, current_alignment, key_bindings):
-	"""Complete input handler with full scroll logic"""
+	"""Optimized input handler with scroll, timing, and alignment logic"""
+
 	new_alignment = current_alignment
 	input_processed = False
 	manual_input = False
 	time_adjust_input = False
 	alignment_input = False
 
-	# Quit handling
+	# Quit
 	if key in key_bindings["quit"]:
-		sys.exit('Exiting')
-		return False, manual_offset, last_input_time, needs_redraw, time_adjust, current_alignment
+		sys.exit("Exiting")
 
-	# Scroll up with boundary check
+	# Scroll handling
 	if key in key_bindings["scroll_up"]:
 		manual_offset = max(0, manual_offset - 1)
-		input_processed = True
-		manual_input = True
-
-	# Scroll down (clamping done in display_lyrics)
+		manual_input, input_processed = True, True
 	elif key in key_bindings["scroll_down"]:
 		manual_offset += 1
-		input_processed = True
-		manual_input = True
+		manual_input, input_processed = True, True
 
-	# Time adjustments
-	elif key in key_bindings["time_decrease"]:
-		time_adjust = time_adjust - 0.1
-		input_processed = True
-		time_adjust_input = True
-	elif key in key_bindings["time_increase"]:
-		time_adjust = time_adjust + 0.1
-		input_processed = True
-	elif key in key_bindings["time_reset"]:
-		time_adjust = 0.0
-		input_processed = True
-		time_adjust_input = True
-	elif key in key_bindings["time_jump_increase"]:
-		time_adjust = time_adjust + 5.0
-		input_processed = True
-		time_adjust_input = True
-	elif key in key_bindings["time_jump_decrease"]:
-		time_adjust = time_adjust - 5.0
-		input_processed = True
-		time_adjust_input = True
+	# Time adjustments (lookup table)
+	time_actions = {
+		"time_decrease": -0.1,
+		"time_increase": +0.1,
+		"time_reset":    "reset",
+		"time_jump_increase": +5.0,
+		"time_jump_decrease": -5.0,
+	}
+	for action, delta in time_actions.items():
+		if key in key_bindings[action]:
+			if delta == "reset":
+				time_adjust = 0.0
+			else:
+				time_adjust += delta
+			time_adjust_input, input_processed = True, True
+			break
 
-	# Direct alignment selection
-	elif key in key_bindings["align_left"]:
-		new_alignment = "left"
-		input_processed = True
-		alignment_input = True
-	elif key in key_bindings["align_center"]:
-		new_alignment = "center"
-		input_processed = True
-		alignment_input = True
-	elif key in key_bindings["align_right"]:
-		new_alignment = "right"
-		input_processed = True
-		alignment_input = True
+	# Alignment direct selection
+	align_map = {
+		"align_left": "left",
+		"align_center": "center",
+		"align_right": "right",
+	}
+	for action, align in align_map.items():
+		if key in key_bindings[action]:
+			new_alignment = align
+			alignment_input, input_processed = True, True
+			break
 
 	# Alignment cycling
-	elif key in key_bindings["align_cycle_forward"]:
-		alignments = ['left', 'center', 'right']
-		new_index = (alignments.index(current_alignment) + 1) % 3
-		new_alignment = alignments[new_index]
-		input_processed = True
-		alignment_input = True
+	alignments = ["left", "center", "right"]
+	if key in key_bindings["align_cycle_forward"]:
+		new_alignment = alignments[(alignments.index(current_alignment) + 1) % 3]
+		alignment_input, input_processed = True, True
 	elif key in key_bindings["align_cycle_backward"]:
-		alignments = ['left', 'center', 'right']
-		new_index = (alignments.index(current_alignment) - 1) % 3
-		new_alignment = alignments[new_index]
-		input_processed = True
-		alignment_input = True
+		new_alignment = alignments[(alignments.index(current_alignment) - 1) % 3]
+		alignment_input, input_processed = True, True
 
-	# Window resize handling
+	# Resize handling
 	if key == curses.KEY_RESIZE:
 		needs_redraw = True
 	elif input_processed:
-		# Update input timestamps
+		# Timestamp logic
 		if manual_input:
 			last_input_time = time.time()
 		elif time_adjust_input or alignment_input:
-			last_input_time = 0  # Reset to enable auto-centering
+			last_input_time = 0
 		needs_redraw = True
+
 	return True, manual_offset, last_input_time, needs_redraw, time_adjust, new_alignment
 
 def update_display(stdscr, lyrics, errors, position, current_title, manual_offset, 
