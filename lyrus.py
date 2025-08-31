@@ -1465,9 +1465,9 @@ def load_key_bindings(config):
 	
 	return parsed
 
-def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw, 
+def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw,
 					   time_adjust, current_alignment, key_bindings):
-	"""Optimized input handler with scroll, timing, and alignment logic"""
+	"""Input handler with scroll, timing, and alignment logic"""
 
 	new_alignment = current_alignment
 	input_processed = False
@@ -1487,41 +1487,48 @@ def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw,
 		manual_offset += 1
 		manual_input, input_processed = True, True
 
-	# Time adjustments (lookup table)
-	time_actions = {
-		"time_decrease": -0.1,
-		"time_increase": +0.1,
-		"time_reset":    "reset",
-		"time_jump_increase": +5.0,
-		"time_jump_decrease": -5.0,
-	}
-	for action, delta in time_actions.items():
-		if key in key_bindings[action]:
-			if delta == "reset":
-				time_adjust = 0.0
-			else:
-				time_adjust += delta
-			time_adjust_input, input_processed = True, True
-			break
+	# Time adjustments (explicit elif chain)
+	elif key in key_bindings["time_decrease"]:
+		time_adjust -= 0.1
+		time_adjust_input, input_processed = True, True
 
-	# Alignment direct selection
-	align_map = {
-		"align_left": "left",
-		"align_center": "center",
-		"align_right": "right",
-	}
-	for action, align in align_map.items():
-		if key in key_bindings[action]:
-			new_alignment = align
-			alignment_input, input_processed = True, True
-			break
+	elif key in key_bindings["time_increase"]:
+		time_adjust += 0.1
+		time_adjust_input, input_processed = True, True
+
+	elif key in key_bindings["time_reset"]:
+		time_adjust = 0.0
+		time_adjust_input, input_processed = True, True
+
+	elif key in key_bindings["time_jump_increase"]:
+		time_adjust += 5.0
+		time_adjust_input, input_processed = True, True
+
+	elif key in key_bindings["time_jump_decrease"]:
+		time_adjust -= 5.0
+		time_adjust_input, input_processed = True, True
+
+	# Alignment direct selection (explicit elif chain)
+	elif key in key_bindings["align_left"]:
+		new_alignment = "left"
+		alignment_input, input_processed = True, True
+
+	elif key in key_bindings["align_center"]:
+		new_alignment = "center"
+		alignment_input, input_processed = True, True
+
+	elif key in key_bindings["align_right"]:
+		new_alignment = "right"
+		alignment_input, input_processed = True, True
 
 	# Alignment cycling
-	alignments = ["left", "center", "right"]
-	if key in key_bindings["align_cycle_forward"]:
+	elif key in key_bindings["align_cycle_forward"]:
+		alignments = ["left", "center", "right"]
 		new_alignment = alignments[(alignments.index(current_alignment) + 1) % 3]
 		alignment_input, input_processed = True, True
+
 	elif key in key_bindings["align_cycle_backward"]:
+		alignments = ["left", "center", "right"]
 		new_alignment = alignments[(alignments.index(current_alignment) - 1) % 3]
 		alignment_input, input_processed = True, True
 
@@ -1892,7 +1899,7 @@ async def main_async(stdscr, config_path=None):
 
 			# Handle track changes
 			if title and title.strip() != "" and title != state['current_title']:
-				# LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
+				LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
 				if audio_file and audio_file != "None":
 					try:
 						LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
@@ -1914,12 +1921,22 @@ async def main_async(stdscr, config_path=None):
 					'wrapped_lines': [],
 					'max_wrapped_offset': 0
 				})
-				
-				# Cancel any existing lyric future
+					
+				# Cancel any existing lyric fetching task
 				if state['lyric_future'] and not state['lyric_future'].done():
 					state['lyric_future'].cancel()
+					try:
+						# Await cancellation to fully stop the old task
+						await asyncio.wait_for(state['lyric_future'], timeout=4.0)
+					except asyncio.CancelledError:
+						LOGGER.log_debug("Previous lyric fetching task cancelled successfully")
+					except asyncio.TimeoutError:
+						LOGGER.log_debug("Previous lyric fetch task timeout, forcefully stopped")
+					finally:
+						state['lyric_future'] = None
 				
 				search_directory = None
+				
 				if audio_file and os.path.exists(audio_file):
 					search_directory = os.path.dirname(audio_file) if (player_type == 'cmus'or player_type == 'mpd') else None
 				
