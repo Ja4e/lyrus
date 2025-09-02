@@ -117,7 +117,7 @@ class ConfigManager:
 		# Default configuration
 		default_config = {
 			"global": {
-				"logs_dir": "~/.cache/lyrus",
+				"logs_dir": "~/.local/state/lyrus",
 				"log_file": "application.log",
 				"log_level": "FATAL",
 				"lyrics_timeout_log": "lyrics_timeouts.log",
@@ -160,7 +160,7 @@ class ConfigManager:
 			"terminal_states": ["done", "instrumental", "time_out", "failed", "mpd", "clear", "cmus"],
 			"lyrics": {
 				"search_timeout": 15,
-				"cache_dir": "~/.cache/lyrus/synced_lyrics",
+				"cache_dir": "~/.local/state/lyrus/synced_lyrics",
 				"local_extensions": ["a2", "lrc", "txt"],
 				"validation": {"title_match_length": 15, "artist_match_length": 15}
 			},
