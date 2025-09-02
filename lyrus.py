@@ -117,7 +117,7 @@ class ConfigManager:
 		# Default configuration
 		default_config = {
 			"global": {
-				"logs_dir": "~/.local/state/lyrus",
+				"logs_dir": "~/.cache/lyrus",
 				"log_file": "application.log",
 				"log_level": "FATAL",
 				"lyrics_timeout_log": "lyrics_timeouts.log",
