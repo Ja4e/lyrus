@@ -40,6 +40,7 @@ import unicodedata
 from wcwidth import wcswidth
 import os, json, sys
 import argparse
+import atexit
 
 # ==============
 #  GLOBALS
@@ -581,6 +582,8 @@ def validate_lyrics(content, artist, title):
 	except Exception as e:
 		LOGGER.log_error(f"Error in validate_lyrics: {str(e)}")
 		return True  # Fallback to accepting content
+
+executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
 async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None, timeout=15):
 	"""Async version of syncedlyrics fetch"""
@@ -1477,6 +1480,7 @@ def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw,
 
 	# Quit
 	if key in key_bindings["quit"]:
+		atexit.register(executor.shutdown)
 		sys.exit("Exiting")
 
 	# Scroll handling
@@ -2380,6 +2384,7 @@ if __name__ == "__main__":
 			curses.wrapper(run_main)
 		except KeyboardInterrupt:
 			print("Exited by user (Ctrl+C).")
+			atexit.register(executor.shutdown)
 			exit()
 		except Exception as e:
 			temp_config = ConfigManager(config_path=args.config, use_default=args.default)
