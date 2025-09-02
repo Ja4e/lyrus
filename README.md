@@ -48,6 +48,3 @@ It detects your custon config.json (monfiable btw) make sure you backup this jso
 
 
 I will add more synced lyrics provider options directly to the config
-
-
-right now i need to control the amount of threads, currently its hanging for noreason when new lyrics is shown up
