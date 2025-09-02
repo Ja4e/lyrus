@@ -23,7 +23,9 @@ the dbus does not actually implement properly still doing traditional polling, I
 tbh i am happy to introduce this that this program now works on any music player that works with playerctl
 
 
-### All the timeouts, debugs logs and synced lyrics are stored in ``~/.cache/lyrus`` by default
+### All the timeouts, debugs logs are stored in ``~/.cache/lyrus`` by default
+
+### All cached lyrics are stored in ``~/.local/state/lyrus/synced_lyrics`` by default
 
 ### You can copy paste the default config form the wiki and save it under ``~/.config/lyrus`` make sure you create the directory yourself with ``mkdir ~/.config/lyrus``
 
