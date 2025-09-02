@@ -39,10 +39,9 @@ very customizeable
 ![image](https://github.com/user-attachments/assets/5d5fdbc5-7d4b-4b38-b2db-0cee5722806f)
 
 
-run this script with these requirement  installable through pip
 
 
-Currently need to clean up the code its too big to clean if theres a bug
+run this script with these requirement  installable through pip if doownloaded directly through the source code
 
 
 It detects your custon config.json (monfiable btw) make sure you backup this json configurations
