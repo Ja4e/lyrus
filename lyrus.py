@@ -670,7 +670,7 @@ def is_lyrics_timed_out(artist_name, track_name):
 		return False
 
 async def find_lyrics_file_async(audio_file, directory, artist_name, track_name, duration=None):
-	"""Async version of find_lyrics_file with non-blocking operations"""
+	"""Async version of find_lyrics_file with non-blocking operations and concurrent online fetch"""
 	update_fetch_status('local')
 	LOGGER.log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
 
@@ -748,65 +748,71 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			LOGGER.log_debug(f"Lyrics timeout active for {artist_name} - {track_name}")
 			return None
 
-		# --- Online fetch: LRCLIB fallback ---
-		update_fetch_status("lrc_lib")
-		search_start = time.time()
-		LOGGER.log_debug("Fetching from LRCLIB...")
-		fetched_lyrics, is_synced = await fetch_lyrics_lrclib_async(artist_name, track_name, duration)
-
-		if fetched_lyrics:
-			search_time = time.time() - search_start
-			LOGGER.log_debug(f"Online search completed in {search_time:.3f}s")
-			extension = 'lrc' if is_synced else 'txt'
-			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
-
-		# --- Online fetch: SyncedLyrics ---
+		# --- Concurrent online fetch ---
 		update_fetch_status('synced')
-		LOGGER.log_debug("Fetching from syncedlyrics...")
-		search_start = time.time()
-		LOGGER.log_info(f"Searching online sources for: {artist_name} - {track_name}")
-		fetched_lyrics, is_synced = await fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration)
+		LOGGER.log_debug(f"Fetching lyrics concurrently for: {artist_name} - {track_name}")
 
-		if fetched_lyrics:
-			search_time = time.time() - search_start
-			LOGGER.log_debug(f"Online search completed in {search_time:.3f}s")
-			LOGGER.log_info(f"Found {'synced' if is_synced else 'plain'} lyrics online")
+		tasks = [
+			fetch_lyrics_lrclib_async(artist_name, track_name, duration),
+			fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration)
+		]
 
-			# Validation warning (but don’t discard)
+		results = await asyncio.gather(*tasks, return_exceptions=True)
+
+		candidates = []
+		for idx, result in enumerate(results):
+			if isinstance(result, Exception):
+				LOGGER.log_debug(f"Fetch task {idx} raised an exception: {result}")
+				continue
+
+			fetched_lyrics, is_synced = result
+			if not fetched_lyrics:
+				continue
+
+			# Validation warning
 			if not validate_lyrics(fetched_lyrics, artist_name, track_name):
 				LOGGER.log_debug("Validation warning - possible mismatch")
 				fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
 
-			# Stats
-			line_count = len(fetched_lyrics.split('\n'))
-			LOGGER.log_debug(f"Lyrics stats - Lines: {line_count}, "
-							 f"Chars: {len(fetched_lyrics)}, "
-							 f"Synced: {is_synced}")
-
-			# File format detection
-			is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) 
-							  for line in fetched_lyrics.split('\n'))
+			# Detect format
+			is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
 			has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
+
 			if is_enhanced:
 				extension = 'a2'
 			elif is_synced and has_lrc_timestamps:
 				extension = 'lrc'
 			else:
 				extension = 'txt'
-			return save_lyrics(fetched_lyrics, track_name, artist_name, extension)
 
-		# --- No result ---
-		LOGGER.log_debug("No lyrics found from any source")
-		update_fetch_status("failed")
-		if has_internet_global():
-			log_timeout(artist_name, track_name)
-		return None
+			candidates.append((extension, fetched_lyrics))
+
+			# Log stats
+			line_count = len(fetched_lyrics.split('\n'))
+			LOGGER.log_debug(f"Lyrics stats - Lines: {line_count}, "
+							 f"Chars: {len(fetched_lyrics)}, "
+							 f"Synced: {is_synced}, Format: {extension}")
+
+		if not candidates:
+			LOGGER.log_debug("No lyrics found from any source")
+			update_fetch_status("failed")
+			if has_internet_global():
+				log_timeout(artist_name, track_name)
+			return None
+
+		# --- Choose best candidate by priority ---
+		priority_order = ['a2', 'lrc', 'txt']
+		candidates.sort(key=lambda x: priority_order.index(x[0]))
+		best_extension, best_lyrics = candidates[0]
+
+		LOGGER.log_debug(f"Selected lyrics format: {best_extension}")
+		return save_lyrics(best_lyrics, track_name, artist_name, best_extension)
 
 	except Exception as e:
 		LOGGER.log_error(f"Error in find_lyrics_file: {str(e)}")
 		update_fetch_status("failed")
 		return None
-		
+
 
 
 def parse_time_to_seconds(time_str):
