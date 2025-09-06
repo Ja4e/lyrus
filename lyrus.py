@@ -2347,7 +2347,7 @@ async def main_async(stdscr, config_path=None):
 				sleep_time = 0.001
 
 			# If polling or proximity is active, override for high-frequency updates
-			if state['poll'] or state['proximity_active']:
+			if state['poll'] or state['proximity_active'] or manual_scroll:
 				sleep_time = 0.000
 
 			await asyncio.sleep(sleep_time)
