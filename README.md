@@ -48,3 +48,6 @@ It detects your custon config.json (monfiable btw) make sure you backup this jso
 
 
 I will add more synced lyrics provider options directly to the config more configurable when on snyced lyrics lib
+
+there is a bug where the save songs that cant be loaded with special character will update
+should be a simple patch
