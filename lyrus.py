@@ -1136,7 +1136,7 @@ def resolve_color(setting):
 	)
 	return get_color_value(raw_value)
 
-def display_lyrics( 
+def display_lyrics(
 		stdscr,
 		lyrics,
 		errors,
@@ -1153,8 +1153,8 @@ def display_lyrics(
 		alignment='center',
 		player_info=None
 ):
-	"""Render lyrics in curses interface with minimal redraw using separate windows and dynamic resize."""
-	# Get terminal dimensions
+	"""Render lyrics in curses interface"""
+
 	height, width = stdscr.getmaxyx()
 	status_msg = get_current_status()
 
@@ -1164,36 +1164,38 @@ def display_lyrics(
 	TIME_ADJUST_LINE = height - 2
 	LYRICS_AREA_HEIGHT = height - STATUS_LINES - 1
 
-	# On first call or after resize, (re)initialize windows
-	if (not hasattr(display_lyrics, '_dims')
-		or display_lyrics._dims != (height, width)):
-
-		# *** Begin resize handling ***
-		# Inform ncurses of the new terminal size, so it blank-fills extended areas
+	# Handle window resizing or first call
+	if not hasattr(display_lyrics, '_dims') or display_lyrics._dims != (height, width):
 		curses.resizeterm(height, width)
-		# Also clear the stdscr so no old content remains
 		stdscr.clear()
-		# *** End resize handling ***
 		stdscr.refresh()
 
 		display_lyrics._dims = (height, width)
-		# Create/Recreate sub‑windows for each section
 		display_lyrics.error_win = curses.newwin(1, width, 0, 0)
 		display_lyrics.lyrics_win = curses.newwin(LYRICS_AREA_HEIGHT, width, 1, 0)
 		display_lyrics.adjust_win = curses.newwin(1, width, TIME_ADJUST_LINE, 0)
 		display_lyrics.status_win = curses.newwin(1, width, MAIN_STATUS_LINE, 0)
 
-	# Alias windows
-	error_win   = display_lyrics.error_win
-	lyrics_win  = display_lyrics.lyrics_win
-	adjust_win  = display_lyrics.adjust_win
-	status_win  = display_lyrics.status_win
+		# Invalidate cached wrapping
+		display_lyrics._wrapped_cache = None
+		display_lyrics._wrap_width = None
+		display_lyrics._last_lyrics = None
+
+	# Invalidate cache if lyrics changed
+	if not hasattr(display_lyrics, "_last_lyrics") or display_lyrics._last_lyrics != lyrics:
+		display_lyrics._wrapped_cache = None
+		display_lyrics._last_lyrics = lyrics
+
+	error_win = display_lyrics.error_win
+	lyrics_win = display_lyrics.lyrics_win
+	adjust_win = display_lyrics.adjust_win
+	status_win = display_lyrics.status_win
 
 	# --- 1) Render errors ---
 	error_win.erase()
 	if errors:
 		try:
-			err_str = f"Errors: {len(errors)}"[:width-1]
+			err_str = f"Errors: {len(errors)}"[:width - 1]
 			error_win.addstr(0, 0, err_str, curses.color_pair(1))
 		except curses.error:
 			pass
@@ -1220,49 +1222,56 @@ def display_lyrics(
 		start_line = (min(max(manual_offset, 0), max_start)
 					  if use_manual_offset else max_start)
 		y = 0
+		wcs_cache = {}
 		for idx in range(start_line, min(start_line + visible, len(a2_lines))):
 			if y >= visible:
 				break
 			line = a2_lines[idx]
-			line_str = " ".join(text for _, (text, _) in line)
-			
+			line_str = " ".join(text for _, (text, _) in line)  # alignment uses full line width
+
 			# Compute x for alignment
 			if alignment == 'right':
-				x = max(0, width - wcswidth(txt) - 1)
+				x = max(0, width - wcswidth(line_str) - 1)
 			elif alignment == 'center':
-				x = max(0, (width - wcswidth(txt)) // 2)
+				x = max(0, (width - wcswidth(line_str)) // 2)
 			else:
 				x = 1
-			
-			# Draw words in line
+
 			cursor = 0
 			for _, (text, _) in line:
+				if text not in wcs_cache:
+					wcs_cache[text] = wcswidth(text)
+				txt_width = wcs_cache[text]
+
 				space_left = width - x - cursor - 1
 				if space_left <= 0:
 					break
 				txt = text[:space_left]
-				color = curses.color_pair(2) if idx == len(a2_lines)-1 else curses.color_pair(3)
+				color = curses.color_pair(2) if idx == len(a2_lines) - 1 else curses.color_pair(3)
 				try:
 					lyrics_win.addstr(y, x + cursor, txt, color)
 				except curses.error:
 					break
-				# cursor += len(txt) + 1
-				cursor += wcswidth(txt) + 1
+				cursor += txt_width + 1
 			y += 1
 		start_screen_line = start_line
 
 	else:
-		# LRC/TXT wrapping
-		wrap_w = max(10, width-2)
-		wrapped = []
-		for orig_i, (_, ly) in enumerate(lyrics):
-			if ly.strip():
-				lines = textwrap.wrap(ly, wrap_w, drop_whitespace=False)
-				wrapped.append((orig_i, lines[0]))
-				for cont in lines[1:]:
-					wrapped.append((orig_i, ' ' + cont))
-			else:
-				wrapped.append((orig_i, ''))
+		# LRC/TXT format
+		wrap_w = max(10, width - 2)
+		if display_lyrics._wrapped_cache is None or display_lyrics._wrap_width != wrap_w:
+			wrapped = []
+			for orig_i, (_, ly) in enumerate(lyrics):
+				if ly.strip():
+					lines = textwrap.wrap(ly, wrap_w, drop_whitespace=False)
+					wrapped.append((orig_i, lines[0]))
+					for cont in lines[1:]:
+						wrapped.append((orig_i, ' ' + cont))
+				else:
+					wrapped.append((orig_i, ''))
+			display_lyrics._wrapped_cache = wrapped
+			display_lyrics._wrap_width = wrap_w
+		wrapped = display_lyrics._wrapped_cache
 
 		total = len(wrapped)
 		avail = LYRICS_AREA_HEIGHT
@@ -1271,56 +1280,55 @@ def display_lyrics(
 		if use_manual_offset:
 			start_screen_line = min(max(manual_offset, 0), max_start)
 		else:
-			if current_idx >= len(lyrics)-1:
+			if current_idx >= len(lyrics) - 1:
 				start_screen_line = max_start
 			else:
-				idxs = [i for i,(o,_) in enumerate(wrapped) if o==current_idx]
+				idxs = [i for i, (o, _) in enumerate(wrapped) if o == current_idx]
 				if idxs:
-					# center current line
-					center = (idxs[0]+idxs[-1])//2
-					ideal = center - avail//2
+					center = (idxs[0] + idxs[-1]) // 2
+					ideal = center - avail // 2
 					start_screen_line = min(max(ideal, 0), max_start)
 				else:
 					start_screen_line = min(max(current_idx, 0), max_start)
 
-		end_line = min(start_screen_line + avail, total)
 		y = 0
-		for _, line in wrapped[start_screen_line:end_line]:
+		wcs_cache = {}
+		for _, line in wrapped[start_screen_line:start_screen_line + avail]:
 			if y >= avail:
 				break
-			txt = line.strip()[:width-1]
-			disp_width = wcswidth(txt)
+			txt = line.strip()[:width - 1]
+
+			if txt not in wcs_cache:
+				wcs_cache[txt] = wcswidth(txt)
+			disp_width = wcs_cache[txt]
+
 			if alignment == 'right':
 				x = max(0, width - disp_width - 1)
 			elif alignment == 'center':
 				x = max(0, (width - disp_width) // 2)
 			else:
 				x = 1
-	
+
 			if is_txt_format:
-				color = curses.color_pair(4) if wrapped[start_screen_line+y][0]==current_idx else curses.color_pair(5)
+				color = curses.color_pair(4) if wrapped[start_screen_line + y][0] == current_idx else curses.color_pair(5)
 			else:
-				color = curses.color_pair(2) if wrapped[start_screen_line+y][0]==current_idx else curses.color_pair(3)
+				color = curses.color_pair(2) if wrapped[start_screen_line + y][0] == current_idx else curses.color_pair(3)
 			try:
 				lyrics_win.addstr(y, x, txt, color)
 			except curses.error:
 				pass
 			y += 1
-
 		lyrics_win.noutrefresh()
 
-	# --- 3) End-of-lyrics or Time-adjustment display ---
+	# --- 3) Time-adjust or End-of-lyrics ---
 	adjust_win.erase()
-	if (current_idx is not None and
-		current_idx == len(lyrics) - 1 and
-		not is_txt_format and
-		len(lyrics) > 1):
+	if current_idx is not None and current_idx == len(lyrics) - 1 and not is_txt_format and len(lyrics) > 1:
 		try:
 			adjust_win.addstr(0, 0, " End of lyrics ", curses.color_pair(2) | curses.A_BOLD)
 		except curses.error:
 			pass
 	elif time_adjust:
-		adj_str = f" Offset: {time_adjust:+.1f}s "[:width-1]
+		adj_str = f" Offset: {time_adjust:+.1f}s "[:width - 1]
 		try:
 			adjust_win.addstr(0, max(0, width - len(adj_str) - 1),
 							   adj_str, curses.color_pair(2) | curses.A_BOLD)
@@ -1331,17 +1339,9 @@ def display_lyrics(
 	# --- 4) Status bar ---
 	status_win.erase()
 	if CONFIG_MANAGER.DISPLAY_NAME:
-		# Build player status text
-		# if player_info:
-			# _, data = player_info
-			# artist = data[2] or 'Unknown Artist'
-			# title = data[3] or os.path.basename(data[0]) or 'Unknown Track'
-			# is_inst = any(x in title.lower() for x in ['instrumental','karaoke'])
-			# ps = f"{title} - {artist}"
 		if player_info:
 			_, data = player_info
 			artist = data[2] or ''
-			# Safely handle the file path which might be None
 			file_basename = ''
 			if data[0] and data[0] != "None":
 				try:
@@ -1349,38 +1349,33 @@ def display_lyrics(
 				except (TypeError, AttributeError):
 					file_basename = ''
 			title = data[3] or file_basename
-			is_inst = any(x in title.lower() for x in ['instrumental','karaoke'])
-			ps = f"{title} - {artist}"
+			is_inst = any(x in title.lower() for x in ['instrumental', 'karaoke'])
 		else:
-			ps, is_inst = 'No track', False
-			
+			title, artist, is_inst = 'No track', '', False
+
 		ps = f"{title} - {artist}"
 		cur_line = min(current_idx + 1, len(lyrics)) if lyrics else 0
-		line_info = f"Line {cur_line}/{len(lyrics)}"
 		adj_flag = '' if is_inst else ('[Adj] ' if time_adjust else '')
 		icon = ' ⏳ ' if is_fetching else ' 🎵 '
 
-		# Compose right text section
-		right_text_full = f"{line_info}{adj_flag}"
+		# Compose right text
+		right_text_full = f"Line {cur_line}/{len(lyrics)}{adj_flag}"
 		right_text_fallback = f" {cur_line}/{len(lyrics)}{adj_flag} "
 
-		# Check how much space remains for left-side
+		# Determine available space for left text
 		if len(f"{icon}{ps} • {right_text_full}") <= width - 1:
-			# All fits
 			display_line = f"{icon}{ps} • {right_text_full}"
 		elif len(f"{icon}{ps} • {right_text_fallback}") <= width - 1:
-			# Use short fallback right text (drop "Line")
 			right_text = right_text_fallback
 			left_max = width - 1 - len(right_text) - 1
 			ps_trunc = f"{icon}{ps}"
 			if len(ps_trunc) > left_max:
-				trunc_len = left_max - 3  # for "..."
+				trunc_len = max(0, left_max - 3)
 				ps_trunc = ps_trunc[:trunc_len] + '...' if trunc_len > 0 else ''
 			padding = ' ' * max(left_max - len(ps_trunc), 0)
 			display_line = f"{ps_trunc}{padding} {right_text} "
 		else:
-			# Not even fallback fits cleanly — truncate both
-			# Ensure right_text fits first
+			# Not enough space for full right text
 			right_text = right_text_fallback
 			max_right = width - 1
 			if len(right_text) > max_right:
@@ -1390,30 +1385,30 @@ def display_lyrics(
 				left_max = width - 1 - len(right_text) - 1
 				ps_trunc = f"{icon}{ps} "
 				if len(ps_trunc) > left_max:
-					trunc_len = left_max - 3  # for "..."
+					trunc_len = max(0, left_max - 3)
 					ps_trunc = ps_trunc[:trunc_len] + '...' if trunc_len > 0 else ''
 				padding = ' ' * max(left_max - len(ps_trunc), 0)
 				display_line = f"{ps_trunc}{padding} {right_text} "
 
 		try:
 			safe_width = max(0, width - 1)
-			safe_line = display_line[:safe_width]
-			status_win.addstr(0, 0, safe_line, curses.color_pair(5) | curses.A_BOLD)
+			status_win.addstr(0, 0, display_line[:safe_width], curses.color_pair(5) | curses.A_BOLD)
 		except curses.error:
 			pass
 	else:
-		info = f"Line {min(current_idx+1, len(lyrics))}/{len(lyrics)}"
+		info = f"Line {min(current_idx + 1, len(lyrics))}/{len(lyrics)}"
 		if time_adjust:
 			info += '[Adj]'
 		try:
-			status_win.addstr(0, 0, info[:width-1], curses.A_BOLD)
+			status_win.addstr(0, 0, info[:width - 1], curses.A_BOLD)
 		except curses.error:
 			pass
 	status_win.noutrefresh()
 
+
 	# Overlay centered status message
 	if status_msg:
-		msg = f"  [{status_msg}]  "[:width-1]
+		msg = f"  [{status_msg}]  "[:width - 1]
 		try:
 			status_win.addstr(0, max(0, (width - len(msg)) // 2),
 							   msg, curses.color_pair(2) | curses.A_BOLD)
@@ -1421,10 +1416,9 @@ def display_lyrics(
 			pass
 	status_win.noutrefresh()
 
-	# Refresh all windows at once
 	curses.doupdate()
-	# Return scroll start for caller
 	return start_screen_line
+
 
 # ================
 #  INPUT HANDLING
