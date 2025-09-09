@@ -1191,6 +1191,13 @@ def display_lyrics(
 	adjust_win = display_lyrics.adjust_win
 	status_win = display_lyrics.status_win
 
+
+	if use_manual_offset and manual_offset != 0 and position is not None:
+		try:
+			position += int(manual_offset * 1_000_000)
+		except Exception:
+			pass
+	
 	# --- 1) Render errors ---
 	error_win.erase()
 	if errors:
@@ -1732,7 +1739,7 @@ async def main_async(stdscr, config_path=None):
 		PROX_POLL_FRAMES   = CONFIG["ui"]["sync"]["VRR_R"].get("Proxi_poll_F", 10)
 
 		# Apply frame-based interval but cap at config limit
-		refresh_interval = min(frame_time_sec * NORMAL_POLL_Frames, refresh_interval)
+		refresh_interval = min(frame_time_sec * NORMAL_POLL_FRAMES, refresh_interval)
 		refresh_proximity_interval = min(frame_time_sec * PROX_POLL_FRAMES, refresh_proximity_interval)
 
 	next_frame_time = 0
