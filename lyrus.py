@@ -1903,7 +1903,6 @@ async def main_async(stdscr, config_path=None):
 
 			# Handle track changes
 			if title and title.strip() != "" and title != state['current_title']:
-				LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
 				if audio_file and audio_file != "None":
 					try:
 						LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
@@ -2012,7 +2011,8 @@ async def main_async(stdscr, config_path=None):
 
 				
 			# Player-specific estimation
-			if player_type == "cmus" or player_type == "mpd" or player_type == "playerctl":
+			# if player_type == "cmus" or player_type == "mpd" or player_type == "playerctl":
+			if player_type:
 				if not playback_paused:
 					elapsed = now - state['last_pos_time']
 					estimated_position = raw_position + elapsed
