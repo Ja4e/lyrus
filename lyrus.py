@@ -1167,16 +1167,14 @@ def display_lyrics(
 	# Handle window resizing or first call
 	if not hasattr(display_lyrics, '_dims') or display_lyrics._dims != (height, width):
 		curses.resizeterm(height, width)
-		stdscr.clear()
-		stdscr.refresh()
 
-		display_lyrics._dims = (height, width)
-		display_lyrics.error_win = curses.newwin(1, width, 0, 0)
+		display_lyrics.error_win  = curses.newwin(1, width, 0, 0)
 		display_lyrics.lyrics_win = curses.newwin(LYRICS_AREA_HEIGHT, width, 1, 0)
 		display_lyrics.adjust_win = curses.newwin(1, width, TIME_ADJUST_LINE, 0)
 		display_lyrics.status_win = curses.newwin(1, width, MAIN_STATUS_LINE, 0)
 
-		# Invalidate cached wrapping
+		display_lyrics._dims = (height, width)
+		
 		display_lyrics._wrapped_cache = None
 		display_lyrics._wrap_width = None
 		display_lyrics._last_lyrics = None
