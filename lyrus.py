@@ -174,7 +174,7 @@ class ConfigManager:
 						"inactive": {"env": "TXT_INACTIVE", "default": "white"}
 					},
 					"lrc": {
-						"active": {"env": "LRC_ACTIVE", "default": "green"},
+						"active": {"env": "LRC_ACTIVE", "default": "046"},
 						"inactive": {"env": "LRC_INACTIVE", "default": "250"}
 					},
 					"error": {"env": "ERROR_COLOR", "default": 196}
