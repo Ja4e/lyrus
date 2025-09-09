@@ -1154,7 +1154,7 @@ def display_lyrics(
 		player_info=None
 ):
 	"""Render lyrics in curses interface"""
-
+	
 	height, width = stdscr.getmaxyx()
 	status_msg = get_current_status()
 
@@ -1163,11 +1163,15 @@ def display_lyrics(
 	MAIN_STATUS_LINE = height - 1
 	TIME_ADJUST_LINE = height - 2
 	LYRICS_AREA_HEIGHT = height - STATUS_LINES - 1
-
+	
+	if LYRICS_AREA_HEIGHT <= 0:
+		stdscr.noutrefresh()
+		return 0
+	
 	# Handle window resizing or first call
 	if not hasattr(display_lyrics, '_dims') or display_lyrics._dims != (height, width):
 		curses.resizeterm(height, width)
-
+		
 		display_lyrics.error_win  = curses.newwin(1, width, 0, 0)
 		display_lyrics.lyrics_win = curses.newwin(LYRICS_AREA_HEIGHT, width, 1, 0)
 		display_lyrics.adjust_win = curses.newwin(1, width, TIME_ADJUST_LINE, 0)
@@ -1188,7 +1192,6 @@ def display_lyrics(
 	lyrics_win = display_lyrics.lyrics_win
 	adjust_win = display_lyrics.adjust_win
 	status_win = display_lyrics.status_win
-
 
 	if use_manual_offset and manual_offset != 0 and position is not None:
 		try:
@@ -1423,7 +1426,6 @@ def display_lyrics(
 
 	curses.doupdate()
 	return start_screen_line
-
 
 # ================
 #  INPUT HANDLING
