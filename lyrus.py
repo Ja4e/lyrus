@@ -1973,7 +1973,7 @@ async def main_async(stdscr, config_path=None):
 						LOGGER.log_debug(errors)
 					state.update({
 						'lyrics': new_lyrics,
-						'errors': [],  # Keep errors empty to prevent display
+						'errors': errors, # [] to prevent it
 						'timestamps': ([] if (is_txt or is_a2)
 									   else sorted(t for t, _ in new_lyrics if t is not None)),
 						'valid_indices': [i for i, (t, _) in enumerate(new_lyrics) if t is not None],
@@ -2119,55 +2119,45 @@ async def main_async(stdscr, config_path=None):
 					lyrics_area_height = window_h - 3
 					state['max_wrapped_offset'] = max(0, len(wrapped) - lyrics_area_height)
 					state['window_width'] = window_w
-			
-			# Calculate current lyric index 
+
+			# Calculate current lyric index
 			if state['smart_tracking'] == 1:
-				current_idx = -1
+				current_idx = state.get('last_idx', -1)
 
 				if state['timestamps'] and not state['is_txt']:
-					# LRC synchronization logic
-					with ThreadPoolExecutor(max_workers=2) as sync_exec:
-						bisect_idx = sync_exec.submit(
-							bisect_worker,
-							continuous_position,
-							state['timestamps'],
-							bisect_offset + offset
-						).result()
-						proximity_idx = sync_exec.submit(
-							proximity_worker,
-							continuous_position,
-							state['timestamps'],
-							proximity_threshold + offset
-						).result()
+					ts = state['timestamps']
+					n  = len(ts)
 
-					if abs(bisect_idx - proximity_idx) > 1:
-						chosen_idx = bisect_idx
-					else:
-						chosen_idx = min(bisect_idx, proximity_idx)
+					# If no index yet, fall back to bisect once
+					if current_idx < 0:
+						current_idx = bisect.bisect_right(ts, continuous_position + offset) - 1
+						current_idx = max(-1, min(current_idx, n - 1))
 
-					current_idx = max(-1, min(chosen_idx, len(state['timestamps']) - 1))
+					# Otherwise, only step forward when needed
+					elif current_idx + 1 < n:
+						t_cur = ts[current_idx]
+						t_next = ts[current_idx + 1]
 
-					if current_idx >= 0:
-						t_cur = state['timestamps'][current_idx]
-						# only compare floats against floats
-						if t_cur is not None and continuous_position < t_cur:
-							current_idx = max(-1, current_idx - 1)
-							last_position_time = now
+						if continuous_position >= t_next - proximity_threshold:
+							# Jump to next line slightly early
+							current_idx += 1
 
+					# Clamp index
+					current_idx = max(-1, min(current_idx, n - 1))
+					last_position_time = now
 
 				elif state['is_txt'] and state['wrapped_lines'] and duration > 0:
-					# TXT file synchronization (unchanged)
 					num_wrapped = len(state['wrapped_lines'])
-					
 					target_idx  = int((continuous_position / duration) * num_wrapped)
 					current_idx = max(0, min(target_idx, num_wrapped - 1))
-					
-					last_position_time = now  # Reset timer to prevent residual elapsed time
+					last_position_time = now
 
 				else:
 					current_idx = -1
-					last_position_time = now  # Reset timer to prevent residual elapsed time
+					last_position_time = now
 
+				# Save progress
+				state['last_idx'] = current_idx
 
 			else:
 				if state['timestamps'] and not state['is_txt']:
