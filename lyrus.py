@@ -167,7 +167,7 @@ class ConfigManager:
 				"Syncedlyrics": True,
 				"Sources": ["Musixmatch", "Lrclib", "NetEase", "Megalobiz", "Genius"],
 				"Fallback": True,
-				"Allow_txt": True
+				"Format_priority": ['a2', 'lrc' ,"txt"]
 			},
 			"ui": {
 				"alignment": "left",
@@ -307,7 +307,7 @@ class ConfigManager:
 		self.PROVIDERS = set(self.config["lyrics"]["Sources"])
 		
 		self.PROVIDER_FALLBACK = self.config["lyrics"]["Fallback"]
-		self.PROVIDER_ALLOW_TXT = self.config["lyrics"]["Allow_txt"]
+		self.PROVIDER_FORMAT_PRIORITY = set(self.config["lyrics"]["Format_priority"])
 		
 	def setup_ui(self):
 		self.DISPLAY_NAME = self.config["ui"]["name"]
@@ -684,7 +684,6 @@ def is_lyrics_timed_out(artist_name, track_name):
 
 Allow_syncedlyric = CONFIG_MANAGER.ALLOW_SYNCEDLYRIC
 Fallback_lrc = CONFIG_MANAGER.PROVIDER_FALLBACK 
-Allow_txt = CONFIG_MANAGER.PROVIDER_ALLOW_TXT
 
 async def find_lyrics_file_async(audio_file, directory, artist_name, track_name, duration=None):
 	"""Async version of find_lyrics_file with non-blocking operations and concurrent online fetch"""
@@ -820,10 +819,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			return None
 
 		# --- Choose best candidate by priority ---
-		priority_order = ['a2', 'lrc']
-
-		if Allow_txt:
-			priority_order.append('txt')
+		priority_order = CONFIG_MANAGER.PROVIDER_FORMAT_PRIORITY
 		
 		candidates.sort(key=lambda x: priority_order.index(x[0]))
 		best_extension, best_lyrics = candidates[0]
