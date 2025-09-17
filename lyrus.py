@@ -1725,7 +1725,6 @@ async def main_async(stdscr, config_path=None):
 	base_offset                     = CONFIG["ui"]["sync"].get("sync_offset_sec", 0.0)
 	bisect_offset                   = CONFIG["ui"]["sync"]["bisect_offset"]
 
-	# New: initialize synchronization compensation variable
 	sync_compensation = 0.0
 	
 	VRR_ENABLED                     = CONFIG["ui"]["sync"].get("VRR_bol", False)
@@ -2063,8 +2062,9 @@ async def main_async(stdscr, config_path=None):
 				and state['last_idx'] + 1 < len(state['timestamps'])
 				and state['last_idx'] == max(state['last_idx'], 0)
 				and status == "playing"
-				and not state["poll"] == True
-				and not playback_paused):
+				and not state["poll"]
+				and not playback_paused
+				and not manual_scroll):
 
 				idx = state['last_idx']
 				t0, t1 = state['timestamps'][idx], state['timestamps'][idx + 1]
