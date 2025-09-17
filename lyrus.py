@@ -325,7 +325,7 @@ CONFIG = CONFIG_MANAGER.config
 class Logger:
 	"""Handle application logging"""
 	
-	def __init__(self):
+	def __init__(self, config_manager):
 		self.LOG_DIR = CONFIG_MANAGER.LOG_DIR
 		self.LYRICS_TIMEOUT_LOG = CONFIG_MANAGER.LYRICS_TIMEOUT_LOG
 		self.DEBUG_LOG = CONFIG_MANAGER.DEBUG_LOG
@@ -422,7 +422,8 @@ class Logger:
 		self.log_message("TRACE", message)
 
 # Initialize logger
-LOGGER = Logger()
+# LOGGER = Logger()
+LOGGER = Logger(CONFIG_MANAGER)
 
 # Status system
 fetch_status_lock = threading.Lock()
@@ -679,11 +680,7 @@ def is_lyrics_timed_out(artist_name, track_name):
 		return False
 	except Exception as e:
 		LOGGER.log_debug(f"Timeout check error: {e}")
-		return False
-
-
-Allow_syncedlyric = CONFIG_MANAGER.ALLOW_SYNCEDLYRIC
-Fallback_lrc = CONFIG_MANAGER.PROVIDER_FALLBACK 
+		return False 
 
 async def find_lyrics_file_async(audio_file, directory, artist_name, track_name, duration=None):
 	"""Async version of find_lyrics_file with non-blocking operations and concurrent online fetch"""
@@ -770,9 +767,9 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 
 		tasks = [fetch_lyrics_lrclib_async(artist_name, track_name, duration)]
 
-		if Synced_lyrics:
+		if CONFIG_MANAGER.ALLOW_SYNCEDLYRIC:
 			tasks.append(fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration))
-		elif not Fallback_lrc:
+		elif not CONFIG_MANAGER.PROVIDER_FALLBACK:
 			tasks = [fetch_lyrics_lrclib_async(artist_name, track_name, duration)]
 
 		results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -1697,7 +1694,7 @@ def get_monitor_refresh_rate():
 # ================
 #  MAIN APPLICATION
 # ================
-async def main_async(stdscr, config_path=None):
+async def main_async(stdscr, CONFIG, LOGGER):
 	# Suppress output during initialization
 	sys.stdout = open(os.devnull, 'w')
 	sys.stderr = open(os.devnull, 'w')
@@ -2083,7 +2080,7 @@ async def main_async(stdscr, config_path=None):
 				and status == "playing"
 				and not state["poll"]
 				and not playback_paused
-				and not manual_scroll):
+				and not manual_scroll): # added this because when manual scroll and proximity this stdscr logger keeps putting lags
 
 				idx = state['last_idx']
 				t0, t1 = state['timestamps'][idx], state['timestamps'][idx + 1]
@@ -2378,9 +2375,9 @@ def main(stdscr, config_path=None, use_default=False, player=None): #Hacks
 	)
 	
 	CONFIG = CONFIG_MANAGER.config
-	LOGGER = Logger()
+	LOGGER = Logger(CONFIG_MANAGER)
 	
-	asyncio.run(main_async(stdscr))
+	asyncio.run(main_async(stdscr, CONFIG, LOGGER))
 
 
 def run_main(stdscr):
@@ -2400,10 +2397,17 @@ if __name__ == "__main__":
 			curses.wrapper(run_main)
 		except KeyboardInterrupt:
 			print("Exited by user (Ctrl+C).")
-			atexit.register(executor.shutdown)
+			try:
+				atexit.register(executor.shutdown)
+			except NameError:
+				# executor may not exist in some contexts; ignore if so
+				pass
 			exit()
 		except Exception as e:
-			temp_config = ConfigManager(config_path=args.config, use_default=args.default)
-			temp_logger = Logger()
-			temp_logger.log_debug(f"Fatal error: {str(e)}")
+			try:
+				temp_config = ConfigManager(config_path=args.config, use_default=args.default)
+				temp_logger = Logger(temp_config)
+				temp_logger.log_debug(f"Fatal error: {str(e)}")
+			except Exception:
+				print(f"Fatal error (and failed to create temp logger): {e}", file=sys.stderr)
 			time.sleep(1)
