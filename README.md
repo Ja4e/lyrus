@@ -30,8 +30,6 @@ tbh i am happy to introduce this that this program now works on any music player
 ### You can copy paste the default config form the wiki and save it under ``~/.config/lyrus`` make sure you create the directory yourself with ``mkdir ~/.config/lyrus``
 
 
-will attempt to get a2 working
-
 Scrollable lyrics btw 
 
 very customizeable
@@ -45,3 +43,6 @@ run this script with these requirement  installable through pip if doownloaded d
 
 
 It detects your custon config.json (monfiable btw) make sure you backup this json configurations
+
+
+will attempt to get a2 working
