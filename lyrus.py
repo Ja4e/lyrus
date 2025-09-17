@@ -167,7 +167,7 @@ class ConfigManager:
 				"Syncedlyrics": True,
 				"Sources": ["Musixmatch", "Lrclib", "NetEase", "Megalobiz", "Genius"],
 				"Fallback": True,
-				"Format_priority": ['a2', 'lrc' ,"txt"]
+				"Format_priority": ["a2", "lrc" ,"txt"]
 			},
 			"ui": {
 				"alignment": "left",
