@@ -45,6 +45,3 @@ run this script with these requirement  installable through pip if doownloaded d
 
 
 It detects your custon config.json (monfiable btw) make sure you backup this json configurations
-
-
-I will add more synced lyrics provider options directly to the config more configurable when on snyced lyrics lib
