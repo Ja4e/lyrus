@@ -163,7 +163,11 @@ class ConfigManager:
 				"search_timeout": 15,
 				"cache_dir": "~/.local/state/lyrus/synced_lyrics",
 				"local_extensions": ["a2", "lrc", "txt"],
-				"validation": {"title_match_length": 15, "artist_match_length": 15}
+				"validation": {"title_match_length": 15, "artist_match_length": 15},
+				"Syncedlyrics": True,
+				"Sources": ["Musixmatch", "Lrclib", "NetEase", "Megalobiz", "Genius"],
+				"Fallback": True,
+				"Allow_txt": True
 			},
 			"ui": {
 				"alignment": "left",
@@ -298,7 +302,13 @@ class ConfigManager:
 		os.makedirs(self.LYRIC_CACHE_DIR, exist_ok=True)
 		self.SEARCH_TIMEOUT = self.config["lyrics"]["search_timeout"]
 		self.VALIDATION_LENGTHS = self.config["lyrics"]["validation"]
-
+		
+		self.ALLOW_SYNCEDLYRIC = self.config["lyrics"]["Syncedlyrics"]
+		self.PROVIDERS = set(self.config["lyrics"]["Sources"])
+		
+		self.PROVIDER_FALLBACK = self.config["lyrics"]["Fallback"]
+		self.PROVIDER_ALLOW_TXT = self.config["lyrics"]["Allow_txt"]
+		
 	def setup_ui(self):
 		self.DISPLAY_NAME = self.config["ui"]["name"]
 		self.MESSAGES = self.config["status_messages"]
@@ -591,10 +601,12 @@ async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None
 	try:
 		import syncedlyrics
 		
+		LOGGER.Log_debug(f"Loaded providers: {CONFIG_MANAGER.PROVIDER}")
+		
 		def worker(search_term, synced=True):
 			"""Worker for lyric search"""
 			try: 
-				result = syncedlyrics.search(search_term) if synced else syncedlyrics.search(search_term, plain_only=True)
+				result = syncedlyrics.search(search_term) if synced else syncedlyrics.search(search_term, plain_only=True, providers=[CONFIG_MANAGER.PROVIDERS])
 				return result, synced
 			except Exception as e:
 				LOGGER.log_debug(f"Lyrics search error: {e}")
@@ -668,6 +680,11 @@ def is_lyrics_timed_out(artist_name, track_name):
 	except Exception as e:
 		LOGGER.log_debug(f"Timeout check error: {e}")
 		return False
+
+
+Allow_syncedlyric = CONFIG_MANAGER.ALLOW_SYNCEDLYRIC
+Fallback_lrc = CONFIG_MANAGER.PROVIDER_FALLBACK 
+Allow_txt = CONFIG_MANAGER.PROVIDER_ALLOW_TXT
 
 async def find_lyrics_file_async(audio_file, directory, artist_name, track_name, duration=None):
 	"""Async version of find_lyrics_file with non-blocking operations and concurrent online fetch"""
@@ -752,10 +769,12 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 		update_fetch_status('synced')
 		LOGGER.log_debug(f"Fetching lyrics concurrently for: {artist_name} - {track_name}")
 
-		tasks = [
-			fetch_lyrics_lrclib_async(artist_name, track_name, duration),
-			fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration)
-		]
+		tasks = [fetch_lyrics_lrclib_async(artist_name, track_name, duration)]
+
+		if Synced_lyrics:
+			tasks.append(fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration))
+		elif not Fallback_lrc:
+			tasks = [fetch_lyrics_lrclib_async(artist_name, track_name, duration)]
 
 		results = await asyncio.gather(*tasks, return_exceptions=True)
 
@@ -801,7 +820,11 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			return None
 
 		# --- Choose best candidate by priority ---
-		priority_order = ['a2', 'lrc', 'txt']
+		priority_order = ['a2', 'lrc']
+
+		if Allow_txt:
+			priority_order.append('txt')
+		
 		candidates.sort(key=lambda x: priority_order.index(x[0]))
 		best_extension, best_lyrics = candidates[0]
 
