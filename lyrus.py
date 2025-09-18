@@ -63,7 +63,7 @@ LOG_LEVELS = {
 # ==============
 #  CONFIGURATION
 # ==============
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 
 config_dir = "~/.config/lyrus"
 config_files = ["config.json", "config1.json", "config2.json"]
