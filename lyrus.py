@@ -304,10 +304,10 @@ class ConfigManager:
 		self.VALIDATION_LENGTHS = self.config["lyrics"]["validation"]
 		
 		self.ALLOW_SYNCEDLYRIC = self.config["lyrics"]["Syncedlyrics"]
-		self.PROVIDERS = set(self.config["lyrics"]["Sources"])
+		self.PROVIDERS = list(dict.fromkeys(self.config["lyrics"]["Sources"]))
 		
 		self.PROVIDER_FALLBACK = self.config["lyrics"]["Fallback"]
-		self.PROVIDER_FORMAT_PRIORITY = set(self.config["lyrics"]["Format_priority"])
+		self.PROVIDER_FORMAT_PRIORITY = self.config["lyrics"]["Format_priority"]
 		
 	def setup_ui(self):
 		self.DISPLAY_NAME = self.config["ui"]["name"]
