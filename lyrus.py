@@ -1793,7 +1793,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 		'timestamps': [],
 		'valid_indices': [],
 		'last_idx': -1,
-		'force_redraw': False,
+		'force_redraw': True,
 		'is_txt': False,
 		'is_a2': False,
 		'window_size': stdscr.getmaxyx(),
