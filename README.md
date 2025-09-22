@@ -46,3 +46,6 @@ It detects your custon config.json (monfiable btw) make sure you backup this jso
 
 
 will attempt to get a2 working
+
+
+hmm i wanted to add option to allow tab like functionality to be able to edit the setting in curses interface
