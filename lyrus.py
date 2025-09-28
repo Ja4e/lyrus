@@ -602,7 +602,7 @@ async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None
 	try:
 		import syncedlyrics
 		
-		LOGGER.Log_debug(f"Loaded providers: {CONFIG_MANAGER.PROVIDER}")
+		LOGGER.log_debug(f"Loaded providers: {CONFIG_MANAGER.PROVIDERS}")
 		
 		def worker(search_term, synced=True):
 			"""Worker for lyric search"""
