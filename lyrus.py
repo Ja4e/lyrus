@@ -940,13 +940,12 @@ def load_lyrics(file_path):
 def get_cmus_info():
 	"""Get current playback info from cmus"""
 	try:
-		output = subprocess.run(['cmus-remote', '-Q'], 
-							   capture_output=True, 
-							   text=True, 
+		output = subprocess.run(['cmus-remote', '-Q'],
+							   capture_output=True,
+							   text=True,
 							   check=True).stdout.splitlines()
 		LOGGER.log_debug("Cmus-remote polling...")
 	except subprocess.CalledProcessError:
-		#LOGGER.log_debug("Error occurred. Aborting...")
 		return (None, 0, None, None, 0, "stopped")
 
 	# Parse cmus output
@@ -975,10 +974,15 @@ def get_cmus_info():
 				tag_name, tag_value = parts[1], parts[2].strip()
 				data["tags"][tag_name] = tag_value
 
-	data["artist"] = data["tags"].get("artist")
+	# Prefer albumartist over artist
+	if "albumartist" in data["tags"]:
+		data["artist"] = data["tags"]["albumartist"]
+	else:
+		data["artist"] = data["tags"].get("artist")
+
 	data["title"] = data["tags"].get("title")
 
-	return (data["file"], data["position"], data["artist"], 
+	return (data["file"], data["position"], data["artist"],
 			data["title"], data["duration"], data["status"])
 
 def get_mpd_info():
