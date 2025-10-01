@@ -1,14 +1,26 @@
 # lyrus lyric player
 featuring fully fledged cmus, mpd lyric player
 automatic lyrics fetcher and supports local lyrics player, txt and lrc scrolling
+
 supports wide range of lyric sources
-ncurses, scrollable
+curses, scrollable
 
 use PKGBUILD  and  makepkg -si (currently on arch works)
-
 other linux do use make sure use virual environment to get it working (it should)
 
 customizable through this local where this program installed.
+
+![image](https://github.com/user-attachments/assets/5d5fdbc5-7d4b-4b38-b2db-0cee5722806f)
+
+---
+
+### All the timeouts, debugs logs are stored in ``~/.cache/lyrus`` by default
+
+### All cached lyrics are stored in ``~/.local/state/lyrus/synced_lyrics`` by default
+
+### You can copy paste the default config form the wiki and save it under ``~/.config/lyrus`` make sure you create the directory yourself with ``mkdir ~/.config/lyrus``
+
+---
 
 best cmus simple lyrics player out there
 
@@ -23,26 +35,19 @@ the dbus does not actually implement properly still doing traditional polling, I
 tbh i am happy to introduce this that this program now works on any music player that works with playerctl
 
 
-### All the timeouts, debugs logs are stored in ``~/.cache/lyrus`` by default
-
-### All cached lyrics are stored in ``~/.local/state/lyrus/synced_lyrics`` by default
-
-### You can copy paste the default config form the wiki and save it under ``~/.config/lyrus`` make sure you create the directory yourself with ``mkdir ~/.config/lyrus``
-
-
 Scrollable lyrics btw 
 
 very customizeable
-
-![image](https://github.com/user-attachments/assets/5d5fdbc5-7d4b-4b38-b2db-0cee5722806f)
-
-
 
 
 run this script with these requirement  installable through pip if doownloaded directly through the source code
 
 
 It detects your custon config.json (monfiable btw) make sure you backup this json configurations
+
+
+
+
 
 
 will attempt to get a2 working
