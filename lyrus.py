@@ -1930,19 +1930,9 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			duration = float(duration or 0.0)
 			estimated_position = raw_position
 			now = time.perf_counter()
-
-			# Handle None values safely
-			safe_title = title or ""
-			safe_artist = artist or ""
-			safe_current_file = audio_file or ""
-
-			# Check if track changed
-			title_changed = safe_title and safe_title != state['current_title']
-			artist_changed = safe_artist and safe_artist != state['current_artist']
-			file_changed = safe_current_file and safe_current_file != state['current_file']
 			
 			# Handle track changes
-			if title_changed or artist_changed or file_changed:
+			if (title, artist, audio_file) != (state['current_title'], state['current_artist'], state['current_file']):
 				if audio_file and audio_file != "None":
 					try:
 						LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
