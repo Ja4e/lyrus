@@ -985,6 +985,7 @@ def get_cmus_info():
 	return (data["file"], data["position"], data["artist"],
 			data["title"], data["duration"], data["status"])
 
+
 def get_mpd_info():
 	"""Get current playback info from MPD, handling password authentication."""
 	client = MPDClient()
@@ -1787,6 +1788,8 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	# Initialize application state
 	state = {
 		'current_title': None,
+		'current_artist': None,
+		'current_file': None,
 		'lyrics': [],
 		'errors': [],
 		'manual_offset': 0,
@@ -1797,7 +1800,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 		'timestamps': [],
 		'valid_indices': [],
 		'last_idx': -1,
-		'force_redraw': True,
+		'force_redraw': True, # need to redraw one from the beginning to get the status shown
 		'is_txt': False,
 		'is_a2': False,
 		'window_size': stdscr.getmaxyx(),
@@ -1919,6 +1922,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 
 			# Unpack the (possibly cached) player info
 			player_type, (audio_file, raw_pos, artist, title, duration, status) = state["player_info"]
+			
 			if audio_file in ("None", ""):
 				audio_file = None
 			
@@ -1927,8 +1931,18 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			estimated_position = raw_position
 			now = time.perf_counter()
 
+			# Handle None values safely
+			safe_title = title or ""
+			safe_artist = artist or ""
+			safe_current_file = audio_file or ""
+
+			# Check if track changed
+			title_changed = safe_title and safe_title != state['current_title']
+			artist_changed = safe_artist and safe_artist != state['current_artist']
+			file_changed = safe_current_file and safe_current_file != state['current_file']
+			
 			# Handle track changes
-			if title and title.strip() != "" and title != state['current_title']:
+			if title_changed or artist_changed or file_changed:
 				if audio_file and audio_file != "None":
 					try:
 						LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
@@ -1938,6 +1952,8 @@ async def main_async(stdscr, CONFIG, LOGGER):
 					LOGGER.log_info(f"New track detected: {title or 'Unknown Track'}")
 				state.update({
 					'current_title': title or "",
+					'current_artist': artist or "",
+					'current_file': audio_file or "",
 					'lyrics': [],
 					'errors': [],
 					'last_raw_pos': raw_position,
@@ -1969,16 +1985,18 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				if audio_file and os.path.exists(audio_file):
 					search_directory = os.path.dirname(audio_file) if (player_type == 'cmus'or player_type == 'mpd') else None
 				
-				# Start async lyric fetching
-				state['lyric_future'] = asyncio.create_task(
-					fetch_lyrics_async(
-						audio_file=audio_file,
-						directory=search_directory,
-						artist=artist or "",
-						title=title or "",
-						duration=duration
+				if not state['current_title'] == "" and not state['current_artist'] == "":
+					# Start async lyric fetching
+					state['lyric_future'] = asyncio.create_task(
+						fetch_lyrics_async(
+							audio_file=audio_file,
+							directory=search_directory,
+							artist=artist or "",
+							title=title or "",
+							duration=duration
+						)
 					)
-				)
+					
 				LOGGER.log_debug(f"{audio_file}, {artist}, {title}, {duration}")
 				
 				last_cmus_position = raw_position
@@ -2083,8 +2101,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				and state['last_idx'] == max(state['last_idx'], 0)
 				and status == "playing"
 				and not state["poll"]
-				and not playback_paused
-				and not manual_scroll): # added this because when manual scroll and proximity this stdscr logger keeps putting lags
+				and not playback_paused):
 
 				idx = state['last_idx']
 				t0, t1 = state['timestamps'][idx], state['timestamps'][idx + 1]
@@ -2340,7 +2357,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 
 			
 			# CPU destressor
-			if status == "paused" and not manual_scroll and not state['current_title']:
+			if status == "paused" and not manual_scroll:
 				time_since_input = current_time - state['last_input']
 				if time_since_input > 5.0:
 					sleep_time = 0.5
@@ -2383,7 +2400,6 @@ def main(stdscr, config_path=None, use_default=False, player=None): #Hacks
 	
 	asyncio.run(main_async(stdscr, CONFIG, LOGGER))
 
-
 def run_main(stdscr):
 	main(
 		stdscr, 
@@ -2391,7 +2407,6 @@ def run_main(stdscr):
 		use_default=args.default,
 		player=args.player
 	)
-
 
 if __name__ == "__main__":
 	args = parse_args()
