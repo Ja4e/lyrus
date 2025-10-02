@@ -1865,7 +1865,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				needs_redraw = True
 
 			# Temporary high-frequency refresh after resume or jump
-			if ((state['player_info'][0] == 'cmus' or 'playerctl') and
+			if ((state['player_info'][0] in ['cmus', 'playerctl']) and
 				state.get('resume_trigger_time') and
 				(current_time - state['resume_trigger_time'] <= TEMPORARY_REFRESH_SEC) and
 				state['player_info'][1][5] == "playing" and
@@ -1973,7 +1973,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				search_directory = None
 				
 				if audio_file and os.path.exists(audio_file):
-					search_directory = os.path.dirname(audio_file) if (player_type == 'cmus'or player_type == 'mpd') else None
+					search_directory = os.path.dirname(audio_file) if (player_type in ['cmus', 'mpd']) else None
 				
 				if not state['current_title'] == "" and not state['current_artist'] == "":
 					# Start async lyric fetching
@@ -1992,18 +1992,31 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				last_cmus_position = raw_position
 				estimated_position = raw_position
 
-			# Handle loaded lyrics from async task
-			if state['lyric_future'] and state['lyric_future'].done():
+			# Handle completed lyric fetching
+			lyric_future = state.get('lyric_future')
+			if lyric_future and lyric_future.done():
+				state['lyric_future'] = None  # Clear early to prevent re-entry
 				try:
-					(new_lyrics, errors), is_txt, is_a2 = state['lyric_future'].result()
-					if errors:  # This checks if the list is non-empty
+					(new_lyrics, errors), is_txt, is_a2 = lyric_future.result()
+					
+					# Log any errors
+					if errors:
 						LOGGER.log_debug(errors)
+
+					# Compute timestamps and valid indices only if needed
+					if not (is_txt or is_a2):
+						timestamps = sorted(t for t, _ in new_lyrics if t is not None)
+						valid_indices = [i for i, (t, _) in enumerate(new_lyrics) if t is not None]
+					else:
+						timestamps = []
+						valid_indices = []
+
+					# Update state selectively
 					state.update({
 						'lyrics': new_lyrics,
-						'errors': errors, # [] to prevent it
-						'timestamps': ([] if (is_txt or is_a2)
-									   else sorted(t for t, _ in new_lyrics if t is not None)),
-						'valid_indices': [i for i, (t, _) in enumerate(new_lyrics) if t is not None],
+						'errors': errors,
+						'timestamps': timestamps,
+						'valid_indices': valid_indices,
 						'last_idx': -1,
 						'force_redraw': True,
 						'is_txt': is_txt,
@@ -2012,21 +2025,25 @@ async def main_async(stdscr, CONFIG, LOGGER):
 						'wrapped_lines': [],
 						'max_wrapped_offset': 0
 					})
-					if status == "playing" and (player_type == "cmus" or player_type == "mpd"):
+
+					# Trigger a refresh if player is playing
+					if status == "playing" and player_type in ("cmus", "mpd"):
 						state['resume_trigger_time'] = time.perf_counter()
 						LOGGER.log_debug("Refresh triggered by new lyrics loading")
+
 					estimated_position = raw_position
-					state['lyric_future'] = None
+
 				except asyncio.CancelledError:
 					LOGGER.log_debug("Lyric fetching cancelled")
-					state['lyric_future'] = None
+
 				except Exception as e:
+					LOGGER.log_debug(f"Lyric load error: {e}")
 					state.update({
 						'errors': [f"Lyric load error: {e}"],
 						'force_redraw': True,
 						'lyrics_loaded_time': time.perf_counter()
 					})
-					state['lyric_future'] = None
+
 
 			# Delayed redraw after lyric load
 			if (state['lyrics_loaded_time'] and
@@ -2045,6 +2062,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 
 				
 			# Player-specific estimation
+			# if player_type in ["cmus", "mpd", "playerctl"]
 			# if player_type == "cmus" or player_type == "mpd" or player_type == "playerctl":
 			if player_type:
 				if not playback_paused:
@@ -2058,7 +2076,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			else:
 				playback_paused = (status == "pause")
 
-			# if player_type == "mpd" or player_type == "playerctl":
+			# if player_type == "mpd" or player_type == "playerctl": # or playerctl in ["mpd", "playerctl"]
 				# sync_compensation = 0.0
 
 			offset = base_offset + sync_compensation + next_frame_time
