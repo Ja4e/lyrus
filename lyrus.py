@@ -607,7 +607,7 @@ async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None
 		def worker(search_term, synced=True):
 			"""Worker for lyric search"""
 			try: 
-				result = syncedlyrics.search(search_term) if synced else syncedlyrics.search(search_term, plain_only=True, providers=[CONFIG_MANAGER.PROVIDERS])
+				result = syncedlyrics.search(search_term) if synced else syncedlyrics.search(search_term, plain_only=True, providers=CONFIG_MANAGER.PROVIDERS)
 				return result, synced
 			except Exception as e:
 				LOGGER.log_debug(f"Lyrics search error: {e}")
