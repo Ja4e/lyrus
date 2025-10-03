@@ -937,198 +937,193 @@ def load_lyrics(file_path):
 # ==============
 #  PLAYER DETECTION
 # ==============
+_mpd_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+
 async def get_cmus_info():
-    """Async get current playback info from cmus"""
-    def _sync_cmus():
-        try:
-            output = subprocess.run(
-                ['cmus-remote', '-Q'],
-                capture_output=True,
-                text=True,
-                check=True
-            ).stdout.splitlines()
-            LOGGER.log_debug("Cmus-remote polling...")
-        except subprocess.CalledProcessError:
-            return (None, 0, "", None, 0, "stopped")
+	"""Async get current playback info from cmus"""
+	try:
+		proc = await asyncio.create_subprocess_exec(
+			'cmus-remote', '-Q',
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.PIPE
+		)
+		stdout, _ = await proc.communicate()
+		if proc.returncode != 0:
+			return (None, 0, "", None, 0, "stopped")
 
-        data = {
-            "file": None,
-            "position": 0,
-            "artist": [],
-            "title": None,
-            "duration": 0,
-            "status": "stopped",
-            "tags": {}
-        }
+		LOGGER.log_debug("Cmus-remote polling...")
+		output = stdout.decode().splitlines()
 
-        for line in output:
-            if line.startswith("file "):
-                data["file"] = line[5:].strip()
-            elif line.startswith("status "):
-                data["status"] = line[7:].strip()
-            elif line.startswith("position "):
-                try:
-                    data["position"] = int(line[9:].strip())
-                except ValueError:
-                    data["position"] = 0
-            elif line.startswith("duration "):
-                try:
-                    data["duration"] = int(line[9:].strip())
-                except ValueError:
-                    data["duration"] = 0
-            elif line.startswith("tag "):
-                parts = line.split(" ", 2)
-                if len(parts) == 3:
-                    tag_name, tag_value = parts[1], parts[2].strip()
-                    data["tags"][tag_name] = tag_value
+		data = {
+			"file": None,
+			"position": 0,
+			"artist": [],
+			"title": None,
+			"duration": 0,
+			"status": "stopped",
+			"tags": {}
+		}
 
-        def split_artists(tag_value):
-            if not tag_value:
-                return []
-            return [a.strip() for a in tag_value.replace("/", ";").split(";") if a.strip()]
+		for line in output:
+			if line.startswith("file "):
+				data["file"] = line[5:].strip()
+			elif line.startswith("status "):
+				data["status"] = line[7:].strip()
+			elif line.startswith("position "):
+				try:
+					data["position"] = int(line[9:].strip())
+				except ValueError:
+					data["position"] = 0
+			elif line.startswith("duration "):
+				try:
+					data["duration"] = int(line[9:].strip())
+				except ValueError:
+					data["duration"] = 0
+			elif line.startswith("tag "):
+				parts = line.split(" ", 2)
+				if len(parts) == 3:
+					tag_name, tag_value = parts[1], parts[2].strip()
+					data["tags"][tag_name] = tag_value
 
-        artists_list = []
-        if "albumartist" in data["tags"]:
-            artists_list = split_artists(data["tags"]["albumartist"])
-        elif "artist" in data["tags"]:
-            artists_list = split_artists(data["tags"]["artist"])
+		def split_artists(tag_value):
+			if not tag_value:
+				return []
+			return [a.strip() for a in tag_value.replace("/", ";").split(";") if a.strip()]
 
-        artist_str = ", ".join(artists_list) if artists_list else ""
-        data["title"] = data["tags"].get("title")
+		artists_list = []
+		if "albumartist" in data["tags"]:
+			artists_list = split_artists(data["tags"]["albumartist"])
+		elif "artist" in data["tags"]:
+			artists_list = split_artists(data["tags"]["artist"])
 
-        return (
-            data["file"],
-            data["position"],
-            artist_str,
-            data["title"],
-            data["duration"],
-            data["status"]
-        )
+		artist_str = ", ".join(artists_list) if artists_list else ""
+		data["title"] = data["tags"].get("title")
 
-    return await asyncio.to_thread(_sync_cmus)
+		return (
+			data["file"],
+			data["position"],
+			artist_str,
+			data["title"],
+			data["duration"],
+			data["status"]
+		)
+
+	except Exception:
+		return (None, 0, "", None, 0, "stopped")
+
+
+def _sync_mpd():
+	client = MPDClient()
+	client.timeout = CONFIG_MANAGER.MPD_TIMEOUT
+
+	try:
+		client.connect(CONFIG_MANAGER.MPD_HOST, CONFIG_MANAGER.MPD_PORT)
+		LOGGER.log_debug("MPD polling...")
+
+		if CONFIG_MANAGER.MPD_PASSWORD:
+			client.password(CONFIG_MANAGER.MPD_PASSWORD)
+
+		status = client.status()
+		current_song = client.currentsong()
+
+		artist = current_song.get("artist", "")
+		if isinstance(artist, list):
+			artist = ", ".join(artist)
+
+		data = {
+			"file": current_song.get("file", ""),
+			"position": float(status.get("elapsed", 0)),
+			"artist": artist,
+			"title": current_song.get("title", None),
+			"duration": float(status.get("duration", status.get("time", 0))),
+			"status": status.get("state", "stopped")
+		}
+
+		client.close()
+		client.disconnect()
+
+		return (data["file"], data["position"], data["artist"],
+				data["title"], data["duration"], data["status"])
+
+	except (socket.error, ConnectionRefusedError):
+		pass
+	except Exception as e:
+		LOGGER.log_debug(f"Unexpected MPD error: {str(e)}")
+
+	update_fetch_status("mpd")
+	return (None, 0.0, "", None, 0.0, "stopped")
 
 
 async def get_mpd_info():
-    """Async get current playback info from MPD"""
-    def _sync_mpd():
-        client = MPDClient()
-        client.timeout = CONFIG_MANAGER.MPD_TIMEOUT
-
-        try:
-            client.connect(CONFIG_MANAGER.MPD_HOST, CONFIG_MANAGER.MPD_PORT)
-            LOGGER.log_debug("MPD polling...")
-
-            if CONFIG_MANAGER.MPD_PASSWORD:
-                client.password(CONFIG_MANAGER.MPD_PASSWORD)
-
-            status = client.status()
-            current_song = client.currentsong()
-
-            artist = current_song.get("artist", "")
-            if isinstance(artist, list):
-                artist = ", ".join(artist)
-
-            data = {
-                "file": current_song.get("file", ""),
-                "position": float(status.get("elapsed", 0)),
-                "artist": artist,
-                "title": current_song.get("title", None),
-                "duration": float(status.get("duration", status.get("time", 0))),
-                "status": status.get("state", "stopped")
-            }
-
-            client.close()
-            client.disconnect()
-
-            return (data["file"], data["position"], data["artist"],
-                    data["title"], data["duration"], data["status"])
-
-        except (socket.error, ConnectionRefusedError):
-            pass
-        except Exception as e:
-            LOGGER.log_debug(f"Unexpected MPD error: {str(e)}")
-
-        update_fetch_status("mpd")
-        return (None, 0.0, "", None, 0.0, "stopped")
-
-    return await asyncio.to_thread(_sync_mpd)
-
+	loop = asyncio.get_running_loop()
+	return await loop.run_in_executor(_mpd_executor, _sync_mpd)
 
 async def get_playerctl_info():
-    """Async get current playback info from any player via playerctl"""
-    def _sync_playerctl():
-        try:
-            result = subprocess.run(
-                [
-                    "playerctl", "metadata",
-                    "--format",
-                    '"{{playerName}}","{{artist}}","{{title}}","{{position}}","{{status}}","{{mpris:length}}"'
-                ],
-                capture_output=True, text=True, timeout=1
-            )
+	"""Async get current playback info from any player via playerctl"""
+	try:
+		proc = await asyncio.create_subprocess_exec(
+			"playerctl", "metadata",
+			"--format",
+			"{{playerName}}|{{artist}}|{{title}}|{{position}}|{{status}}|{{mpris:length}}",
+			stdout=asyncio.subprocess.PIPE,
+			stderr=asyncio.subprocess.PIPE
+		)
+		stdout, _ = await proc.communicate()
+		output = stdout.decode().strip()
 
-            output = result.stdout.strip()
-            LOGGER.log_debug("playerctl polling...")
+		LOGGER.log_debug("playerctl polling...")
 
-            if "No players found" in output or not output:
-                return (None, 0.0, "", None, 0.0, "stopped")
+		if "No players found" in output or not output:
+			return (None, 0.0, "", None, 0.0, "stopped")
 
-            if output.startswith('"') and output.endswith('"'):
-                output = output[1:-1]
+		fields = output.split("|")
+		if len(fields) != 6:
+			return (None, 0.0, "", None, 0.0, "stopped")
 
-            fields = output.split('","')
-            if len(fields) != 6:
-                return (None, 0.0, "", None, 0.0, "stopped")
+		_, artist, title, position, status, duration = fields
 
-            _, artist, title, position, status, duration = fields
+		position_sec = float(position) / 1_000_000 if position else 0.0
+		duration_sec = float(duration) / 1_000_000 if duration else 0.0
 
-            position_sec = float(position) / 1_000_000 if position else 0.0
-            duration_sec = float(duration) / 1_000_000 if duration else 0.0
+		status = status.lower() if status else "stopped"
+		if position_sec < 0 or (duration_sec > 0 and position_sec > duration_sec * 1.5):
+			position_sec = duration_sec if status == "paused" else 0.0
 
-            status = status.lower() if status else "stopped"
-            if position_sec < 0 or (duration_sec > 0 and position_sec > duration_sec * 1.5):
-                position_sec = duration_sec if status == "paused" else 0.0
+		return (None, position_sec, artist or "", title, duration_sec, status)
 
-            return (None, position_sec, artist or "", title, duration_sec, status)
-
-        except subprocess.TimeoutExpired:
-            return (None, 0.0, "", None, 0.0, "stopped")
-        except Exception:
-            return (None, 0.0, "", None, 0.0, "stopped")
-
-    return await asyncio.to_thread(_sync_playerctl)
+	except Exception:
+		return (None, 0.0, "", None, 0.0, "stopped")
 
 
 async def get_player_info():
-    """Async detect active player (CMUS, MPD, or playerctl)"""
-    if CONFIG_MANAGER.ENABLE_CMUS:
-        try:
-            cmus_info = await get_cmus_info()
-            if cmus_info[0] is not None:
-                return 'cmus', cmus_info
-        except Exception as e:
-            LOGGER.log_debug(f"CMUS detection failed: {str(e)}")
+	"""Async detect active player (CMUS, MPD, or playerctl)"""
+	if CONFIG_MANAGER.ENABLE_CMUS:
+		try:
+			cmus_info = await get_cmus_info()
+			if cmus_info[0] is not None:
+				return 'cmus', cmus_info
+		except Exception as e:
+			LOGGER.log_debug(f"CMUS detection failed: {str(e)}")
 
-    if CONFIG_MANAGER.ENABLE_MPD:
-        try:
-            mpd_info = await get_mpd_info()
-            if mpd_info[0] is not None:
-                return 'mpd', mpd_info
-        except Exception as e:
-            LOGGER.log_debug(f"MPD detection failed: {str(e)}")
+	if CONFIG_MANAGER.ENABLE_MPD:
+		try:
+			mpd_info = await get_mpd_info()
+			if mpd_info[0] is not None:
+				return 'mpd', mpd_info
+		except Exception as e:
+			LOGGER.log_debug(f"MPD detection failed: {str(e)}")
 
-    if CONFIG_MANAGER.ENABLE_PLAYERCTL:
-        try:
-            playerctl_info = await get_playerctl_info()
-            if playerctl_info[3] is not None:
-                return "playerctl", playerctl_info
-        except Exception as e:
-            LOGGER.log_debug(f"MPRIS detection failed: {str(e)}")
+	if CONFIG_MANAGER.ENABLE_PLAYERCTL:
+		try:
+			playerctl_info = await get_playerctl_info()
+			if playerctl_info[3] is not None:
+				return "playerctl", playerctl_info
+		except Exception as e:
+			LOGGER.log_debug(f"MPRIS detection failed: {str(e)}")
 
-    update_fetch_status("no_player")
-    LOGGER.log_debug("No active music player detected")
-    return None, (None, 0, "", None, 0, "stopped")
-
+	update_fetch_status("no_player")
+	LOGGER.log_debug("No active music player detected")
+	return None, (None, 0, "", None, 0, "stopped")
 
 # ==============
 #  UI RENDERING
