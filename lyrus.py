@@ -937,193 +937,198 @@ def load_lyrics(file_path):
 # ==============
 #  PLAYER DETECTION
 # ==============
-def get_cmus_info():
-	"""Get current playback info from cmus"""
-	try:
-		output = subprocess.run(['cmus-remote', '-Q'],
-							   capture_output=True,
-							   text=True,
-							   check=True).stdout.splitlines()
-		LOGGER.log_debug("Cmus-remote polling...")
-	except subprocess.CalledProcessError:
-		return (None, 0, None, None, 0, "stopped")
+async def get_cmus_info():
+    """Async get current playback info from cmus"""
+    def _sync_cmus():
+        try:
+            output = subprocess.run(
+                ['cmus-remote', '-Q'],
+                capture_output=True,
+                text=True,
+                check=True
+            ).stdout.splitlines()
+            LOGGER.log_debug("Cmus-remote polling...")
+        except subprocess.CalledProcessError:
+            return (None, 0, "", None, 0, "stopped")
 
-	# Parse cmus output
-	data = {
-		"file": None,
-		"position": 0,
-		"artist": None,
-		"title": None,
-		"duration": 0,
-		"status": "stopped",
-		"tags": {}
-	}
+        data = {
+            "file": None,
+            "position": 0,
+            "artist": [],
+            "title": None,
+            "duration": 0,
+            "status": "stopped",
+            "tags": {}
+        }
 
-	for line in output:
-		if line.startswith("file "):
-			data["file"] = line[5:].strip()
-		elif line.startswith("status "):
-			data["status"] = line[7:].strip()
-		elif line.startswith("position "):
-			data["position"] = int(line[9:].strip())
-		elif line.startswith("duration "):
-			data["duration"] = int(line[9:].strip())
-		elif line.startswith("tag "):
-			parts = line.split(" ", 2)
-			if len(parts) == 3:
-				tag_name, tag_value = parts[1], parts[2].strip()
-				data["tags"][tag_name] = tag_value
+        for line in output:
+            if line.startswith("file "):
+                data["file"] = line[5:].strip()
+            elif line.startswith("status "):
+                data["status"] = line[7:].strip()
+            elif line.startswith("position "):
+                try:
+                    data["position"] = int(line[9:].strip())
+                except ValueError:
+                    data["position"] = 0
+            elif line.startswith("duration "):
+                try:
+                    data["duration"] = int(line[9:].strip())
+                except ValueError:
+                    data["duration"] = 0
+            elif line.startswith("tag "):
+                parts = line.split(" ", 2)
+                if len(parts) == 3:
+                    tag_name, tag_value = parts[1], parts[2].strip()
+                    data["tags"][tag_name] = tag_value
 
-	# Prefer albumartist over artist
-	if "albumartist" in data["tags"]:
-		data["artist"] = data["tags"]["albumartist"]
-	else:
-		data["artist"] = data["tags"].get("artist")
+        def split_artists(tag_value):
+            if not tag_value:
+                return []
+            return [a.strip() for a in tag_value.replace("/", ";").split(";") if a.strip()]
 
-	data["title"] = data["tags"].get("title")
+        artists_list = []
+        if "albumartist" in data["tags"]:
+            artists_list = split_artists(data["tags"]["albumartist"])
+        elif "artist" in data["tags"]:
+            artists_list = split_artists(data["tags"]["artist"])
 
-	return (data["file"], data["position"], data["artist"],
-			data["title"], data["duration"], data["status"])
+        artist_str = ", ".join(artists_list) if artists_list else ""
+        data["title"] = data["tags"].get("title")
+
+        return (
+            data["file"],
+            data["position"],
+            artist_str,
+            data["title"],
+            data["duration"],
+            data["status"]
+        )
+
+    return await asyncio.to_thread(_sync_cmus)
 
 
-def get_mpd_info():
-	"""Get current playback info from MPD, handling password authentication."""
-	client = MPDClient()
-	client.timeout = CONFIG_MANAGER.MPD_TIMEOUT
-	
-	try:
-		client.connect(CONFIG_MANAGER.MPD_HOST, CONFIG_MANAGER.MPD_PORT)
-		LOGGER.log_debug("mpd polling...")
-		
-		# Authenticate if a password is set
-		if CONFIG_MANAGER.MPD_PASSWORD:
-			client.password(CONFIG_MANAGER.MPD_PASSWORD)
-		
-		status = client.status()
-		current_song = client.currentsong()
+async def get_mpd_info():
+    """Async get current playback info from MPD"""
+    def _sync_mpd():
+        client = MPDClient()
+        client.timeout = CONFIG_MANAGER.MPD_TIMEOUT
 
-		# Ensure artist is always a string (handle lists)
-		artist = current_song.get("artist", None)
-		if isinstance(artist, list):
-			artist = ", ".join(artist)  # Convert list to comma-separated string
-		
-		data = {
-			"file": current_song.get("file", ""),
-			"position": float(status.get("elapsed", 0)),
-			"artist": artist,
-			"title": current_song.get("title", None),
-			"duration": float(status.get("duration", status.get("time", 0))),
-			"status": status.get("state", "stopped")
-		}
+        try:
+            client.connect(CONFIG_MANAGER.MPD_HOST, CONFIG_MANAGER.MPD_PORT)
+            LOGGER.log_debug("MPD polling...")
 
-		client.close()
-		client.disconnect()
+            if CONFIG_MANAGER.MPD_PASSWORD:
+                client.password(CONFIG_MANAGER.MPD_PASSWORD)
 
-		return (data["file"], data["position"], data["artist"], 
-				data["title"], data["duration"], data["status"])
+            status = client.status()
+            current_song = client.currentsong()
 
-	except (socket.error, ConnectionRefusedError) as e:
-		#LOGGER.log_debug(f"MPD connection error: {str(e)}")
-		pass
-	except Exception as e:
-		LOGGER.log_debug(f"Unexpected MPD error: {str(e)}")
+            artist = current_song.get("artist", "")
+            if isinstance(artist, list):
+                artist = ", ".join(artist)
 
-	update_fetch_status("mpd")
-	return (None, 0.0, None, None, 0.0, "stopped")
+            data = {
+                "file": current_song.get("file", ""),
+                "position": float(status.get("elapsed", 0)),
+                "artist": artist,
+                "title": current_song.get("title", None),
+                "duration": float(status.get("duration", status.get("time", 0))),
+                "status": status.get("state", "stopped")
+            }
 
-def get_playerctl_info():
-	"""Get current playback info from any player via playerctl."""
-	try:
-		# Run playerctl with exact format
-		result = subprocess.run(
-			[
-				"playerctl", "metadata",
-				"--format",
-				'"{{playerName}}","{{artist}}","{{title}}","{{position}}","{{status}}","{{mpris:length}}"'
-			],
-			capture_output=True, text=True, timeout=1
-		)
+            client.close()
+            client.disconnect()
 
-		output = result.stdout.strip()
-		
-		LOGGER.log_debug("playerctl polling...")
-		
-		# Handle no players found
-		if "No players found" in output or not output:
-			return (None, 0.0, None, None, 0.0, "stopped")
+            return (data["file"], data["position"], data["artist"],
+                    data["title"], data["duration"], data["status"])
 
-		# Remove surrounding quotes and split by "," safely
-		if output.startswith('"') and output.endswith('"'):
-			output = output[1:-1]
+        except (socket.error, ConnectionRefusedError):
+            pass
+        except Exception as e:
+            LOGGER.log_debug(f"Unexpected MPD error: {str(e)}")
 
-		fields = output.split('","')
-		if len(fields) != 6:
-			# Unexpected output, fallback
-			return (None, 0.0, None, None, 0.0, "stopped")
+        update_fetch_status("mpd")
+        return (None, 0.0, "", None, 0.0, "stopped")
 
-		player_name, artist, title, position, status, duration = fields
+    return await asyncio.to_thread(_sync_mpd)
 
-		# Convert microseconds → seconds with decimals preserved
-		try:
-			position_sec = float(position) / 1_000_000 if position else 0.0
-		except ValueError:
-			position_sec = 0.0
 
-		try:
-			duration_sec = float(position) / 1_000_000 if duration else 0.0
-		except ValueError:
-			duration_sec = 0.0
+async def get_playerctl_info():
+    """Async get current playback info from any player via playerctl"""
+    def _sync_playerctl():
+        try:
+            result = subprocess.run(
+                [
+                    "playerctl", "metadata",
+                    "--format",
+                    '"{{playerName}}","{{artist}}","{{title}}","{{position}}","{{status}}","{{mpris:length}}"'
+                ],
+                capture_output=True, text=True, timeout=1
+            )
 
-		# Normalize status
-		status = status.lower() if status else "stopped"
+            output = result.stdout.strip()
+            LOGGER.log_debug("playerctl polling...")
 
-		# Sanity check: clamp weird jumps
-		if position_sec < 0 or (duration_sec > 0 and position_sec > duration_sec * 1.5):
-			position_sec = duration_sec if status == "paused" else 0.0
+            if "No players found" in output or not output:
+                return (None, 0.0, "", None, 0.0, "stopped")
 
-		# playerctl cannot provide file path
-		audio_file = None
+            if output.startswith('"') and output.endswith('"'):
+                output = output[1:-1]
 
-		return (audio_file, position_sec, artist, title, duration_sec, status)
+            fields = output.split('","')
+            if len(fields) != 6:
+                return (None, 0.0, "", None, 0.0, "stopped")
 
-	except subprocess.TimeoutExpired:
-		return (None, 0.0, None, None, 0.0, "stopped")
-	except Exception:
-		return (None, 0.0, None, None, 0.0, "stopped")
+            _, artist, title, position, status, duration = fields
 
-def get_player_info():
-	"""Detect active player (CMUS or MPD)"""
-	# Try CMUS first if prioritized
-	if CONFIG_MANAGER.ENABLE_CMUS:
-		try:
-			cmus_info = get_cmus_info()
-			if cmus_info[0] is not None:
-				return 'cmus', cmus_info
-		except Exception as e:
-			LOGGER.log_debug(f"CMUS detection failed: {str(e)}")
-	
-	# Try MPD
-	if CONFIG_MANAGER.ENABLE_MPD:	
-		try:
-			mpd_info = get_mpd_info()
-			if mpd_info[0] is not None:
-				return 'mpd', mpd_info
-		except Exception as e:
-			LOGGER.log_debug(f"MPD detection failed: {str(e)}")
-	
-	if CONFIG_MANAGER.ENABLE_PLAYERCTL:
-		try:
-			# Fallback to playerctl
-			playerctl_info = get_playerctl_info()
-			if playerctl_info[3] is not None:
-				return "playerctl", playerctl_info
-		except Exception as e:
-			LOGGER.log_debug(f"Mpris detection failed: {str(e)}")
+            position_sec = float(position) / 1_000_000 if position else 0.0
+            duration_sec = float(duration) / 1_000_000 if duration else 0.0
 
-	update_fetch_status("no_player")
-	LOGGER.log_debug("No active music player detected")
-	
-	return None, (None, 0, None, None, 0, "stopped")
+            status = status.lower() if status else "stopped"
+            if position_sec < 0 or (duration_sec > 0 and position_sec > duration_sec * 1.5):
+                position_sec = duration_sec if status == "paused" else 0.0
+
+            return (None, position_sec, artist or "", title, duration_sec, status)
+
+        except subprocess.TimeoutExpired:
+            return (None, 0.0, "", None, 0.0, "stopped")
+        except Exception:
+            return (None, 0.0, "", None, 0.0, "stopped")
+
+    return await asyncio.to_thread(_sync_playerctl)
+
+
+async def get_player_info():
+    """Async detect active player (CMUS, MPD, or playerctl)"""
+    if CONFIG_MANAGER.ENABLE_CMUS:
+        try:
+            cmus_info = await get_cmus_info()
+            if cmus_info[0] is not None:
+                return 'cmus', cmus_info
+        except Exception as e:
+            LOGGER.log_debug(f"CMUS detection failed: {str(e)}")
+
+    if CONFIG_MANAGER.ENABLE_MPD:
+        try:
+            mpd_info = await get_mpd_info()
+            if mpd_info[0] is not None:
+                return 'mpd', mpd_info
+        except Exception as e:
+            LOGGER.log_debug(f"MPD detection failed: {str(e)}")
+
+    if CONFIG_MANAGER.ENABLE_PLAYERCTL:
+        try:
+            playerctl_info = await get_playerctl_info()
+            if playerctl_info[3] is not None:
+                return "playerctl", playerctl_info
+        except Exception as e:
+            LOGGER.log_debug(f"MPRIS detection failed: {str(e)}")
+
+    update_fetch_status("no_player")
+    LOGGER.log_debug("No active music player detected")
+    return None, (None, 0, "", None, 0, "stopped")
+
 
 # ==============
 #  UI RENDERING
@@ -1890,7 +1895,8 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			if (current_time - state['last_player_update'] >= interval):
 				try:
 					prev_status = state['player_info'][1][5]
-					p_type, p_data = get_player_info()
+					p_type, p_data = await get_player_info()
+					# p_type, p_data = get_player_info()
 					state['player_info'] = (p_type, p_data)
 
 					_, raw_val, _, _, _, status_val = p_data
