@@ -937,7 +937,6 @@ def load_lyrics(file_path):
 # ==============
 #  PLAYER DETECTION
 # ==============
-_mpd_executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
 
 async def get_cmus_info():
 	"""Async get current playback info from cmus"""
@@ -1011,52 +1010,40 @@ async def get_cmus_info():
 	except Exception:
 		return (None, 0, "", None, 0, "stopped")
 
-
-def _sync_mpd():
-	client = MPDClient()
-	client.timeout = CONFIG_MANAGER.MPD_TIMEOUT
-
-	try:
-		client.connect(CONFIG_MANAGER.MPD_HOST, CONFIG_MANAGER.MPD_PORT)
-		LOGGER.log_debug("MPD polling...")
-
-		if CONFIG_MANAGER.MPD_PASSWORD:
-			client.password(CONFIG_MANAGER.MPD_PASSWORD)
-
-		status = client.status()
-		current_song = client.currentsong()
-
-		artist = current_song.get("artist", "")
-		if isinstance(artist, list):
-			artist = ", ".join(artist)
-
-		data = {
-			"file": current_song.get("file", ""),
-			"position": float(status.get("elapsed", 0)),
-			"artist": artist,
-			"title": current_song.get("title", None),
-			"duration": float(status.get("duration", status.get("time", 0))),
-			"status": status.get("state", "stopped")
-		}
-
-		client.close()
-		client.disconnect()
-
-		return (data["file"], data["position"], data["artist"],
-				data["title"], data["duration"], data["status"])
-
-	except (socket.error, ConnectionRefusedError):
-		pass
-	except Exception as e:
-		LOGGER.log_debug(f"Unexpected MPD error: {str(e)}")
-
-	update_fetch_status("mpd")
-	return (None, 0.0, "", None, 0.0, "stopped")
-
-
 async def get_mpd_info():
-	loop = asyncio.get_running_loop()
-	return await loop.run_in_executor(_mpd_executor, _sync_mpd)
+	"""Async get current playback info from MPD"""
+	def _sync_mpd():
+		client = MPDClient()
+		client.timeout = CONFIG_MANAGER.MPD_TIMEOUT
+		try:
+			client.connect(CONFIG_MANAGER.MPD_HOST, CONFIG_MANAGER.MPD_PORT)
+			LOGGER.log_debug("MPD polling...")
+			if CONFIG_MANAGER.MPD_PASSWORD:
+				client.password(CONFIG_MANAGER.MPD_PASSWORD)
+			status = client.status()
+			current_song = client.currentsong()
+			artist = current_song.get("artist", "")
+			if isinstance(artist, list):
+				artist = ", ".join(artist)
+			data = {
+				"file": current_song.get("file", ""),
+				"position": float(status.get("elapsed", 0)),
+				"artist": artist,
+				"title": current_song.get("title", None),
+				"duration": float(status.get("duration", status.get("time", 0))),
+				"status": status.get("state", "stopped")
+			}
+			client.close()
+			client.disconnect()
+			return (data["file"], data["position"], data["artist"],
+					data["title"], data["duration"], data["status"])
+		except (socket.error, ConnectionRefusedError):
+			pass
+		except Exception as e:
+			LOGGER.log_debug(f"Unexpected MPD error: {str(e)}")
+		update_fetch_status("mpd")
+		return (None, 0.0, "", None, 0.0, "stopped")
+	return await asyncio.to_thread(_sync_mpd)
 
 async def get_playerctl_info():
 	"""Async get current playback info from any player via playerctl"""
@@ -1933,7 +1920,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			now = time.perf_counter()
 			
 			# Handle track changes
-			if (title, artist, audio_file) != (state['current_title'], state['current_artist'], state['current_file']):
+			if (status != "stopped" and player_type == "playerctl") and (title, artist, audio_file) != (state['current_title'], state['current_artist'], state['current_file']):
 				if audio_file and audio_file != "None":
 					try:
 						LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
