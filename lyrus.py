@@ -1944,7 +1944,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				state.update({
 					'current_title': title or "",
 					'current_artist': artist or "",
-					'current_file': audio_file or "",
+					'current_file': audio_file,
 					'lyrics': [],
 					'errors': [],
 					'last_raw_pos': raw_position,
