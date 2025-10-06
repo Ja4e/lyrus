@@ -1920,7 +1920,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			now = time.perf_counter()
 			
 			# Handle track changes
-			if (status != "stopped" and player_type == "playerctl") and (title, artist, audio_file) != (state['current_title'], state['current_artist'], state['current_file']):
+			if status != "stopped" and (title, artist, audio_file) != (state['current_title'], state['current_artist'], state['current_file']):
 				if audio_file and audio_file != "None":
 					try:
 						LOGGER.log_info(f"New track detected: {os.path.basename(audio_file)}")
