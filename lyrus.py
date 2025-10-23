@@ -712,14 +712,28 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			for file_path, ext in local_files:
 				if os.path.exists(file_path):
 					try:
+						# --- Delete empty files ---
+						if os.path.getsize(file_path) == 0:
+							LOGGER.log_debug(f"Deleting empty file: {file_path}")
+							os.remove(file_path)
+							continue
+
 						with open(file_path, 'r', encoding='utf-8') as f:
 							content = f.read()
+
+						# Delete if content only whitespace or newlines
+						if not content.strip():
+							LOGGER.log_debug(f"Deleting blank lyric file: {file_path}")
+							os.remove(file_path)
+							continue
+
 						if validate_lyrics(content, artist_name, track_name):
 							LOGGER.log_info(f"Using validated lyrics file: {file_path}")
 							return file_path
 						else:
 							LOGGER.log_info(f"Using unvalidated local {ext} file: {file_path}")
 							return file_path
+
 					except Exception as e:
 						LOGGER.log_debug(f"File read error: {file_path} - {e}")
 						continue
@@ -743,8 +757,20 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 				file_path = os.path.join(dir_path, filename)
 				if os.path.exists(file_path):
 					try:
+						# --- Delete empty/blank files ---
+						if os.path.getsize(file_path) == 0:
+							LOGGER.log_debug(f"Deleting empty file: {file_path}")
+							os.remove(file_path)
+							continue
+
 						with open(file_path, 'r', encoding='utf-8') as f:
 							content = f.read()
+
+						if not content.strip():
+							LOGGER.log_debug(f"Deleting blank lyric file: {file_path}")
+							os.remove(file_path)
+							continue
+
 						if validate_lyrics(content, artist_name, track_name):
 							LOGGER.log_debug(f"Using validated file: {file_path}")
 							return file_path
@@ -784,12 +810,10 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			if not fetched_lyrics:
 				continue
 
-			# Validation warning
 			if not validate_lyrics(fetched_lyrics, artist_name, track_name):
 				LOGGER.log_debug("Validation warning - possible mismatch")
 				fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
 
-			# Detect format
 			is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
 			has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+\]', fetched_lyrics) is not None
 
@@ -802,7 +826,6 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 
 			candidates.append((extension, fetched_lyrics))
 
-			# Log stats
 			line_count = len(fetched_lyrics.split('\n'))
 			LOGGER.log_debug(f"Lyrics stats - Lines: {line_count}, "
 							 f"Chars: {len(fetched_lyrics)}, "
@@ -815,9 +838,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 				log_timeout(artist_name, track_name)
 			return None
 
-		# --- Choose best candidate by priority ---
 		priority_order = CONFIG_MANAGER.PROVIDER_FORMAT_PRIORITY
-		
 		candidates.sort(key=lambda x: priority_order.index(x[0]))
 		best_extension, best_lyrics = candidates[0]
 
