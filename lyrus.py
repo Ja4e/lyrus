@@ -21,8 +21,6 @@ import concurrent.futures
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
 import re
-import os
-import sys
 import bisect
 import time
 import textwrap
@@ -33,7 +31,6 @@ try:
 except ImportError:
 	pass
 import socket
-import json
 import appdirs
 import pathlib
 import unicodedata
