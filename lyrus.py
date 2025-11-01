@@ -2358,7 +2358,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 						f"Time_delta: {time_delta}"
 					)
 
-					sync_compensation = sync_compensation * 0.9
+					# sync_compensation = sync_compensation * 0.9
 					
 					# Synchronize actual offset used
 					state['manual_offset'] = start_screen_line
