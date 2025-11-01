@@ -42,12 +42,6 @@ import atexit
 # ==============
 #  GLOBALS
 # ==============
-sync_results = {
-	'bisect_index': 0,
-	'proximity_index': 0,
-	'lock': threading.Lock()
-}
-
 LOG_LEVELS = {
 	"FATAL": 5,
 	"ERROR": 4,
