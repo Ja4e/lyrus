@@ -1001,13 +1001,20 @@ async def get_cmus_info():
 				return []
 			return [a.strip() for a in tag_value.replace("/", ";").split(";") if a.strip()]
 
-		artists_list = []
-		if "albumartist" in data["tags"]:
-			artists_list = split_artists(data["tags"]["albumartist"])
-		elif "artist" in data["tags"]:
-			artists_list = split_artists(data["tags"]["artist"])
+		aa = data["tags"].get("albumartist")
+		ar = data["tags"].get("artist")
+
+		if aa == "Various Artists" and ar:
+			artists_list = split_artists(ar)
+		elif aa:
+			artists_list = split_artists(aa)
+		elif ar:
+			artists_list = split_artists(ar)
+		else:
+			artists_list = []
 
 		artist_str = ", ".join(artists_list) if artists_list else ""
+
 		data["title"] = data["tags"].get("title")
 
 		return (
@@ -1021,6 +1028,7 @@ async def get_cmus_info():
 
 	except Exception:
 		return (None, 0, "", None, 0, "stopped")
+
 
 async def get_mpd_info():
 	"""Async get current playback info from MPD"""
@@ -1896,7 +1904,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 					_, raw_val, _, _, _, status_val = p_data
 					new_raw = float(raw_val or 0.0)
 					drift = abs(new_raw - estimated_position)
-					if drift > JUMP_THRESHOLD and status_val == "playing" and p_type != "playerctl":
+					if drift > JUMP_THRESHOLD and status_val == "playing":
 						state['resume_trigger_time'] = time.perf_counter()
 						LOGGER.log_debug(f"Jump detected: {drift:.3f}s")
 						needs_redraw = True
