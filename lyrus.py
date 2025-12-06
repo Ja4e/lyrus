@@ -1862,6 +1862,10 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	instrumental_keywords = ['instrumental', 'karaoke']
 	player_types = ['cmus', 'playerctl']
 	
+	# Suppress output during initialization
+	sys.stdout = open(os.devnull, 'w')
+	sys.stderr = open(os.devnull, 'w')
+	
 	# Main application loop optimized for performance
 	while True:
 		try:
