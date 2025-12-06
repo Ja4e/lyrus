@@ -376,14 +376,14 @@ class Logger:
 			# Always write to debug log if enabled and level <= DEBUG
 			if CONFIG["global"]["enable_debug"] and message_level <= LOG_LEVELS["DEBUG"]:
 				debug_entry = f"{timestamp} | {level.upper()} | {message}\n"
-				with open(debug_log, "a", encoding="utf-8") as f:
+				with open(debug_log, "a", encoding='utf-8') as f:
 					f.write(debug_entry)
 				self.clean_debug_log()
 
 			# Write to main log if message level >= configured level
 			if message_level >= configured_level:
 				main_entry = f"{timestamp} | {level.upper()} | {message}\n"
-				with open(main_log, "a", encoding="utf-8") as f:
+				with open(main_log, "a", encoding='utf-8') as f:
 					f.write(main_entry)
 				
 				# Rotate main log if needed
@@ -1197,6 +1197,56 @@ def get_lyrics_hash(lyrics):
 	# Create a hashable representation
 	return hash(tuple((t, str(item)) for t, item in lyrics))
 
+def wrap_by_display_width(text, width, subsequent_indent=''):
+	"""
+	Wrap text by display cell width, not character count.
+	Uses wcswidth to handle multi-byte characters properly.
+	"""
+	# Cache wcswidth function locally for performance
+	get_width = wcswidth
+	
+	if not text:
+		return []
+	
+	lines = []
+	current_line = []
+	current_width = 0
+	
+	words = re.split(r'(\s+)', text)
+	
+	for word in words:
+		if not word:
+			continue
+			
+		word_width = get_width(word)
+		
+		# If it's a whitespace-only word, we might want to collapse it
+		if word.isspace() and not current_line:
+			continue  # Skip leading whitespace
+		
+		# If word fits on current line or line is empty
+		if current_width + word_width <= width or not current_line:
+			current_line.append(word)
+			current_width += word_width
+		else:
+			# Start new line
+			lines.append(''.join(current_line))
+			# For continuation lines, add the indent
+			if lines:  # If this is not the first line
+				current_line = [subsequent_indent + word.lstrip()]
+				current_width = get_width(subsequent_indent) + get_width(word.lstrip())
+			else:
+				current_line = [word]
+				current_width = word_width
+	
+	if current_line:
+		lines.append(''.join(current_line))
+	
+	# Clean up: remove any trailing whitespace from each line
+	lines = [line.rstrip() for line in lines]
+	
+	return lines
+
 def display_lyrics(
 	stdscr,
 	lyrics,
@@ -1270,6 +1320,12 @@ def display_lyrics(
 		except Exception:
 			pass
 	
+	# Cache frequently used functions locally
+	wrap_func = wrap_by_display_width
+	get_width = wcswidth
+	max_func = max
+	min_func = min
+	
 	# --- 1) Render errors ---
 	error_win.erase()
 	if errors:
@@ -1301,12 +1357,12 @@ def display_lyrics(
 			a2_lines = _display_cache['a2_groups']
 		
 		visible = LYRICS_AREA_HEIGHT
-		max_start = max(0, len(a2_lines) - visible)
-		start_line = (min(max(manual_offset, 0), max_start)
+		max_start = max_func(0, len(a2_lines) - visible)
+		start_line = (min_func(max_func(manual_offset, 0), max_start)
 					 if use_manual_offset else max_start)
 		y = 0
 		
-		for idx in range(start_line, min(start_line + visible, len(a2_lines))):
+		for idx in range(start_line, min_func(start_line + visible, len(a2_lines))):
 			if y >= visible:
 				break
 			line = a2_lines[idx]
@@ -1318,7 +1374,7 @@ def display_lyrics(
 				word_widths = []
 				for _, (text, _) in line:
 					if text not in _display_cache['widths_cache']:
-						_display_cache['widths_cache'][text] = wcswidth(text)
+						_display_cache['widths_cache'][text] = get_width(text)
 					word_widths.append(_display_cache['widths_cache'][text])
 				_display_cache['a2_word_cache'][line_key] = (line_str, word_widths)
 			
@@ -1327,9 +1383,9 @@ def display_lyrics(
 			# Compute x for alignment
 			total_width = sum(word_widths) + (len(word_widths) - 1)  # Account for spaces
 			if alignment == 'right':
-				x = max(0, width - total_width - 1)
+				x = max_func(0, width - total_width - 1)
 			elif alignment == 'center':
-				x = max(0, (width - total_width) // 2)
+				x = max_func(0, (width - total_width) // 2)
 			else:
 				x = 1
 			
@@ -1350,27 +1406,28 @@ def display_lyrics(
 		start_screen_line = start_line
 	
 	else:
-		# LRC/TXT format with caching
-		wrap_w = max(10, width - 2)
+		# LRC/TXT format with caching - FIXED VERSION
+		wrap_w = max_func(10, width - 2)
 		
 		if cache_invalid or not _display_cache['wrapped_lines']:
 			wrapped = []
 			widths = []
 			for orig_i, (_, ly) in enumerate(lyrics):
-				if ly.strip():
-					lines = textwrap.wrap(ly, wrap_w, drop_whitespace=False)
-					# Cache first line
-					wrapped.append((orig_i, lines[0]))
-					if lines[0] not in _display_cache['widths_cache']:
-						_display_cache['widths_cache'][lines[0]] = wcswidth(lines[0])
-					widths.append(_display_cache['widths_cache'][lines[0]])
-					# Cache continuation lines
-					for cont in lines[1:]:
-						cont_line = ' ' + cont
-						wrapped.append((orig_i, cont_line))
-						if cont_line not in _display_cache['widths_cache']:
-							_display_cache['widths_cache'][cont_line] = wcswidth(cont_line)
-						widths.append(_display_cache['widths_cache'][cont_line])
+				if ly and ly.strip():
+					# Use cached wrap function for East Asian characters
+					lines = wrap_func(ly, wrap_w, subsequent_indent=' ')
+					
+					if lines:
+						# First line
+						wrapped.append((orig_i, lines[0]))
+						if lines[0] not in _display_cache['widths_cache']:
+							_display_cache['widths_cache'][lines[0]] = get_width(lines[0])
+						widths.append(_display_cache['widths_cache'][lines[0]])
+						for cont in lines[1:]:
+							wrapped.append((orig_i, cont))
+							if cont not in _display_cache['widths_cache']:
+								_display_cache['widths_cache'][cont] = get_width(cont)
+							widths.append(_display_cache['widths_cache'][cont])
 				else:
 					wrapped.append((orig_i, ''))
 					widths.append(0)
@@ -1382,10 +1439,10 @@ def display_lyrics(
 		
 		total = len(wrapped)
 		avail = LYRICS_AREA_HEIGHT
-		max_start = max(0, total - avail)
+		max_start = max_func(0, total - avail)
 		
 		if use_manual_offset:
-			start_screen_line = min(max(manual_offset, 0), max_start)
+			start_screen_line = min_func(max_func(manual_offset, 0), max_start)
 		else:
 			if current_idx >= len(lyrics) - 1:
 				start_screen_line = max_start
@@ -1394,9 +1451,9 @@ def display_lyrics(
 				if idxs:
 					center = (idxs[0] + idxs[-1]) // 2
 					ideal = center - avail // 2
-					start_screen_line = min(max(ideal, 0), max_start)
+					start_screen_line = min_func(max_func(ideal, 0), max_start)
 				else:
-					start_screen_line = min(max(current_idx, 0), max_start)
+					start_screen_line = min_func(max_func(current_idx, 0), max_start)
 		
 		y = 0
 		for i in range(avail):
@@ -1408,9 +1465,9 @@ def display_lyrics(
 			disp_width = widths[start_screen_line + i]
 			
 			if alignment == 'right':
-				x = max(0, width - disp_width - 1)
+				x = max_func(0, width - disp_width - 1)
 			elif alignment == 'center':
-				x = max(0, (width - disp_width) // 2)
+				x = max_func(0, (width - disp_width) // 2)
 			else:
 				x = 1
 			
@@ -1437,7 +1494,7 @@ def display_lyrics(
 	elif time_adjust:
 		adj_str = f" Offset: {time_adjust:+.1f}s "[:width - 1]
 		try:
-			adjust_win.addstr(0, max(0, width - len(adj_str) - 1),
+			adjust_win.addstr(0, max_func(0, width - len(adj_str) - 1),
 							   adj_str, curses.color_pair(2) | curses.A_BOLD)
 		except curses.error:
 			pass
@@ -1461,7 +1518,7 @@ def display_lyrics(
 			title, artist, is_inst = 'No track', '', False
 
 		ps = f"{title} - {artist}"
-		cur_line = min(current_idx + 1, len(lyrics)) if lyrics else 0
+		cur_line = min_func(current_idx + 1, len(lyrics)) if lyrics else 0
 		adj_flag = '' if is_inst else ('[Adj] ' if time_adjust else '')
 		icon = ' ⏳ ' if is_fetching else ' 🎵 '
 
@@ -1477,9 +1534,9 @@ def display_lyrics(
 			left_max = width - 1 - len(right_text) - 1
 			ps_trunc = f"{icon}{ps}"
 			if len(ps_trunc) > left_max:
-				trunc_len = max(0, left_max - 3)
+				trunc_len = max_func(0, left_max - 3)
 				ps_trunc = ps_trunc[:trunc_len] + '...' if trunc_len > 0 else ''
-			padding = ' ' * max(left_max - len(ps_trunc), 0)
+			padding = ' ' * max_func(left_max - len(ps_trunc), 0)
 			display_line = f"{ps_trunc}{padding} {right_text} "
 		else:
 			# Not enough space for full right text
@@ -1492,18 +1549,18 @@ def display_lyrics(
 				left_max = width - 1 - len(right_text) - 1
 				ps_trunc = f"{icon}{ps} "
 				if len(ps_trunc) > left_max:
-					trunc_len = max(0, left_max - 3)
+					trunc_len = max_func(0, left_max - 3)
 					ps_trunc = ps_trunc[:trunc_len] + '...' if trunc_len > 0 else ''
-				padding = ' ' * max(left_max - len(ps_trunc), 0)
+				padding = ' ' * max_func(left_max - len(ps_trunc), 0)
 				display_line = f"{ps_trunc}{padding} {right_text} "
 
 		try:
-			safe_width = max(0, width - 1)
+			safe_width = max_func(0, width - 1)
 			status_win.addstr(0, 0, display_line[:safe_width], curses.color_pair(5) | curses.A_BOLD)
 		except curses.error:
 			pass
 	else:
-		info = f"Line {min(current_idx + 1, len(lyrics))}/{len(lyrics)}"
+		info = f"Line {min_func(current_idx + 1, len(lyrics))}/{len(lyrics)}"
 		if time_adjust:
 			info += '[Adj]'
 		try:
@@ -1518,7 +1575,7 @@ def display_lyrics(
 	if status_msg:
 		msg = f"  [{status_msg}]  "[:width - 1]
 		try:
-			status_win.addstr(0, max(0, (width - len(msg)) // 2),
+			status_win.addstr(0, max_func(0, (width - len(msg)) // 2),
 							   msg, curses.color_pair(2) | curses.A_BOLD)
 		except curses.error:
 			pass
@@ -1876,6 +1933,18 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	align_cycle_forward_keys = set(key_bindings["align_cycle_forward"])
 	align_cycle_backward_keys = set(key_bindings["align_cycle_backward"])
 
+	# Cache frequently used functions and methods
+	bisect_left = bisect.bisect_left
+	bisect_right = bisect.bisect_right
+	max_func = max
+	min_func = min
+	abs_func = abs
+	int_func = int
+	str_func = str
+	float_func = float
+	wrap_func = wrap_by_display_width
+	get_width_func = wcswidth
+
 	# Alignments
 	alignments_list = ("left", "center", "right")
 	alignment_index = {"left": 0, "center": 1, "right": 2}
@@ -1952,7 +2021,6 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	prev_window_width = window_width
 	prev_continuous_position = None
 	sync_compensation = 0.0
-	textwrap_wrap = textwrap.wrap
 	bisect_right = bisect.bisect_right
 
 	# Suppress output during initialization
@@ -1999,11 +2067,11 @@ async def main_async(stdscr, CONFIG, LOGGER):
 					
 					# Maintain manual_offset proportionally (avoid division by zero)
 					if lyrics and old_h > 0 and new_h > 0:
-						manual_offset = int(manual_offset * (new_h / old_h))
+						manual_offset = int_func(manual_offset * (new_h / old_h))
 					
 					window_size = new_size
 					window_height, window_width = new_size
-					max_wrapped_offset = max(0, max_wrapped_offset)
+					max_wrapped_offset = max_func(0, max_wrapped_offset)
 					needs_redraw = True
 
 			# Temporary high-frequency refresh after resume or jump
@@ -2037,8 +2105,8 @@ async def main_async(stdscr, CONFIG, LOGGER):
 						player_data = new_player_data
 					# detect jump vs previous estimated_position using raw_val
 					_, raw_val, _, _, _, status_val = player_data
-					new_raw = float(raw_val or 0.0)
-					drift = abs(new_raw - estimated_position)
+					new_raw = float_func(raw_val or 0.0)
+					drift = abs_func(new_raw - estimated_position)
 					if drift > JUMP_THRESHOLD and status_val == STATUS_PLAYING:
 						resume_trigger_time = current_time
 						log_debug(f"Jump detected: {drift:.3f}s")
@@ -2063,8 +2131,8 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				if p_audio_file in ("None", ""):
 					p_audio_file = None
 				# Convert numeric fields
-				p_raw_pos = float(p_raw_pos or 0.0)
-				p_duration = float(p_duration or 0.0)
+				p_raw_pos = float_func(p_raw_pos or 0.0)
+				p_duration = float_func(p_duration or 0.0)
 				# Keep estimated position in sync with raw position when player changes
 				estimated_position = p_raw_pos
 				last_pos_time = current_time
@@ -2209,7 +2277,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 
 			# Calculate continuous_position with cached offsets
 			offset_val = base_offset + sync_compensation + next_frame_time
-			continuous_position = max(0.0, estimated_position + time_adjust + offset_val)
+			continuous_position = max_func(0.0, estimated_position + time_adjust + offset_val)
 			if continuous_position > duration_val:
 				continuous_position = duration_val
 
@@ -2235,9 +2303,9 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				line_duration = t1 - t0
 				percent_thresh = line_duration * (PROXIMITY_THRESHOLD_PERCENT / 100)
 				abs_thresh = PROXIMITY_THRESHOLD_SEC
-				raw_thresh = max(percent_thresh, abs_thresh)
-				threshold = min(max(raw_thresh, PROXIMITY_MIN_THRESHOLD_SEC), min(PROXIMITY_MAX_THRESHOLD_SEC, line_duration))
-				time_to_next = min(line_duration, max(0.0, t1 - continuous_position))
+				raw_thresh = max_func(percent_thresh, abs_thresh)
+				threshold = min_func(max_func(raw_thresh, PROXIMITY_MIN_THRESHOLD_SEC), min_func(PROXIMITY_MAX_THRESHOLD_SEC, line_duration))
+				time_to_next = min_func(line_duration, max_func(0.0, t1 - continuous_position))
 
 				if PROXIMITY_MIN_THRESHOLD_SEC <= time_to_next <= threshold:
 					proximity_trigger_time = current_time
@@ -2260,17 +2328,18 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			if is_txt:
 				# Re-wrap when we have no wrapped lines (or after lyric changes) or window_width changed
 				if not wrapped_lines or prev_window_width != window_width:
-					wrap_width = max(10, window_width - 2)
+					wrap_width = max_func(10, window_width - 2)
 					wrapped = []
 					for orig_idx, (_, lyric) in enumerate(lyrics):
 						if lyric and lyric.strip():
-							lines = textwrap_wrap(lyric, wrap_width, drop_whitespace=False)
+							# Use cached wrap function for East Asian characters
+							lines = wrap_func(lyric, wrap_width, subsequent_indent=' ')
 							wrapped.extend([(orig_idx, line) for line in lines])
 						else:
 							wrapped.append((orig_idx, ""))
 					wrapped_lines = wrapped
 					lyrics_area_height = window_height - 3
-					max_wrapped_offset = max(0, len(wrapped) - lyrics_area_height)
+					max_wrapped_offset = max_func(0, len(wrapped) - lyrics_area_height)
 					prev_window_width = window_width
 
 			# Calculate current lyric index using cached timestamps and strategy flags
@@ -2281,17 +2350,17 @@ async def main_async(stdscr, CONFIG, LOGGER):
 					n = len(ts)
 					if current_idx < 0:
 						current_idx = bisect_right(ts, continuous_position + offset_val) - 1
-						current_idx = max(-1, min(current_idx, n - 1))
+						current_idx = max_func(-1, min_func(current_idx, n - 1))
 					elif current_idx + 1 < n:
 						t_cur = ts[current_idx]
 						t_next = ts[current_idx + 1]
 						if continuous_position >= t_next - proximity_threshold:
 							current_idx += 1
-					current_idx = max(-1, min(current_idx, n - 1))
+					current_idx = max_func(-1, min_func(current_idx, n - 1))
 				elif is_txt and wrapped_lines and duration_val > 0.0:
 					num_wrapped = len(wrapped_lines)
-					target_idx = int((continuous_position / duration_val) * num_wrapped)
-					current_idx = max(0, min(target_idx, num_wrapped - 1))
+					target_idx = int_func((continuous_position / duration_val) * num_wrapped)
+					current_idx = max_func(0, min_func(target_idx, num_wrapped - 1))
 				else:
 					current_idx = -1
 				last_idx = current_idx
@@ -2306,8 +2375,8 @@ async def main_async(stdscr, CONFIG, LOGGER):
 						current_idx = -1
 				elif is_txt and wrapped_lines and duration_val > 0.0:
 					num_wrapped = len(wrapped_lines)
-					target_idx = int((continuous_position / duration_val) * num_wrapped)
-					current_idx = max(0, min(target_idx, num_wrapped - 1))
+					target_idx = int_func((continuous_position / duration_val) * num_wrapped)
+					current_idx = max_func(0, min_func(target_idx, num_wrapped - 1))
 				else:
 					current_idx = -1
 
@@ -2316,7 +2385,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				if is_txt and wrapped_lines:
 					lyrics_area_height = window_height - 3
 					ideal_offset = current_idx - (lyrics_area_height // 2)
-					target_offset = max(0, min(ideal_offset, max_wrapped_offset))
+					target_offset = max_func(0, min_func(ideal_offset, max_wrapped_offset))
 					if target_offset != manual_offset:
 						manual_offset = target_offset
 						needs_redraw = True
@@ -2326,7 +2395,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 							needs_redraw = True
 				elif not is_txt and wrapped_lines:
 					ideal_offset = current_idx - ((window_height - 3) // 2)
-					target_offset = max(0, min(ideal_offset, max_wrapped_offset))
+					target_offset = max_func(0, min_func(ideal_offset, max_wrapped_offset))
 					if target_offset != manual_offset:
 						manual_offset = target_offset
 						needs_redraw = True
@@ -2342,6 +2411,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 					try:
 						atexit.register(executor.shutdown)
 					except NameError:
+						# executor may not exist in some contexts; ignore if so
 						pass
 					sys.exit("Exiting")
 
@@ -2354,7 +2424,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				needs_redraw_input = False
 
 				if key in scroll_up_keys:
-					manual_offset = max(0, manual_offset - 1)
+					manual_offset = max_func(0, manual_offset - 1)
 					last_input = current_time
 					needs_redraw_input = True
 				elif key in scroll_down_keys:
@@ -2455,7 +2525,9 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				)
 
 				# sync compensation based on how long drawing took
-				sync_compensation = (perf() - draw_start) * 0.965
+				# sync_compensation = (perf() - draw_start) * 0.965
+				
+				sync_compensation = 0.0
 
 				time_delta = current_time - last_pos_time - sync_compensation
 
