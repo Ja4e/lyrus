@@ -96,7 +96,6 @@ class ConfigManager:
 		self.setup_lyrics()
 		self.setup_ui()
 
-
 	@staticmethod
 	def normalize_path(path: str) -> str:
 		path = os.path.expanduser(path)
@@ -1569,7 +1568,6 @@ def display_lyrics(
 			pass
 	status_win.noutrefresh()
 
-
 	# Overlay centered status message
 	status_msg = get_current_status()
 	if status_msg:
@@ -1953,7 +1951,8 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	stdscr_curs_set(0)
 	stdscr_nodelay(True)
 	stdscr_keypad(True)
-	stdscr_timeout(refresh_interval_2)
+	# Start with immediate response (no timeout for manual scroll)
+	stdscr_timeout(0)  # Changed from refresh_interval_2 to 0
 
 	# Initialize application state as local variables (FASTEST access)
 	current_title = None
@@ -2027,7 +2026,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	sys.stdout = open(os.devnull, 'w')
 	sys.stderr = open(os.devnull, 'w')
 
-	# main loop
+	# Main loop optimized for manual scroll with zero delays
 	while True:
 		try:
 			current_time = perf()
@@ -2048,7 +2047,10 @@ async def main_async(stdscr, CONFIG, LOGGER):
 
 			manual_scroll = (last_input > 0.0)  # Simplified check
 
-			# Read input first (non-blocking)
+			# Always use immediate input (timeout=0) for manual scroll responsiveness
+			stdscr_timeout(0)
+			
+			# Read input (non-blocking, immediate response)
 			key = stdscr_getch()
 			new_input = key != -1
 
@@ -2079,10 +2081,14 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			if (player_type in PLAYER_TYPES and resume_trigger_time and
 				(current_time - resume_trigger_time <= TEMPORARY_REFRESH_SEC) and
 				status_for_checks == STATUS_PLAYING and lyrics):
-				stdscr_timeout(smart_refresh_interval)
+				# Don't set timeout during manual scroll - keep at 0 for immediate response
+				if not manual_scroll:
+					stdscr_timeout(smart_refresh_interval)
 				poll = True
 			else:
-				stdscr_timeout(refresh_interval_2)
+				# Don't set timeout during manual scroll - keep at 0 for immediate response
+				if not manual_scroll:
+					stdscr_timeout(refresh_interval_2)
 				poll = False
 
 			# Determine fetch interval with proximity overlay (use cached proximity_active)
@@ -2291,7 +2297,9 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			if status != STATUS_PLAYING and proximity_active:
 				proximity_active = False
 				proximity_trigger_time = None
-				stdscr_timeout(refresh_interval_2)
+				# Only set timeout if not in manual scroll mode
+				if not manual_scroll:
+					stdscr_timeout(refresh_interval_2)
 				log_debug("Proximity reset due to pause")
 
 			# Smart proximity logic (uses cached timestamps and thresholds)
@@ -2310,12 +2318,16 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				if PROXIMITY_MIN_THRESHOLD_SEC <= time_to_next <= threshold:
 					proximity_trigger_time = current_time
 					proximity_active = True
-					stdscr_timeout(refresh_proximity_interval_ms)
+					# Only set timeout if not in manual scroll mode
+					if not manual_scroll:
+						stdscr_timeout(refresh_proximity_interval_ms)
 					last_player_update = 0.0
 					log_debug(f"Proximity TRIG: time_to_next={time_to_next:.3f}s within [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]")
 				elif (proximity_trigger_time is not None and (time_to_next < PROXIMITY_MIN_THRESHOLD_SEC or time_to_next > threshold
 					  or current_time - proximity_trigger_time > threshold)):
-					stdscr_timeout(refresh_interval_2)
+					# Only set timeout if not in manual scroll mode
+					if not manual_scroll:
+						stdscr_timeout(refresh_interval_2)
 					proximity_trigger_time = None
 					proximity_active = False
 					log_debug(f"Proximity RESET: time_to_next={time_to_next:.3f}s outside [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]")
@@ -2528,7 +2540,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				# sync_compensation = (perf() - draw_start) * 0.965
 				
 				sync_compensation = 0.0
-
+				
 				time_delta = current_time - last_pos_time - sync_compensation
 
 				log_debug(
@@ -2540,7 +2552,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				last_idx = current_idx
 				force_redraw = False
 
-			# CPU throttling: set sleep_time conservatively
+			# CPU throttling: set sleep_time conservatively - but only when NOT in manual scroll
 			if status == STATUS_PAUSED and not manual_scroll:
 				# Keep coarse timeout values for curses
 				if time_since_input > 5.0:
@@ -2553,20 +2565,28 @@ async def main_async(stdscr, CONFIG, LOGGER):
 					stdscr_timeout(250)
 					sleep_time = 0.002
 			else:
-				stdscr_timeout(refresh_interval_2)
-				sleep_time = 0.001
+				# During manual scroll, keep timeout at 0 for immediate response
+				if manual_scroll:
+					stdscr_timeout(0)
+					sleep_time = 0.0
+				else:
+					stdscr_timeout(refresh_interval_2)
+					sleep_time = 0.001
 
 			# High-frequency conditions (override)
 			if poll or proximity_active or manual_scroll:
 				sleep_time = 0.0
 
-			# Sleep for a tiny amount to yield CPU
-			await asyncio.sleep(sleep_time)
+			# Sleep for a tiny amount to yield CPU - but only when not in manual scroll
+			if sleep_time > 0:
+				await asyncio.sleep(sleep_time)
+			else:
+				# Yield control without delay during manual scroll
+				await asyncio.sleep(0)
 
 		except Exception as e:
 			log_debug(f"Main loop error: {str(e)}")
-			await asyncio.sleep(1)
-			stdscr_timeout(400)
+			await asyncio.sleep(0)
 			log_debug("System fault")
 
 def main(stdscr, config_path=None, use_default=False, player=None): #Hacks
