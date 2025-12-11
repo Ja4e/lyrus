@@ -83,8 +83,6 @@ def resolve_value(item):
 
 class ConfigManager:
 	
-	# __slots__ = ("use_user_dirs", "config_path", "use_default", "player_override") 
-	
 	def __init__(self, use_user_dirs=True, config_path=None, use_default=False, player_override=None):
 		self.use_user_dirs = use_user_dirs
 		self.user_config_dir = os.path.expanduser(config_dir)
