@@ -2050,8 +2050,8 @@ async def main_async(stdscr, CONFIG, LOGGER):
 
 		manual_scroll = (last_input > 0.0)  # Simplified check
 
-		# Always use immediate input (timeout=0) for manual scroll responsiveness
-		stdscr_timeout(0)
+
+		# stdscr_timeout(0)
 		
 		# Read input (non-blocking, immediate response)
 		key = stdscr_getch()
@@ -2084,14 +2084,10 @@ async def main_async(stdscr, CONFIG, LOGGER):
 		if (player_type in PLAYER_TYPES and resume_trigger_time and
 			(current_time - resume_trigger_time <= TEMPORARY_REFRESH_SEC) and
 			status_for_checks == STATUS_PLAYING and lyrics):
-			# Don't set timeout during manual scroll - keep at 0 for immediate response
-			if not manual_scroll:
-				stdscr_timeout(smart_refresh_interval)
+			stdscr_timeout(smart_refresh_interval)
 			poll = True
 		else:
-			# Don't set timeout during manual scroll - keep at 0 for immediate response
-			if not manual_scroll:
-				stdscr_timeout(refresh_interval_2)
+			stdscr_timeout(refresh_interval_2)
 			poll = False
 
 		# Determine fetch interval with proximity overlay (use cached proximity_active)
@@ -2320,7 +2316,6 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			if PROXIMITY_MIN_THRESHOLD_SEC <= time_to_next <= threshold:
 				proximity_trigger_time = current_time
 				proximity_active = True
-				
 				stdscr_timeout(refresh_proximity_interval_ms)
 				last_player_update = 0.0
 				log_debug(f"Proximity TRIG: time_to_next={time_to_next:.3f}s within [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]")
@@ -2511,10 +2506,8 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				f"Redraw triggered: new_input={new_input}, needs_redraw={needs_redraw}, "
 				f"force_redraw={force_redraw}, idx={last_idx} → {current_idx}, paused={status == STATUS_PAUSED}"
 			)
-
-			if current_idx != last_idx:
-				stdscr_timeout(0)
-				
+			stdscr_timeout(0)
+			
 			display_lyrics_data = wrapped_lines if is_txt else lyrics
 
 			start_screen_line = update_display(
@@ -2564,11 +2557,13 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				sleep_time = 0.002
 		else:
 			stdscr_timeout(refresh_interval_2)
-			sleep_time = 0.00
+			sleep_time = 0.0
 
 		# High-frequency conditions (override)
 		if poll or proximity_active or manual_scroll:
 			sleep_time = 0.0
+		else:
+			stdscr_timeout(refresh_interval_2)
 
 		await asyncio.sleep(sleep_time)
 
