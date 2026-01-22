@@ -2020,7 +2020,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	prev_lyrics_hash = None
 	prev_window_width = window_width
 	prev_continuous_position = None
-	sync_compensation = 0.0
+	# sync_compensation = 0.0
 	bisect_right = bisect.bisect_right
 
 	# Suppress output during initialization
@@ -2279,7 +2279,9 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			playback_paused = (status == "pause")
 
 		# Calculate continuous_position with cached offsets
-		offset_val = base_offset + sync_compensation + next_frame_time
+		# offset_val = base_offset + sync_compensation + next_frame_time
+		offset_val = base_offset + next_frame_time
+		
 		continuous_position = max_func(0.0, estimated_position + time_adjust + offset_val)
 		if continuous_position > duration_val:
 			continuous_position = duration_val
@@ -2528,14 +2530,17 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			# sync compensation based on how long drawing took
 			# sync_compensation = (perf() - draw_start) * 0.965
 			
-			sync_compensation = 0.0
+			# sync_compensation = 0.0
 			
-			time_delta = current_time - last_pos_time - sync_compensation
-
+			# time_delta = current_time - last_pos_time - sync_compensation
+			time_delta = current_time - last_pos_time
+			
+			# log_debug(
+			# 	f"Triggered at: {continuous_position}, Compensated: {sync_compensation}, Time_delta: {time_delta}"
+			# )
 			log_debug(
-				f"Triggered at: {continuous_position}, Compensated: {sync_compensation}, Time_delta: {time_delta}"
+				f"Triggered at: {continuous_position}, Time_delta: {time_delta}"
 			)
-
 			# Update state
 			manual_offset = start_screen_line
 			last_idx = current_idx
