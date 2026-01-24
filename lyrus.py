@@ -11,10 +11,6 @@ Remember fetched lyrics has inaccuracies... this code has a very robust snyc to 
 # ==============
 import curses
 import argparse
-try:
-	import redis
-except ImportError:
-	redis = None
 import aiohttp
 import threading
 import concurrent.futures
@@ -31,14 +27,11 @@ try:
 except ImportError:
 	pass
 import socket
-import appdirs
 import pathlib
 import unicodedata
 from wcwidth import wcswidth
 import os, json, sys
-import argparse
 import atexit
-# try to use import math for that
 
 # ==============
 #  GLOBALS
@@ -82,6 +75,19 @@ def resolve_value(item):
 	return item
 
 class ConfigManager:
+	__slots__ = (
+		'use_user_dirs', 'user_config_dir', 'use_default', 'config_path', 
+		'player_override', 'config', 'COLOR_NAMES', 'COLOR_TXT_ACTIVE', 
+		'COLOR_TXT_INACTIVE', 'COLOR_LRC_ACTIVE', 'COLOR_LRC_INACTIVE', 
+		'COLOR_ERROR', 'LOG_DIR', 'LYRICS_TIMEOUT_LOG', 'DEBUG_LOG', 
+		'LOG_RETENTION_DAYS', 'MAX_DEBUG_COUNT', 'ENABLE_DEBUG_LOGGING',
+		'MPD_HOST', 'MPD_PORT', 'MPD_PASSWORD', 'MPD_TIMEOUT',
+		'ENABLE_CMUS', 'ENABLE_MPD', 'ENABLE_PLAYERCTL',
+		'LYRIC_EXTENSIONS', 'LYRIC_CACHE_DIR', 'SEARCH_TIMEOUT',
+		'VALIDATION_LENGTHS', 'ALLOW_SYNCEDLYRIC', 'PROVIDERS',
+		'PROVIDER_FALLBACK', 'PROVIDER_FORMAT_PRIORITY',
+		'DISPLAY_NAME', 'MESSAGES', 'TERMINAL_STATES'
+	)
 	
 	def __init__(self, use_user_dirs=True, config_path=None, use_default=False, player_override=None):
 		self.use_user_dirs = use_user_dirs
@@ -106,7 +112,6 @@ class ConfigManager:
 		return os.path.normpath(os.path.abspath(path))
 
 	def load_config(self):
-
 		# Default configuration
 		default_config = {
 			"global": {
@@ -130,11 +135,6 @@ class ConfigManager:
 					"password": {"env": "MPD_PASSWORD", "default": None},
 					"timeout": 10
 				}
-			},
-			"redis": {
-				"enabled": False,
-				"host": {"env": "REDIS_HOST", "default": "localhost"},
-				"port": {"env": "REDIS_PORT", "default": 6379}
 			},
 			"status_messages": {
 				"start": "Starting lyric search...",
@@ -265,10 +265,6 @@ class ConfigManager:
 		self.ENABLE_DEBUG_LOGGING = self.config["global"]["enable_debug"]
 		if self.ENABLE_DEBUG_LOGGING:
 			print("Debug logging ENABLED")
-			print("==== FULL CONFIG ====")
-			import pprint
-			pprint.pprint(self.config)
-			print("=====================")
 
 	def setup_player(self):
 		self.MPD_HOST = resolve_value(self.config["player"]["mpd"]["host"])
@@ -306,24 +302,23 @@ class ConfigManager:
 		self.MESSAGES = self.config["status_messages"]
 		self.TERMINAL_STATES = set(self.config["terminal_states"])
 
-# Initialize
-CONFIG_MANAGER = ConfigManager()
-CONFIG = CONFIG_MANAGER.config
-
-
 # ================
 #  LOGGING SYSTEM
 # ================
 class Logger:
 	"""Handle application logging"""
+	__slots__ = (
+		'LOG_DIR', 'LYRICS_TIMEOUT_LOG', 'DEBUG_LOG', 
+		'LOG_RETENTION_DAYS', 'MAX_DEBUG_COUNT', 'ENABLE_DEBUG_LOGGING'
+	)
 	
 	def __init__(self, config_manager):
-		self.LOG_DIR = CONFIG_MANAGER.LOG_DIR
-		self.LYRICS_TIMEOUT_LOG = CONFIG_MANAGER.LYRICS_TIMEOUT_LOG
-		self.DEBUG_LOG = CONFIG_MANAGER.DEBUG_LOG
-		self.LOG_RETENTION_DAYS = CONFIG_MANAGER.LOG_RETENTION_DAYS
-		self.MAX_DEBUG_COUNT = CONFIG_MANAGER.MAX_DEBUG_COUNT
-		self.ENABLE_DEBUG_LOGGING = CONFIG_MANAGER.ENABLE_DEBUG_LOGGING
+		self.LOG_DIR = config_manager.LOG_DIR
+		self.LYRICS_TIMEOUT_LOG = config_manager.LYRICS_TIMEOUT_LOG
+		self.DEBUG_LOG = config_manager.DEBUG_LOG
+		self.LOG_RETENTION_DAYS = config_manager.LOG_RETENTION_DAYS
+		self.MAX_DEBUG_COUNT = config_manager.MAX_DEBUG_COUNT
+		self.ENABLE_DEBUG_LOGGING = config_manager.ENABLE_DEBUG_LOGGING
 	
 	def clean_debug_log(self):
 		"""Maintain debug log size by keeping only last 100 entries"""
@@ -333,11 +328,9 @@ class Logger:
 			return
 
 		try:
-			# Read existing log contents
 			with open(log_path, 'r', encoding='utf-8') as f:
 				lines = f.readlines()
 			
-			# Trim if over 100 lines
 			if len(lines) > self.MAX_DEBUG_COUNT:
 				with open(log_path, 'w', encoding='utf-8') as f:
 					f.writelines(lines[-self.MAX_DEBUG_COUNT:])
@@ -345,76 +338,67 @@ class Logger:
 		except Exception as e:
 			print(f"Error cleaning debug log: {e}")
 
-	def clean_log(self):
+	def clean_log(self, config):
 		"""Maintain log size by rotating files"""
-		log_path = os.path.join(self.LOG_DIR, CONFIG["global"]["log_file"])
+		log_path = os.path.join(self.LOG_DIR, config["global"]["log_file"])
 		
 		try:
 			if os.path.exists(log_path):
 				with open(log_path, "r+") as f:
 					lines = f.readlines()
-					if len(lines) > CONFIG["global"]["max_log_count"]:
-						keep = lines[-CONFIG["global"]["max_log_count"]:]
+					if len(lines) > config["global"]["max_log_count"]:
+						keep = lines[-config["global"]["max_log_count"]:]
 						f.seek(0)
 						f.truncate()
 						f.writelines(keep)
 		except Exception as e:
 			print(f"Log cleanup failed: {str(e)}", file=sys.stderr)
 
-	def log_message(self, level: str, message: str):
+	def log_message(self, level: str, message: str, config):
 		"""Unified logging function with level-based filtering and rotation"""
-		# Get config values
-		main_log = os.path.join(self.LOG_DIR, CONFIG["global"]["log_file"])
+		main_log = os.path.join(self.LOG_DIR, config["global"]["log_file"])
 		debug_log = os.path.join(self.LOG_DIR, self.DEBUG_LOG)
-		configured_level = LOG_LEVELS.get(CONFIG["global"]["log_level"], 2)
+		configured_level = LOG_LEVELS.get(config["global"]["log_level"], 2)
 		message_level = LOG_LEVELS.get(level.upper(), 2)
 		
 		try:
-			# Create log directory if needed
 			os.makedirs(self.LOG_DIR, exist_ok=True)
 			timestamp = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.{int(time.time() * 1000000) % 1000000:06d}"
 			
-			# Always write to debug log if enabled and level <= DEBUG
-			if CONFIG["global"]["enable_debug"] and message_level <= LOG_LEVELS["DEBUG"]:
+			if config["global"]["enable_debug"] and message_level <= LOG_LEVELS["DEBUG"]:
 				debug_entry = f"{timestamp} | {level.upper()} | {message}\n"
 				with open(debug_log, "a", encoding='utf-8') as f:
 					f.write(debug_entry)
 				self.clean_debug_log()
 
-			# Write to main log if message level >= configured level
 			if message_level >= configured_level:
 				main_entry = f"{timestamp} | {level.upper()} | {message}\n"
 				with open(main_log, "a", encoding='utf-8') as f:
 					f.write(main_entry)
 				
-				# Rotate main log if needed
-				if os.path.getsize(main_log) > CONFIG["global"]["max_log_count"] * 1024:
-					self.clean_log()
+				if os.path.getsize(main_log) > config["global"]["max_log_count"] * 1024:
+					self.clean_log(config)
 
 		except Exception as e:
 			sys.stderr.write(f"Logging failed: {str(e)}\n")
 
-	# Specific level helpers
-	def log_fatal(self, message: str):
-		self.log_message("FATAL", message)
+	def log_fatal(self, message: str, config):
+		self.log_message("FATAL", message, config)
 
-	def log_error(self, message: str):
-		self.log_message("ERROR", message)
+	def log_error(self, message: str, config):
+		self.log_message("ERROR", message, config)
 
-	def log_warn(self, message: str):
-		self.log_message("WARN", message)
+	def log_warn(self, message: str, config):
+		self.log_message("WARN", message, config)
 
-	def log_info(self, message: str):
-		self.log_message("INFO", message)
+	def log_info(self, message: str, config):
+		self.log_message("INFO", message, config)
 
-	def log_debug(self, message: str):
-		self.log_message("DEBUG", message)
+	def log_debug(self, message: str, config):
+		self.log_message("DEBUG", message, config)
 
-	def log_trace(self, message: str):
-		self.log_message("TRACE", message)
-
-# Initialize logger
-LOGGER = Logger(CONFIG_MANAGER)
+	def log_trace(self, message: str, config):
+		self.log_message("TRACE", message, config)
 
 # Status system
 fetch_status_lock = threading.Lock()
@@ -425,27 +409,25 @@ fetch_status = {
 	"done_time": None
 }
 
-def update_fetch_status(step, lyrics_found=0):
+def update_fetch_status(step, lyrics_found=0, config_manager=None):
 	with fetch_status_lock:
 		fetch_status.update({
 			'current_step': step,
 			'lyric_count': lyrics_found,
 			'start_time': time.time() if step == 'start' else fetch_status['start_time'],
-			'done_time': time.time() if step in CONFIG_MANAGER.TERMINAL_STATES else None
+			'done_time': time.time() if step in config_manager.TERMINAL_STATES else None
 		})
 
-def get_current_status():
+def get_current_status(config_manager):
 	"""Return a formatted status message"""
 	with fetch_status_lock:
 		step = fetch_status['current_step']
 		if not step:
 			return None
 		
-		# Cache terminal states check
-		terminal_states = CONFIG_MANAGER.TERMINAL_STATES
-		messages = CONFIG_MANAGER.MESSAGES
+		terminal_states = config_manager.TERMINAL_STATES
+		messages = config_manager.MESSAGES
 		
-		# Hide status after 2 seconds for terminal states
 		if step in terminal_states and fetch_status['done_time']:
 			if time.time() - fetch_status['done_time'] > 2:
 				return ""
@@ -453,10 +435,8 @@ def get_current_status():
 		if step == 'clear':
 			return ""
 
-		# Return pre-defined message with elapsed time if applicable
 		base_msg = messages.get(step, step)
 		if fetch_status['start_time'] and step != 'done':
-			# Use done_time if available for terminal states
 			end_time = fetch_status['done_time'] or time.time()
 			elapsed = end_time - fetch_status['start_time']
 			return f"{base_msg} {elapsed:.1f}s"
@@ -490,7 +470,6 @@ async def fetch_lrclib_async(artist, title, duration=None, session=None):
 	if duration:
 		params['duration'] = duration
 
-	# Create a new session only if one isn't passed
 	own_session = False
 	if session is None:
 		session = aiohttp.ClientSession()
@@ -506,26 +485,25 @@ async def fetch_lrclib_async(artist, title, duration=None, session=None):
 					return data.get('syncedLyrics') or data.get('plainLyrics'), bool(data.get('syncedLyrics'))
 				except (aiohttp.ContentTypeError, json.JSONDecodeError):
 					content = await response.text()
-					LOGGER.log_debug(f"LRCLIB async error: Invalid JSON. Raw response: {content[:200]}")
+					# LOGGER.log_debug(f"LRCLIB async error: Invalid JSON. Raw response: {content[:200]}")
 			else:
-				LOGGER.log_debug(f"LRCLIB async error: HTTP {response.status}")
+				pass  # LOGGER.log_debug(f"LRCLIB async error: HTTP {response.status}")
 	except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-		LOGGER.log_debug(f"LRCLIB async error: {e}")
+		pass  # LOGGER.log_debug(f"LRCLIB async error: {e}")
 	finally:
 		if own_session:
 			await session.close()
 
 	return None, None
 
-def log_timeout(artist, title):
+def log_timeout(artist, title, config_manager, logger):
 	"""Record failed lyric lookup with duplicate prevention and robust error handling"""
 	try:
 		timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 		log_entry = f"{timestamp} | Artist: {artist or 'Unknown'} | Title: {title or 'Unknown'}\n"
 		
-		log_path = os.path.join(CONFIG_MANAGER.LOG_DIR, CONFIG_MANAGER.LYRICS_TIMEOUT_LOG)
+		log_path = os.path.join(config_manager.LOG_DIR, config_manager.LYRICS_TIMEOUT_LOG)
 
-		# Check for existing entry
 		entry_exists = False
 		if os.path.exists(log_path):
 			search_artist = artist or 'Unknown'
@@ -539,13 +517,12 @@ def log_timeout(artist, title):
 						entry_exists = True
 						break
 
-		# Add new entry if unique
 		if not entry_exists:
 			with open(log_path, 'a', encoding='utf-8') as f:
 				f.write(log_entry)
-			LOGGER.clean_log()
+			logger.clean_log(config_manager.config)
 	except Exception as e:
-		LOGGER.log_error(f"Failed to write timeout log: {e}")
+		logger.log_error(f"Failed to write timeout log: {e}", config_manager.config)
 
 # ======================
 #  CORE LYRIC FUNCTIONS
@@ -575,87 +552,80 @@ def sanitize_string(s):
 
 async def fetch_lyrics_lrclib_async(artist_name, track_name, duration=None):
 	"""Async version of LRCLIB fetch"""
-	LOGGER.log_debug(f"Querying LRCLIB API: {artist_name} - {track_name}")
+	# LOGGER.log_debug(f"Querying LRCLIB API: {artist_name} - {track_name}")
 	try:
 		result = await fetch_lrclib_async(artist_name, track_name, duration)
 		if result[0]:
-			LOGGER.log_info(f"LRCLIB returned {'synced' if result[1] else 'plain'} lyrics")
+			pass  # LOGGER.log_info(f"LRCLIB returned {'synced' if result[1] else 'plain'} lyrics")
 		return result
 	except Exception as e:
-		LOGGER.log_error(f"LRCLIB fetch failed: {str(e)}")
+		# LOGGER.log_error(f"LRCLIB fetch failed: {str(e)}")
 		return None, None
 
-def validate_lyrics(content, artist, title):
+def validate_lyrics(content, artist, title, config_manager):
 	"""More lenient validation with robust error handling"""
-	# Use pre-compiled pattern
 	if _TIMESTAMP_PATTERN.search(content):
 		return True
 		
-	# Allow empty content for instrumental markers
 	if not content.strip():
 		return True
 		
-	# Normalize comparison parameters
 	norm_content = sanitize_string(content)
 	
-	return True  # Temporary accept all content
+	return True
 
 executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
 
-async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None, timeout=15):
+async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None, timeout=15, config_manager=None):
 	"""Async version of syncedlyrics fetch"""
-	LOGGER.log_debug(f"Starting syncedlyrics search: {artist_name} - {track_name} ({duration}s)")
+	# LOGGER.log_debug(f"Starting syncedlyrics search: {artist_name} - {track_name} ({duration}s)")
 	try:
 		import syncedlyrics
 		
-		LOGGER.log_debug(f"Loaded providers: {CONFIG_MANAGER.PROVIDERS}")
+		# LOGGER.log_debug(f"Loaded providers: {config_manager.PROVIDERS}")
 		
 		def worker(search_term, synced=True):
 			"""Worker for lyric search"""
 			try: 
-				result = syncedlyrics.search(search_term) if synced else syncedlyrics.search(search_term, plain_only=True, providers=CONFIG_MANAGER.PROVIDERS)
+				result = syncedlyrics.search(search_term) if synced else syncedlyrics.search(search_term, plain_only=True, providers=config_manager.PROVIDERS)
 				return result, synced
 			except Exception as e:
-				LOGGER.log_debug(f"Lyrics search error: {e}")
+				# LOGGER.log_debug(f"Lyrics search error: {e}")
 				return None, False
 
 		search_term = f"{track_name} {artist_name}".strip()
 		if not search_term:
-			LOGGER.log_debug("Empty search term")
+			# LOGGER.log_debug("Empty search term")
 			return None, None
 
-		# Run in thread to avoid blocking
 		loop = asyncio.get_event_loop()
 		
-		# Fetch synced lyrics first
 		lyrics, is_synced = await loop.run_in_executor(None, worker, search_term, True)
 		
 		if lyrics:
-			LOGGER.log_debug(f"Found {'synced' if is_synced else 'plain'} lyrics via syncedlyrics")
-			if not validate_lyrics(lyrics, artist_name, track_name):
-				LOGGER.log_warn("Lyrics validation failed but using anyway")
+			# LOGGER.log_debug(f"Found {'synced' if is_synced else 'plain'} lyrics via syncedlyrics")
+			if not validate_lyrics(lyrics, artist_name, track_name, config_manager):
+				pass  # LOGGER.log_warn("Lyrics validation failed but using anyway")
 			return lyrics, is_synced
 		
-		# Fallback to plain lyrics
-		LOGGER.log_trace("Initiating plain lyrics fallback search")
+		# LOGGER.log_trace("Initiating plain lyrics fallback search")
 		lyrics, is_synced = await loop.run_in_executor(None, worker, search_term, False)
 		
-		if lyrics and validate_lyrics(lyrics, artist_name, track_name):
+		if lyrics and validate_lyrics(lyrics, artist_name, track_name, config_manager):
 			return lyrics, False
 
 		return None, None
 		
 	except Exception as e:
-		LOGGER.log_debug(f"Lyrics fetch error: {e}")
+		# LOGGER.log_debug(f"Lyrics fetch error: {e}")
 		return None, None
 
-def save_lyrics(lyrics, track_name, artist_name, extension):
+def save_lyrics(lyrics, track_name, artist_name, extension, config_manager, logger):
 	"""Save lyrics to appropriate file format with robust error handling"""
 	try:
-		folder = CONFIG_MANAGER.LYRIC_CACHE_DIR
+		folder = config_manager.LYRIC_CACHE_DIR
 		os.makedirs(folder, exist_ok=True)
 		
-		# Generate safe filename
 		sanitized_track = sanitize_filename(track_name)
 		sanitized_artist = sanitize_filename(artist_name)
 		filename = f"{sanitized_track}_{sanitized_artist}.{extension}"
@@ -663,16 +633,16 @@ def save_lyrics(lyrics, track_name, artist_name, extension):
 		
 		with open(file_path, "w", encoding="utf-8") as f:
 			f.write(lyrics)
-		LOGGER.log_info(f"Saved lyrics to: {file_path}")
-		LOGGER.log_trace(f"Lyrics content sample: {lyrics[:200]}...")
+		# LOGGER.log_info(f"Saved lyrics to: {file_path}", config_manager.config)
+		# LOGGER.log_trace(f"Lyrics content sample: {lyrics[:200]}...", config_manager.config)
 		return file_path
 	except Exception as e:
-		LOGGER.log_error(f"Failed to save lyrics: {str(e)}")
+		logger.log_error(f"Failed to save lyrics: {str(e)}", config_manager.config)
 		return None
 
-def is_lyrics_timed_out(artist_name, track_name):
+def is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
 	"""Check if track is in timeout log"""
-	log_path = os.path.join(CONFIG_MANAGER.LOG_DIR, CONFIG_MANAGER.LYRICS_TIMEOUT_LOG)
+	log_path = os.path.join(config_manager.LOG_DIR, config_manager.LYRICS_TIMEOUT_LOG)
 
 	if not os.path.exists(log_path):
 		return False
@@ -689,16 +659,16 @@ def is_lyrics_timed_out(artist_name, track_name):
 					return True
 		return False
 	except Exception as e:
-		LOGGER.log_debug(f"Timeout check error: {e}")
+		logger.log_debug(f"Timeout check error: {e}", config_manager.config)
 		return False 
 
-async def find_lyrics_file_async(audio_file, directory, artist_name, track_name, duration=None):
+async def find_lyrics_file_async(audio_file, directory, artist_name, track_name, duration=None, config_manager=None, logger=None):
 	"""Async version of find_lyrics_file with non-blocking operations and concurrent online fetch"""
-	update_fetch_status('local')
-	LOGGER.log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
+	update_fetch_status('local', config_manager=config_manager)
+	# LOGGER.log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
 
 	try:
-		LOGGER.log_debug(f"{audio_file}, {directory}, {artist_name}, {track_name}, {duration}")
+		# LOGGER.log_debug(f"{audio_file}, {directory}, {artist_name}, {track_name}, {duration}")
 
 		# --- Instrumental early check ---
 		is_instrumental = (
@@ -706,9 +676,9 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			(artist_name and "instrumental" in artist_name.lower())
 		)
 		if is_instrumental:
-			LOGGER.log_debug("Instrumental track detected")
-			update_fetch_status('instrumental')
-			return save_lyrics("[Instrumental]", track_name, artist_name, 'txt')
+			# LOGGER.log_debug("Instrumental track detected")
+			update_fetch_status('instrumental', config_manager=config_manager)
+			return save_lyrics("[Instrumental]", track_name, artist_name, 'txt', config_manager, logger)
 
 		# --- Local file search (direct audio_file base name) ---
 		if audio_file and directory and audio_file != "None":
@@ -722,30 +692,28 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			for file_path, ext in local_files:
 				if os.path.exists(file_path):
 					try:
-						# --- Delete empty files ---
 						if os.path.getsize(file_path) == 0:
-							LOGGER.log_debug(f"Deleting empty file: {file_path}")
+							# LOGGER.log_debug(f"Deleting empty file: {file_path}")
 							os.remove(file_path)
 							continue
 
 						with open(file_path, 'r', encoding='utf-8') as f:
 							content = f.read()
 
-						# Delete if content only whitespace or newlines
 						if not content.strip():
-							LOGGER.log_debug(f"Deleting blank lyric file: {file_path}")
+							# LOGGER.log_debug(f"Deleting blank lyric file: {file_path}")
 							os.remove(file_path)
 							continue
 
-						if validate_lyrics(content, artist_name, track_name):
-							LOGGER.log_info(f"Using validated lyrics file: {file_path}")
+						if validate_lyrics(content, artist_name, track_name, config_manager):
+							# LOGGER.log_info(f"Using validated lyrics file: {file_path}")
 							return file_path
 						else:
-							LOGGER.log_info(f"Using unvalidated local {ext} file: {file_path}")
+							# LOGGER.log_info(f"Using unvalidated local {ext} file: {file_path}")
 							return file_path
 
 					except Exception as e:
-						LOGGER.log_debug(f"File read error: {file_path} - {e}")
+						# LOGGER.log_debug(f"File read error: {file_path} - {e}")
 						continue
 
 		# --- Build possible filename patterns ---
@@ -761,15 +729,14 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 		]
 
 		# --- Search in directory + cache dir ---
-		dirs_to_check = [d for d in [directory, CONFIG_MANAGER.LYRIC_CACHE_DIR] if d]
+		dirs_to_check = [d for d in [directory, config_manager.LYRIC_CACHE_DIR] if d]
 		for dir_path in dirs_to_check:
 			for filename in possible_filenames:
 				file_path = os.path.join(dir_path, filename)
 				if os.path.exists(file_path):
 					try:
-						# --- Delete empty/blank files ---
 						if os.path.getsize(file_path) == 0:
-							LOGGER.log_debug(f"Deleting empty file: {file_path}")
+							# LOGGER.log_debug(f"Deleting empty file: {file_path}")
 							os.remove(file_path)
 							continue
 
@@ -777,35 +744,35 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 							content = f.read()
 
 						if not content.strip():
-							LOGGER.log_debug(f"Deleting blank lyric file: {file_path}")
+							# LOGGER.log_debug(f"Deleting blank lyric file: {file_path}")
 							os.remove(file_path)
 							continue
 
-						if validate_lyrics(content, artist_name, track_name):
-							LOGGER.log_debug(f"Using validated file: {file_path}")
+						if validate_lyrics(content, artist_name, track_name, config_manager):
+							# LOGGER.log_debug(f"Using validated file: {file_path}")
 							return file_path
 						else:
-							LOGGER.log_debug(f"Using unvalidated file: {file_path}")
+							# LOGGER.log_debug(f"Using unvalidated file: {file_path}")
 							return file_path
 					except Exception as e:
-						LOGGER.log_debug(f"Error reading {file_path}: {e}")
+						# LOGGER.log_debug(f"Error reading {file_path}: {e}")
 						continue
 
 		# --- Timeout check ---
-		if is_lyrics_timed_out(artist_name, track_name):
-			update_fetch_status('time_out')
-			LOGGER.log_debug(f"Lyrics timeout active for {artist_name} - {track_name}")
+		if is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
+			update_fetch_status('time_out', config_manager=config_manager)
+			# LOGGER.log_debug(f"Lyrics timeout active for {artist_name} - {track_name}")
 			return None
 
 		# --- Concurrent online fetch ---
-		update_fetch_status('synced')
-		LOGGER.log_debug(f"Fetching lyrics concurrently for: {artist_name} - {track_name}")
+		update_fetch_status('synced', config_manager=config_manager)
+		# LOGGER.log_debug(f"Fetching lyrics concurrently for: {artist_name} - {track_name}")
 
 		tasks = [fetch_lyrics_lrclib_async(artist_name, track_name, duration)]
 
-		if CONFIG_MANAGER.ALLOW_SYNCEDLYRIC:
-			tasks.append(fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration))
-		elif not CONFIG_MANAGER.PROVIDER_FALLBACK:
+		if config_manager.ALLOW_SYNCEDLYRIC:
+			tasks.append(fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration, config_manager=config_manager))
+		elif not config_manager.PROVIDER_FALLBACK:
 			tasks = [fetch_lyrics_lrclib_async(artist_name, track_name, duration)]
 
 		results = await asyncio.gather(*tasks, return_exceptions=True)
@@ -813,15 +780,15 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 		candidates = []
 		for idx, result in enumerate(results):
 			if isinstance(result, Exception):
-				LOGGER.log_debug(f"Fetch task {idx} raised an exception: {result}")
+				# LOGGER.log_debug(f"Fetch task {idx} raised an exception: {result}")
 				continue
 
 			fetched_lyrics, is_synced = result
 			if not fetched_lyrics:
 				continue
 
-			if not validate_lyrics(fetched_lyrics, artist_name, track_name):
-				LOGGER.log_debug("Validation warning - possible mismatch")
+			if not validate_lyrics(fetched_lyrics, artist_name, track_name, config_manager):
+				# LOGGER.log_debug("Validation warning - possible mismatch")
 				fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
 
 			is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
@@ -837,32 +804,31 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			candidates.append((extension, fetched_lyrics))
 
 			line_count = len(fetched_lyrics.split('\n'))
-			LOGGER.log_debug(f"Lyrics stats - Lines: {line_count}, "
-							 f"Chars: {len(fetched_lyrics)}, "
-							 f"Synced: {is_synced}, Format: {extension}")
+			# LOGGER.log_debug(f"Lyrics stats - Lines: {line_count}, "
+			#                  f"Chars: {len(fetched_lyrics)}, "
+			#                  f"Synced: {is_synced}, Format: {extension}")
 
 		if not candidates:
-			LOGGER.log_debug("No lyrics found from any source")
-			update_fetch_status("failed")
+			# LOGGER.log_debug("No lyrics found from any source")
+			update_fetch_status("failed", config_manager=config_manager)
 			if has_internet_global():
-				log_timeout(artist_name, track_name)
+				log_timeout(artist_name, track_name, config_manager, logger)
 			return None
 
-		priority_order = CONFIG_MANAGER.PROVIDER_FORMAT_PRIORITY
+		priority_order = config_manager.PROVIDER_FORMAT_PRIORITY
 		candidates.sort(key=lambda x: priority_order.index(x[0]))
 		best_extension, best_lyrics = candidates[0]
 
-		LOGGER.log_debug(f"Selected lyrics format: {best_extension}")
-		return save_lyrics(best_lyrics, track_name, artist_name, best_extension)
+		# LOGGER.log_debug(f"Selected lyrics format: {best_extension}")
+		return save_lyrics(best_lyrics, track_name, artist_name, best_extension, config_manager, logger)
 
 	except Exception as e:
-		LOGGER.log_error(f"Error in find_lyrics_file: {str(e)}")
-		update_fetch_status("failed")
+		logger.log_error(f"Error in find_lyrics_file: {str(e)}", config_manager.config)
+		update_fetch_status("failed", config_manager=config_manager)
 		return None
 
 def parse_time_to_seconds(time_str):
 	"""Convert various timestamp formats to seconds with millisecond precision."""
-	# Use pre-compiled patterns
 	patterns = _TIME_PATTERNS
 	
 	for pattern in patterns:
@@ -876,11 +842,11 @@ def parse_time_to_seconds(time_str):
 	
 	raise ValueError(f"Invalid time format: {time_str}")
 
-def load_lyrics(file_path):
+def load_lyrics(file_path, logger, config_manager):
 	"""Parse lyric file into time-text pairs with robust error handling"""
 	lyrics = []
 	errors = []
-	LOGGER.log_trace(f"Parsing lyrics file: {file_path}")
+	# LOGGER.log_trace(f"Parsing lyrics file: {file_path}", config_manager.config)
 	try:
 		try:
 			with open(file_path, 'r', encoding="utf-8") as f:
@@ -893,7 +859,6 @@ def load_lyrics(file_path):
 		if file_path.endswith('.a2'):
 			current_line = []
 			
-			# Use pre-compiled patterns
 			line_pattern = _A2_LINE_PATTERN
 			word_pattern = _A2_WORD_PATTERN
 
@@ -902,7 +867,6 @@ def load_lyrics(file_path):
 				if not line:
 					continue
 
-				# Parse line timing
 				line_match = line_pattern.match(line)
 				if line_match:
 					try:
@@ -910,7 +874,6 @@ def load_lyrics(file_path):
 						lyrics.append((line_time, None))
 						content = line_match.group(2)
 						
-						# Parse word-level timing
 						words = word_pattern.findall(content)
 						for start_str, text, end_str in words:
 							try:
@@ -923,7 +886,6 @@ def load_lyrics(file_path):
 								errors.append(f"Invalid word timestamp format: {e}")
 								continue
 						
-						# Handle remaining text
 						remaining = re.sub(word_pattern, '', content).strip()
 						if remaining:
 							lyrics.append((line_time, (remaining, line_time)))
@@ -939,7 +901,6 @@ def load_lyrics(file_path):
 				lyrics.append((None, raw_line))
 		# LRC Format
 		else:
-			# Use pre-compiled pattern
 			lrc_pattern = _LRC_PATTERN
 			for line in lines:
 				raw_line = line.rstrip('\n')
@@ -959,24 +920,12 @@ def load_lyrics(file_path):
 	except Exception as e:
 		errors.append(f"Unexpected parsing error: {str(e)}")
 		if errors:
-			LOGGER.log_warn(f"Found {len(errors)} parsing errors")
+			logger.log_warn(f"Found {len(errors)} parsing errors", config_manager.config)
 		return lyrics, errors
 
 # ==============
 #  PLAYER DETECTION
 # ==============
-'''
-Using single variable is faster than dictionary so single variable is faster
-╭─jake@macbook 68 ~ 
-╰─$ python -m timeit "x = 0"     
-10000000 loops, best of 5: 31.6 nsec per loop
-╭─jake@macbook 68 ~ 
-╰─$ python -m timeit "x = []"    
-5000000 loops, best of 5: 71.7 nsec per loop
-
-I may need to optimze the whole program with just fixed variable it will give at least 50% performance boost
-'''
-
 async def get_cmus_info():
 	try:
 		proc = await asyncio.create_subprocess_exec(
@@ -988,7 +937,6 @@ async def get_cmus_info():
 		if proc.returncode != 0:
 			return (None, 0, "", None, 0, "stopped")
 
-		# LOGGER.log_debug("Cmus-remote polling...") cache the class call
 		output = stdout.decode().splitlines()
 		
 		file = None
@@ -1046,16 +994,16 @@ async def get_cmus_info():
 	except Exception:
 		return (None, 0, "", None, 0, "stopped")
 
-async def get_mpd_info():
+async def get_mpd_info(config_manager):
 	"""Async get current playback info from MPD"""
 	def _sync_mpd():
 		client = MPDClient()
-		client.timeout = CONFIG_MANAGER.MPD_TIMEOUT
+		client.timeout = config_manager.MPD_TIMEOUT
 		try:
-			client.connect(CONFIG_MANAGER.MPD_HOST, CONFIG_MANAGER.MPD_PORT)
-			LOGGER.log_debug("MPD polling...")
-			if CONFIG_MANAGER.MPD_PASSWORD:
-				client.password(CONFIG_MANAGER.MPD_PASSWORD)
+			client.connect(config_manager.MPD_HOST, config_manager.MPD_PORT)
+			# LOGGER.log_debug("MPD polling...", config_manager.config)
+			if config_manager.MPD_PASSWORD:
+				client.password(config_manager.MPD_PASSWORD)
 			status = client.status()
 			current_song = client.currentsong()
 			artist = current_song.get("artist", "")
@@ -1075,8 +1023,8 @@ async def get_mpd_info():
 		except (socket.error, ConnectionRefusedError):
 			pass
 		except Exception as e:
-			LOGGER.log_debug(f"Unexpected MPD error: {str(e)}")
-		update_fetch_status("mpd")
+			pass  # LOGGER.log_debug(f"Unexpected MPD error: {str(e)}", config_manager.config)
+		update_fetch_status("mpd", config_manager=config_manager)
 		return (None, 0.0, "", None, 0.0, "stopped")
 	return await asyncio.to_thread(_sync_mpd)
 
@@ -1093,7 +1041,7 @@ async def get_playerctl_info():
 		stdout, _ = await proc.communicate()
 		output = stdout.decode().strip()
 
-		LOGGER.log_debug("playerctl polling...")
+		# LOGGER.log_debug("playerctl polling...", config_manager.config)
 
 		if "No players found" in output or not output:
 			return (None, 0.0, "", None, 0.0, "stopped")
@@ -1117,34 +1065,34 @@ async def get_playerctl_info():
 		return (None, 0.0, "", None, 0.0, "stopped")
 
 
-async def get_player_info():
+async def get_player_info(config_manager):
 	"""Async detect active player (CMUS, MPD, or playerctl)"""
-	if CONFIG_MANAGER.ENABLE_CMUS:
+	if config_manager.ENABLE_CMUS:
 		try:
 			cmus_info = await get_cmus_info()
 			if cmus_info[0] is not None:
 				return 'cmus', cmus_info
 		except Exception as e:
-			LOGGER.log_debug(f"CMUS detection failed: {str(e)}")
+			pass  # LOGGER.log_debug(f"CMUS detection failed: {str(e)}", config_manager.config)
 
-	if CONFIG_MANAGER.ENABLE_MPD:
+	if config_manager.ENABLE_MPD:
 		try:
-			mpd_info = await get_mpd_info()
+			mpd_info = await get_mpd_info(config_manager)
 			if mpd_info[0] is not None:
 				return 'mpd', mpd_info
 		except Exception as e:
-			LOGGER.log_debug(f"MPD detection failed: {str(e)}")
+			pass  # LOGGER.log_debug(f"MPD detection failed: {str(e)}", config_manager.config)
 
-	if CONFIG_MANAGER.ENABLE_PLAYERCTL:
+	if config_manager.ENABLE_PLAYERCTL:
 		try:
 			playerctl_info = await get_playerctl_info()
 			if playerctl_info[3] is not None:
 				return "playerctl", playerctl_info
 		except Exception as e:
-			LOGGER.log_debug(f"MPRIS detection failed: {str(e)}")
+			pass  # LOGGER.log_debug(f"MPRIS detection failed: {str(e)}", config_manager.config)
 
-	update_fetch_status("no_player")
-	LOGGER.log_debug("No active music player detected")
+	update_fetch_status("no_player", config_manager=config_manager)
+	# LOGGER.log_debug("No active music player detected", config_manager.config)
 	return None, (None, 0, "", None, 0, "stopped")
 
 # ==============
@@ -1152,27 +1100,28 @@ async def get_player_info():
 # ==============
 def get_color_value(color_input):
 	"""Convert color input to valid terminal color number (0-255)"""
-	# Get terminal capabilities first
 	curses.start_color()
 	max_colors = curses.COLORS if curses.COLORS > 8 else 8
 	
 	try:
-		# Handle numeric inputs (string or integer)
 		if isinstance(color_input, (int, str)) and str(color_input).isdigit():
 			return max(0, min(int(color_input), max_colors - 1))
 		
-		# Handle named colors
 		if isinstance(color_input, str):
 			color = color_input.lower()
-			return CONFIG_MANAGER.COLOR_NAMES.get(color, 7)  # Default to white
+			# Use default COLOR_NAMES
+			COLOR_NAMES = {
+				"black": 0, "red": 1, "green": 2, "yellow": 3,
+				"blue": 4, "magenta": 5, "cyan": 6, "white": 7
+			}
+			return COLOR_NAMES.get(color, 7)
 			
-		return 7  # Fallback to white
+		return 7
 	except Exception:
-		return 7  # Fallback on any error
+		return 7
 
 def resolve_color(setting):
 	"""Resolve color from config with environment override"""
-	# Get value from environment or config
 	raw_value = os.environ.get(
 		setting["env"], 
 		setting.get("default", 7)
@@ -1194,7 +1143,6 @@ def get_lyrics_hash(lyrics):
 	"""Generate a simple hash for lyrics to detect changes"""
 	if not lyrics:
 		return 0
-	# Create a hashable representation
 	return hash(tuple((t, str(item)) for t, item in lyrics))
 
 def wrap_by_display_width(text, width, subsequent_indent=''):
@@ -1202,7 +1150,6 @@ def wrap_by_display_width(text, width, subsequent_indent=''):
 	Wrap text by display cell width, not character count.
 	Uses wcswidth to handle multi-byte characters properly.
 	"""
-	# Cache wcswidth function locally for performance
 	get_width = wcswidth
 	
 	if not text:
@@ -1220,19 +1167,15 @@ def wrap_by_display_width(text, width, subsequent_indent=''):
 			
 		word_width = get_width(word)
 		
-		# If it's a whitespace-only word, we might want to collapse it
 		if word.isspace() and not current_line:
-			continue  # Skip leading whitespace
+			continue
 		
-		# If word fits on current line or line is empty
 		if current_width + word_width <= width or not current_line:
 			current_line.append(word)
 			current_width += word_width
 		else:
-			# Start new line
 			lines.append(''.join(current_line))
-			# For continuation lines, add the indent
-			if lines:  # If this is not the first line
+			if lines:
 				current_line = [subsequent_indent + word.lstrip()]
 				current_width = get_width(subsequent_indent) + get_width(word.lstrip())
 			else:
@@ -1242,7 +1185,6 @@ def wrap_by_display_width(text, width, subsequent_indent=''):
 	if current_line:
 		lines.append(''.join(current_line))
 	
-	# Clean up: remove any trailing whitespace from each line
 	lines = [line.rstrip() for line in lines]
 	
 	return lines
@@ -1262,16 +1204,15 @@ def display_lyrics(
 	is_fetching=False,
 	subframe_fraction=0.0,
 	alignment='center',
-	player_info=None
+	player_info=None,
+	config_manager=None
 ):
 	"""Render lyrics in curses interface with caching optimizations"""
 	
 	height, width = stdscr.getmaxyx()
 	
-	# Generate lyrics hash for cache invalidation
 	lyrics_hash = get_lyrics_hash(lyrics)
 	
-	# Layout constants
 	STATUS_LINES = 2
 	MAIN_STATUS_LINE = height - 1
 	TIME_ADJUST_LINE = height - 2
@@ -1281,7 +1222,6 @@ def display_lyrics(
 		stdscr.noutrefresh()
 		return 0
 	
-	# Cache invalidation logic
 	global _display_cache
 	cache_invalid = (
 		_display_cache['lyrics_hash'] != lyrics_hash or
@@ -1299,7 +1239,6 @@ def display_lyrics(
 			'a2_word_cache': {}
 		})
 	
-	# Handle window resizing
 	if not hasattr(display_lyrics, '_dims') or display_lyrics._dims != (height, width):
 		curses.resizeterm(height, width)
 		display_lyrics.error_win = curses.newwin(1, width, 0, 0)
@@ -1307,7 +1246,7 @@ def display_lyrics(
 		display_lyrics.adjust_win = curses.newwin(1, width, TIME_ADJUST_LINE, 0)
 		display_lyrics.status_win = curses.newwin(1, width, MAIN_STATUS_LINE, 0)
 		display_lyrics._dims = (height, width)
-		cache_invalid = True  # Force cache rebuild
+		cache_invalid = True
 	
 	error_win = display_lyrics.error_win
 	lyrics_win = display_lyrics.lyrics_win
@@ -1320,7 +1259,6 @@ def display_lyrics(
 		except Exception:
 			pass
 	
-	# Cache frequently used functions locally
 	wrap_func = wrap_by_display_width
 	get_width = wcswidth
 	max_func = max
@@ -1340,7 +1278,6 @@ def display_lyrics(
 	lyrics_win.erase()
 	
 	if is_a2_format:
-		# Build A2 group lines (only if cache is invalid)
 		if cache_invalid or _display_cache['a2_groups'] is None:
 			a2_lines, cur = [], []
 			for t, item in lyrics:
@@ -1366,11 +1303,9 @@ def display_lyrics(
 			if y >= visible:
 				break
 			line = a2_lines[idx]
-			# Cache line strings
 			line_key = tuple((t, str(text)) for t, (text, _) in line)
 			if line_key not in _display_cache['a2_word_cache']:
 				line_str = " ".join(text for _, (text, _) in line)
-				# Pre-calculate widths for each word
 				word_widths = []
 				for _, (text, _) in line:
 					if text not in _display_cache['widths_cache']:
@@ -1380,8 +1315,7 @@ def display_lyrics(
 			
 			line_str, word_widths = _display_cache['a2_word_cache'][line_key]
 			
-			# Compute x for alignment
-			total_width = sum(word_widths) + (len(word_widths) - 1)  # Account for spaces
+			total_width = sum(word_widths) + (len(word_widths) - 1)
 			if alignment == 'right':
 				x = max_func(0, width - total_width - 1)
 			elif alignment == 'center':
@@ -1406,7 +1340,6 @@ def display_lyrics(
 		start_screen_line = start_line
 	
 	else:
-		# LRC/TXT format with caching - FIXED VERSION
 		wrap_w = max_func(10, width - 2)
 		
 		if cache_invalid or not _display_cache['wrapped_lines']:
@@ -1414,11 +1347,9 @@ def display_lyrics(
 			widths = []
 			for orig_i, (_, ly) in enumerate(lyrics):
 				if ly and ly.strip():
-					# Use cached wrap function for East Asian characters
 					lines = wrap_func(ly, wrap_w, subsequent_indent=' ')
 					
 					if lines:
-						# First line
 						wrapped.append((orig_i, lines[0]))
 						if lines[0] not in _display_cache['widths_cache']:
 							_display_cache['widths_cache'][lines[0]] = get_width(lines[0])
@@ -1502,7 +1433,7 @@ def display_lyrics(
 
 	# --- 4) Status bar ---
 	status_win.erase()
-	if CONFIG_MANAGER.DISPLAY_NAME:
+	if config_manager.DISPLAY_NAME:
 		if player_info:
 			_, data = player_info
 			artist = data[2] or ''
@@ -1522,11 +1453,9 @@ def display_lyrics(
 		adj_flag = '' if is_inst else ('[Adj] ' if time_adjust else '')
 		icon = ' ⏳ ' if is_fetching else ' 🎵 '
 
-		# Compose right text
 		right_text_full = f"Line {cur_line}/{len(lyrics)}{adj_flag}"
 		right_text_fallback = f" {cur_line}/{len(lyrics)}{adj_flag} "
 
-		# Determine available space for left text
 		if len(f"{icon}{ps} • {right_text_full}") <= width - 1:
 			display_line = f"{icon}{ps} • {right_text_full}"
 		elif len(f"{icon}{ps} • {right_text_fallback}") <= width - 1:
@@ -1539,7 +1468,6 @@ def display_lyrics(
 			padding = ' ' * max_func(left_max - len(ps_trunc), 0)
 			display_line = f"{ps_trunc}{padding} {right_text} "
 		else:
-			# Not enough space for full right text
 			right_text = right_text_fallback
 			max_right = width - 1
 			if len(right_text) > max_right:
@@ -1569,8 +1497,7 @@ def display_lyrics(
 			pass
 	status_win.noutrefresh()
 
-	# Overlay centered status message
-	status_msg = get_current_status()
+	status_msg = get_current_status(config_manager)
 	if status_msg:
 		msg = f"  [{status_msg}]  "[:width - 1]
 		try:
@@ -1606,11 +1533,9 @@ def load_key_bindings(config):
 	parsed = {}
 	
 	for action, key_config in bindings.items():
-		# Filter out None values and invalid entries
 		keys = parse_key_config(key_config)
 		parsed[action] = [k for k in keys if k is not None]
 	
-	# Set defaults only if no valid config exists
 	defaults = {
 		"quit": [ord("q"), ord("Q")],
 		"refresh": [ord("R")],
@@ -1631,124 +1556,40 @@ def load_key_bindings(config):
 	
 	return parsed
 
-def handle_scroll_input(key, manual_offset, last_input_time, needs_redraw,
-					   time_adjust, current_alignment, key_bindings):
-	"""Input handler with scroll, timing, and alignment logic"""
-
-	new_alignment = current_alignment
-	input_processed = False
-	manual_input = False
-	time_adjust_input = False
-	alignment_input = False
-
-	# Cache alignments list
-	alignments = ["left", "center", "right"]
-	
-	# Quit
-	if key in key_bindings["quit"]:
-		atexit.register(executor.shutdown)
-		sys.exit("Exiting")
-
-	# Scroll handling
-	if key in key_bindings["scroll_up"]:
-		manual_offset = max(0, manual_offset - 1)
-		manual_input, input_processed = True, True
-	elif key in key_bindings["scroll_down"]:
-		manual_offset += 1
-		manual_input, input_processed = True, True
-
-	# Time adjustments (explicit elif chain)
-	elif key in key_bindings["time_decrease"]:
-		time_adjust -= 0.1
-		time_adjust_input, input_processed = True, True
-
-	elif key in key_bindings["time_increase"]:
-		time_adjust += 0.1
-		time_adjust_input, input_processed = True, True
-
-	elif key in key_bindings["time_reset"]:
-		time_adjust = 0.0
-		time_adjust_input, input_processed = True, True
-
-	elif key in key_bindings["time_jump_increase"]:
-		time_adjust += 5.0
-		time_adjust_input, input_processed = True, True
-
-	elif key in key_bindings["time_jump_decrease"]:
-		time_adjust -= 5.0
-		time_adjust_input, input_processed = True, True
-
-	# Alignment direct selection (explicit elif chain)
-	elif key in key_bindings["align_left"]:
-		new_alignment = "left"
-		alignment_input, input_processed = True, True
-
-	elif key in key_bindings["align_center"]:
-		new_alignment = "center"
-		alignment_input, input_processed = True, True
-
-	elif key in key_bindings["align_right"]:
-		new_alignment = "right"
-		alignment_input, input_processed = True, True
-
-	# Alignment cycling
-	elif key in key_bindings["align_cycle_forward"]:
-		new_alignment = alignments[(alignments.index(current_alignment) + 1) % 3]
-		alignment_input, input_processed = True, True
-
-	elif key in key_bindings["align_cycle_backward"]:
-		new_alignment = alignments[(alignments.index(current_alignment) - 1) % 3]
-		alignment_input, input_processed = True, True
-
-	# Resize handling
-	if key == curses.KEY_RESIZE:
-		needs_redraw = True
-	elif input_processed:
-		# Timestamp logic
-		if manual_input:
-			last_input_time = time.time()
-		elif time_adjust_input or alignment_input:
-			last_input_time = 0
-		needs_redraw = True
-
-	return True, manual_offset, last_input_time, needs_redraw, time_adjust, new_alignment
-
 def update_display(stdscr, lyrics, errors, position, current_title, manual_offset, 
 				   is_txt_format, is_a2_format, current_idx, manual_scroll_active, 
-				   time_adjust=0, is_fetching=False, subframe_fraction=0.0,alignment='center', player_info = None):
+				   time_adjust=0, is_fetching=False, subframe_fraction=0.0,alignment='center', player_info=None, config_manager=None):
 	"""Update display based on current state."""
 	if is_txt_format:
 		return display_lyrics(stdscr, lyrics, errors, position, 
 							  current_title, manual_offset, 
 							  is_txt_format, is_a2_format, current_idx, True, 
-							  time_adjust, is_fetching, subframe_fraction, alignment, player_info)
+							  time_adjust, is_fetching, subframe_fraction, alignment, player_info, config_manager)
 	else:
 		return display_lyrics(stdscr, lyrics, errors, position, 
 							  current_title, manual_offset, 
 							  is_txt_format, is_a2_format, current_idx, 
-							  manual_scroll_active, time_adjust, is_fetching, subframe_fraction, alignment, player_info)
+							  manual_scroll_active, time_adjust, is_fetching, subframe_fraction, alignment, player_info, config_manager)
 
 # ================
 #  LYRIC FETCHING
 # ================
-async def fetch_lyrics_async(audio_file, directory, artist, title, duration):
+async def fetch_lyrics_async(audio_file, directory, artist, title, duration, config_manager, logger):
 	"""Async function to fetch lyrics with non-blocking operations"""
 	try:
-		lyrics_file = await find_lyrics_file_async(audio_file, directory, artist, title, duration)
+		lyrics_file = await find_lyrics_file_async(audio_file, directory, artist, title, duration, config_manager, logger)
 		if lyrics_file:
 			is_txt_format = lyrics_file.endswith('.txt')
 			is_a2_format = lyrics_file.endswith('.a2')
-			lyrics, errors = load_lyrics(lyrics_file)
-			update_fetch_status('done', len(lyrics))
+			lyrics, errors = load_lyrics(lyrics_file, logger, config_manager)
+			update_fetch_status('done', len(lyrics), config_manager)
 			return (lyrics, errors), is_txt_format, is_a2_format
-		update_fetch_status('failed')
+		update_fetch_status('failed', config_manager=config_manager)
 		return ([], []), False, False
 	except Exception as e:
-		LOGGER.log_error(f"{title} lyrics fetch error: {e}")
-		update_fetch_status('failed')
+		logger.log_error(f"{title} lyrics fetch error: {e}", config_manager.config)
+		update_fetch_status('failed', config_manager=config_manager)
 		return ([], []), False, False
-		
-
 
 # ================
 #  SYNC UTILITIES
@@ -1761,7 +1602,7 @@ def sync_player_position(status, raw_pos, last_time, time_adjust, duration):
 		estimated = raw_pos + elapsed + time_adjust
 	else:
 		estimated = raw_pos + time_adjust
-	LOGGER.log_debug(f"Position sync - Raw: {raw_pos}, Adjusted: {estimated}")
+	# LOGGER.log_debug(f"Position sync - Raw: {raw_pos}, Adjusted: {estimated}")
 	return max(0.0, min(estimated, duration)), now
 
 def find_current_lyric_index(position, timestamps):
@@ -1782,7 +1623,7 @@ def find_current_lyric_index(position, timestamps):
 def bisect_worker(position, timestamps, offset):
 	"""Returns the closest index using bisect based on a given offset."""
 	if not timestamps:
-		return None  # No timestamps available
+		return None
 
 	idx = bisect.bisect_right(timestamps, position + offset) - 1
 	return max(0, min(idx, len(timestamps) - 1))
@@ -1790,12 +1631,11 @@ def bisect_worker(position, timestamps, offset):
 def proximity_worker(position, timestamps, threshold):
 	"""Returns the closest index based on proximity and progress within the current line."""
 	if not timestamps:
-		return None  # No timestamps available
+		return None
 
 	idx = bisect.bisect_left(timestamps, position)
 	idx = max(0, min(idx, len(timestamps) - 1))
 
-	# Check if the next timestamp is close enough to switch early
 	if idx + 1 < len(timestamps):
 		current_duration = timestamps[idx + 1] - timestamps[idx]
 		position_in_line = position - timestamps[idx]
@@ -1806,10 +1646,6 @@ def proximity_worker(position, timestamps, threshold):
 	return idx
 
 def subframe_interpolation(continuous_position, timestamps, index):
-	"""
-	Given an index, compute a fraction (0.0 to 1.0) representing the progress between this timestamp and the next.
-	This sub-frame fraction can be used for smoother UI transitions.
-	"""
 	if index < 0 or index >= len(timestamps) - 1:
 		return index, 0.0
 	start = timestamps[index]
@@ -1822,55 +1658,48 @@ def subframe_interpolation(continuous_position, timestamps, index):
 
 def get_monitor_refresh_rate():
 	try:
-		# Query active monitor mode
 		xrandr_output = subprocess.check_output(["xrandr"]).decode()
-		# Find the line with '*' which marks the active mode
 		match = re.search(r"(\d+\.\d+)\*", xrandr_output)
 		if match:
 			return float(match.group(1))
 	except Exception as e:
 		print("Could not detect refresh rate:", e)
-	return 60.0  # fallback
+	return 60.0
 
 # ================
 #  MAIN APPLICATION
 # ================
 # --- Module-level constants and cached immutable data (hot) ---
-PLAYER_TYPES = ("cmus", "playerctl")         # tuple (faster membership)
+PLAYER_TYPES = ("cmus", "playerctl")
 INSTRUMENTAL_KEYWORDS = ("instrumental", "karaoke")
 STATUS_PLAYING = "playing"
 STATUS_PAUSED = "paused"
 STATUS_STOPPED = "stopped"
 
-async def main_async(stdscr, CONFIG, LOGGER):
-	# Local references to reduce attribute lookups
-	logger = LOGGER
+async def main_async(stdscr, config_manager, logger):
+	# Local references
 	log_debug = logger.log_debug
 	log_info = logger.log_info
 
-	# Cache commonly-used functions
 	perf = time.perf_counter
 	path_exists = os.path.exists
 	path_basename = os.path.basename
 	path_dirname = os.path.dirname
 
-	# Cache stdscr methods (pre-bind)
 	stdscr_getch = stdscr.getch
 	stdscr_timeout = stdscr.timeout
 	stdscr_nodelay = stdscr.nodelay
 	stdscr_keypad = stdscr.keypad
 	stdscr_curs_set = curses.curs_set
-	get_size = stdscr.getmaxyx  # still need access; call only when resize detected
+	get_size = stdscr.getmaxyx
 
-	# Small helper to safely get nested config value
-	ui_config = CONFIG["ui"]
+	config = config_manager.config
+	ui_config = config["ui"]
 
-	# Cache config slices once
 	color_config = ui_config["colors"]
-	sync_config = ui_config["sync"] if "sync" in ui_config else CONFIG["ui"]["sync"]
+	sync_config = ui_config["sync"] if "sync" in ui_config else config["ui"]["sync"]
 	proximity_config = sync_config["proximity"]
 
-	# Cache frequently accessed config values (immutable during runtime)
 	refresh_interval_ms = sync_config["refresh_interval_ms"]
 	refresh_interval = refresh_interval_ms / 1000.0
 	refresh_interval_2 = sync_config["coolcpu_ms"]
@@ -1887,7 +1716,6 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	proximity_threshold = sync_config.get("proximity_threshold", 0)
 	smart_proximity_bol = proximity_config.get("smart-proximity", False)
 
-	# Cache proximity thresholds (immutable)
 	PROXIMITY_THRESHOLD_SEC = proximity_config.get("proximity_threshold_sec", 0.05)
 	PROXIMITY_THRESHOLD_PERCENT = proximity_config.get("proximity_threshold_percent", 0.05)
 	PROXIMITY_MIN_THRESHOLD_SEC = proximity_config.get("proximity_min_threshold_sec", 1.0)
@@ -1900,14 +1728,12 @@ async def main_async(stdscr, CONFIG, LOGGER):
 
 	VRR_ENABLED = sync_config.get("VRR_bol", False)
 
-	# Cache color values (resolve_color assumed available)
 	error_color = resolve_color(color_config["error"])
 	txt_active = resolve_color(color_config["txt"]["active"])
 	txt_inactive = resolve_color(color_config["txt"]["inactive"])
 	lrc_active = resolve_color(color_config["lrc"]["active"])
 	lrc_inactive = resolve_color(color_config["lrc"]["inactive"])
 
-	# Initialize curses display basics (once)
 	curses.start_color()
 	use_256 = curses.COLORS >= 256
 	curses.init_pair(1, error_color, curses.COLOR_BLACK)
@@ -1916,8 +1742,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	curses.init_pair(4, txt_active, curses.COLOR_BLACK)
 	curses.init_pair(5, txt_inactive, curses.COLOR_BLACK)
 
-	# Cache key bindings and convert to sets for O(1) membership
-	key_bindings = load_key_bindings(CONFIG)
+	key_bindings = load_key_bindings(config)
 	quit_keys = set(key_bindings["quit"])
 	scroll_up_keys = set(key_bindings["scroll_up"])
 	scroll_down_keys = set(key_bindings["scroll_down"])
@@ -1932,7 +1757,6 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	align_cycle_forward_keys = set(key_bindings["align_cycle_forward"])
 	align_cycle_backward_keys = set(key_bindings["align_cycle_backward"])
 
-	# Cache frequently used functions and methods
 	bisect_left = bisect.bisect_left
 	bisect_right = bisect.bisect_right
 	max_func = max
@@ -1944,18 +1768,15 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	wrap_func = wrap_by_display_width
 	get_width_func = wcswidth
 
-	# Alignments
 	alignments_list = ("left", "center", "right")
 	alignment_index = {"left": 0, "center": 1, "right": 2}
 
-	# Set up curses modes (once)
 	stdscr_curs_set(0)
 	stdscr_nodelay(True)
 	stdscr_keypad(True)
-	# Start with immediate response (no timeout for manual scroll)
 	stdscr_timeout(0)
 
-	# Initialize application state as local variables (FASTEST access)
+	# Initialize application state
 	current_title = None
 	current_artist = None
 	current_file = None
@@ -1983,7 +1804,6 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	player_data = (None, 0, "", None, 0, STATUS_STOPPED)
 	
 	prev_player_data = None
-	# Cached unpacked player fields (update only when player_data changes)
 	p_audio_file = None
 	p_raw_pos = 0.0
 	p_artist = ""
@@ -2002,12 +1822,10 @@ async def main_async(stdscr, CONFIG, LOGGER):
 	end_triggered = False
 	window_height, window_width = window_size
 
-	# Player position tracking
 	last_cmus_position = 0.0
 	estimated_position = 0.0
 	playback_paused = False
 
-	# VRR variables (cached)
 	next_frame_time = 0.0
 	skip_redraw_for_vrr = False
 	frame_time = None
@@ -2016,25 +1834,19 @@ async def main_async(stdscr, CONFIG, LOGGER):
 		frame_time = 1.0 / refresh_rate
 		next_frame_time = last_pos_time + frame_time
 
-	# State tracking for optimizations
 	prev_lyrics_hash = None
 	prev_window_width = window_width
 	prev_continuous_position = None
-	# sync_compensation = 0.0
-	bisect_right = bisect.bisect_right
 
-	# Suppress output during initialization
 	sys.stdout = open(os.devnull, 'w')
 	sys.stderr = open(os.devnull, 'w')
 
-	# Main loop optimized for manual scroll with zero delays
+	# Main loop
 	while True:
-		# try:
 		current_time = perf()
 		draw_start = current_time
 		needs_redraw = False
 
-		# Compute time_since_input
 		time_since_input = 0.0
 		if last_input > 0.0:
 			time_since_input = current_time - last_input
@@ -2046,29 +1858,21 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			else:
 				manual_timeout_handled = False
 
-		manual_scroll = (last_input > 0.0)  # Simplified check
+		manual_scroll = (last_input > 0.0)
 
-
-		# stdscr_timeout(0)
-		
-		# Read input (non-blocking, immediate response)
 		key = stdscr_getch()
 		new_input = key != -1
 
-		# Handle immediate resize event via KEY_RESIZE
 		if key == curses.KEY_RESIZE:
 			new_size = get_size()
 			if new_size != window_size:
 				old_h, old_w = window_size
 				new_h, new_w = new_size
 				
-				# Invalidate cache if width changed
 				if old_w != new_w:
-					# Reset cache key to force recalculation
 					global _display_cache
 					_display_cache['window_width'] = None
 				
-				# Maintain manual_offset proportionally (avoid division by zero)
 				if lyrics and old_h > 0 and new_h > 0:
 					manual_offset = int_func(manual_offset * (new_h / old_h))
 				
@@ -2077,8 +1881,7 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				max_wrapped_offset = max_func(0, max_wrapped_offset)
 				needs_redraw = True
 
-		# Temporary high-frequency refresh after resume or jump
-		status_for_checks = p_status  # use cached status for quick checks before updating player info
+		status_for_checks = p_status
 		if (player_type in PLAYER_TYPES and resume_trigger_time and
 			(current_time - resume_trigger_time <= TEMPORARY_REFRESH_SEC) and
 			status_for_checks == STATUS_PLAYING and lyrics):
@@ -2088,7 +1891,6 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			stdscr_timeout(refresh_interval_2)
 			poll = False
 
-		# Determine fetch interval with proximity overlay (use cached proximity_active)
 		if proximity_active and status_for_checks == STATUS_PLAYING:
 			interval = refresh_interval
 		else:
@@ -2097,60 +1899,50 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			else:
 				interval = refresh_interval
 
-		# Update player info if needed (this may call external async get_player_info)
 		if (current_time - last_player_update >= interval):
 			try:
 				prev_status = p_status
-				new_player_type, new_player_data = await get_player_info()
-				# Update global variables that indicate player changed
+				new_player_type, new_player_data = await get_player_info(config_manager)
 				if new_player_type != player_type or new_player_data != player_data:
 					player_type = new_player_type
 					player_data = new_player_data
-				# detect jump vs previous estimated_position using raw_val
 				_, raw_val, _, _, _, status_val = player_data
 				new_raw = float_func(raw_val or 0.0)
 				drift = abs_func(new_raw - estimated_position)
 				if drift > JUMP_THRESHOLD and status_val == STATUS_PLAYING:
 					resume_trigger_time = current_time
-					log_debug(f"Jump detected: {drift:.3f}s")
+					log_debug(f"Jump detected: {drift:.3f}s", config)
 					needs_redraw = True
 
 				if player_type and prev_status == STATUS_PAUSED and status_val == STATUS_PLAYING:
 					resume_trigger_time = current_time
-					log_debug("Pause→play refresh")
+					log_debug("Pause→play refresh", config)
 					needs_redraw = True
 
 			except Exception as e:
-				log_debug(f"Error refreshing player info: {e}")
+				log_debug(f"Error refreshing player info: {e}", config)
 			finally:
 				last_player_update = current_time
 
-		# Unpack player info ONLY when player_data changed
 		if player_data != prev_player_data:
 			prev_player_data = player_data
-			# Unpack into cached locals
 			p_audio_file, p_raw_pos, p_artist, p_title, p_duration, p_status = player_data
-			# Normalize audio_file
 			if p_audio_file in ("None", ""):
 				p_audio_file = None
-			# Convert numeric fields
 			p_raw_pos = float_func(p_raw_pos or 0.0)
 			p_duration = float_func(p_duration or 0.0)
-			# Keep estimated position in sync with raw position when player changes
 			estimated_position = p_raw_pos
 			last_pos_time = current_time
-			# Reset some state on track change (if title/artist/file changed compared to current cached ones)
+			
 			if (p_title, p_artist, p_audio_file) != (current_title, current_artist, current_file) and p_status != STATUS_STOPPED:
-				# Log new track detected (cache basename lookup)
 				if p_audio_file and path_exists(p_audio_file) and player_type in ("cmus", "mpd"):
 					try:
-						log_info(f"New track detected: {path_basename(p_audio_file)}")
+						log_info(f"New track detected: {path_basename(p_audio_file)}", config)
 					except (TypeError, AttributeError):
-						log_info("New track detected: Unknown File")
+						log_info("New track detected: Unknown File", config)
 				else:
-					log_info(f"New track detected: {p_title or 'Unknown Track'}")
+					log_info(f"New track detected: {p_title or 'Unknown Track'}", config)
 
-				# Update current_* cache and reset lyric state
 				current_title = p_title or ""
 				current_artist = p_artist or ""
 				current_file = p_audio_file
@@ -2165,24 +1957,21 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				wrapped_lines = []
 				max_wrapped_offset = 0
 				end_triggered = False
-				prev_lyrics_hash = None  # Reset lyrics hash
+				prev_lyrics_hash = None
 
-				# Cancel existing lyric fetching task (if present)
 				if lyric_future and not lyric_future.done():
 					lyric_future.cancel()
 					try:
 						await asyncio.wait_for(lyric_future, timeout=4.0)
 					except (asyncio.CancelledError, asyncio.TimeoutError):
-						log_debug("Previous lyric fetching task cancelled")
+						log_debug("Previous lyric fetching task cancelled", config)
 					finally:
 						lyric_future = None
 
-				# Determine search directory (avoid filesystem checks except here)
 				search_directory = None
 				if p_audio_file and path_exists(p_audio_file) and player_type in ('cmus', 'mpd'):
 					search_directory = path_dirname(p_audio_file)
 
-				# Start new lyric fetch if we have title+artist
 				if current_title and current_artist:
 					lyric_future = asyncio.create_task(
 						fetch_lyrics_async(
@@ -2190,16 +1979,16 @@ async def main_async(stdscr, CONFIG, LOGGER):
 							directory=search_directory,
 							artist=current_artist or "",
 							title=current_title or "",
-							duration=p_duration
+							duration=p_duration,
+							config_manager=config_manager,
+							logger=logger
 						)
 					)
-					log_debug(f"{p_audio_file}, {p_artist}, {p_title}, {p_duration}")
+					log_debug(f"{p_audio_file}, {p_artist}, {p_title}, {p_duration}", config)
 
-				# Sync last cmus position
 				last_cmus_position = p_raw_pos
 				estimated_position = p_raw_pos
 
-		# Now use cached unpacked player values for the rest of the loop
 		audio_file = p_audio_file
 		raw_position = p_raw_pos
 		artist = p_artist
@@ -2207,14 +1996,12 @@ async def main_async(stdscr, CONFIG, LOGGER):
 		duration_val = p_duration
 		status = p_status
 
-		# Handle completed lyric fetching (if any)
 		if lyric_future and lyric_future.done():
 			try:
 				(new_lyrics, new_errors), new_is_txt, new_is_a2 = lyric_future.result()
 				if new_errors:
-					log_debug(new_errors)
+					log_debug(new_errors, config)
 
-				# Update local variables from fetch result
 				lyrics = new_lyrics
 				errors = new_errors
 				is_txt = new_is_txt
@@ -2224,9 +2011,8 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				lyrics_loaded_time = current_time
 				wrapped_lines = []
 				max_wrapped_offset = 0
-				prev_lyrics_hash = None  # Force cache update
+				prev_lyrics_hash = None
 
-				# Prepare timestamps if applicable
 				if not (is_txt or is_a2):
 					timestamps = sorted(t for t, _ in lyrics if t is not None)
 					valid_indices = [i for i, (t, _) in enumerate(lyrics) if t is not None]
@@ -2234,39 +2020,34 @@ async def main_async(stdscr, CONFIG, LOGGER):
 					timestamps = []
 					valid_indices = []
 
-				# Trigger timed refresh if playing
 				if status == STATUS_PLAYING and player_type in ("cmus", "mpd"):
 					resume_trigger_time = current_time
-					log_debug("Refresh triggered by new lyrics loading")
+					log_debug("Refresh triggered by new lyrics loading", config)
 
 				estimated_position = raw_position
 
 			except (asyncio.CancelledError, Exception) as e:
 				if isinstance(e, asyncio.CancelledError):
-					log_debug("Lyric fetching cancelled")
+					log_debug("Lyric fetching cancelled", config)
 				else:
-					log_debug(f"Lyric load error: {e}")
+					log_debug(f"Lyric load error: {e}", config)
 				errors = [f"Lyric load error: {e}"]
 				force_redraw = True
 				lyrics_loaded_time = current_time
 			finally:
 				lyric_future = None
 
-		# Delayed redraw after lyric load
 		if lyrics_loaded_time and (current_time - lyrics_loaded_time >= 2.0):
 			force_redraw = True
 			lyrics_loaded_time = None
 
-		# Track pause state
 		playback_paused = (status == STATUS_PAUSED)
 
-		# Update position tracking when external raw pos changes
 		if (not playback_paused) and (raw_position != last_cmus_position):
 			last_cmus_position = raw_position
 			last_pos_time = current_time
 			estimated_position = raw_position
 
-		# Player-specific estimation (use cached values/locals)
 		if player_type:
 			if not playback_paused:
 				elapsed = current_time - last_pos_time
@@ -2278,29 +2059,22 @@ async def main_async(stdscr, CONFIG, LOGGER):
 		else:
 			playback_paused = (status == "pause")
 
-		# Calculate continuous_position with cached offsets
-		# offset_val = base_offset + sync_compensation + next_frame_time
 		offset_val = base_offset + next_frame_time
 		
 		continuous_position = max_func(0.0, estimated_position + time_adjust + offset_val)
 		if continuous_position > duration_val:
 			continuous_position = duration_val
 
-		# End-of-track trigger
 		if (duration_val > 0.0 and (duration_val - continuous_position) <= END_TRIGGER_SEC and not end_triggered):
 			end_triggered = True
 			force_redraw = True
-			log_debug(f"End-of-track reached (pos={continuous_position:.3f}s)")
+			log_debug(f"End-of-track reached (pos={continuous_position:.3f}s)", config)
 
-		# Cancel proximity if paused
 		if status != STATUS_PLAYING and proximity_active:
 			proximity_active = False
 			proximity_trigger_time = None
-			
-			# stdscr_timeout(refresh_interval_2)
-			log_debug("Proximity reset due to pause")
+			log_debug("Proximity reset due to pause", config)
 
-		# Smart proximity logic (uses cached timestamps and thresholds)
 		if (smart_proximity and timestamps and not is_txt and last_idx >= 0 and last_idx + 1 < len(timestamps)
 			and status == STATUS_PLAYING and not poll and not playback_paused):
 
@@ -2318,28 +2092,25 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				proximity_active = True
 				stdscr_timeout(refresh_proximity_interval_ms)
 				last_player_update = 0.0
-				log_debug(f"Proximity TRIG: time_to_next={time_to_next:.3f}s within [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]")
+				log_debug(f"Proximity TRIG: time_to_next={time_to_next:.3f}s within [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]", config)
 			elif (proximity_trigger_time is not None and (time_to_next < PROXIMITY_MIN_THRESHOLD_SEC or time_to_next > threshold
 				  or current_time - proximity_trigger_time > threshold)):
 				
 				stdscr_timeout(refresh_interval_2)
 				proximity_trigger_time = None
 				proximity_active = False
-				log_debug(f"Proximity RESET: time_to_next={time_to_next:.3f}s outside [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]")
+				log_debug(f"Proximity RESET: time_to_next={time_to_next:.3f}s outside [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]", config)
 			else:
 				proximity_active = False
 		else:
 			proximity_active = False
 
-		# Generate wrapped lines for TXT files only when needed
 		if is_txt:
-			# Re-wrap when we have no wrapped lines (or after lyric changes) or window_width changed
 			if not wrapped_lines or prev_window_width != window_width:
 				wrap_width = max_func(10, window_width - 2)
 				wrapped = []
 				for orig_idx, (_, lyric) in enumerate(lyrics):
 					if lyric and lyric.strip():
-						# Use cached wrap function for East Asian characters
 						lines = wrap_func(lyric, wrap_width, subsequent_indent=' ')
 						wrapped.extend([(orig_idx, line) for line in lines])
 					else:
@@ -2349,7 +2120,6 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				max_wrapped_offset = max_func(0, len(wrapped) - lyrics_area_height)
 				prev_window_width = window_width
 
-		# Calculate current lyric index using cached timestamps and strategy flags
 		if smart_tracking == 1:
 			current_idx = last_idx
 			if timestamps and not is_txt:
@@ -2387,7 +2157,6 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			else:
 				current_idx = -1
 
-		# Auto scroll logic (uses cached window height/width)
 		if last_input == 0 and not manual_scroll:
 			if is_txt and wrapped_lines:
 				lyrics_area_height = window_height - 3
@@ -2411,23 +2180,18 @@ async def main_async(stdscr, CONFIG, LOGGER):
 						manual_offset = target_offset
 						needs_redraw = True
 
-		# Handle user input (key was read earlier)
 		if new_input:
-			# Quit key
 			if key in quit_keys:
 				try:
 					atexit.register(executor.shutdown)
 				except NameError:
-					# executor may not exist in some contexts; ignore if so
 					pass
 				sys.exit("Exiting")
 
-			# store originals
 			old_manual_offset = manual_offset
 			old_time_adjust = time_adjust
 			old_alignment = alignment
 
-			# Process navigation/time keys (sets for O(1))
 			needs_redraw_input = False
 
 			if key in scroll_up_keys:
@@ -2470,12 +2234,10 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				current_idx_align = alignment_index[alignment]
 				alignment = alignments_list[(current_idx_align - 1) % 3]
 				needs_redraw_input = True
-			# KEY_RESIZE handled above
 
 			if needs_redraw_input:
 				force_redraw = True
 
-		# VRR frame timing (cached frame_time)
 		skip_redraw_for_vrr = False
 		if VRR_ENABLED:
 			if current_time < next_frame_time:
@@ -2488,7 +2250,6 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			if current_idx != last_idx or force_redraw:
 				skip_redraw_for_vrr = False
 
-		# Determine if should skip redraw (early exit optimization)
 		skip_conditions = (
 			not new_input and
 			not needs_redraw and
@@ -2500,11 +2261,11 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			skip_redraw_for_vrr
 		)
 
-		# Update display if needed
 		if new_input or needs_redraw or force_redraw or (current_idx != last_idx):
 			log_debug(
 				f"Redraw triggered: new_input={new_input}, needs_redraw={needs_redraw}, "
-				f"force_redraw={force_redraw}, idx={last_idx} → {current_idx}, paused={status == STATUS_PAUSED}"
+				f"force_redraw={force_redraw}, idx={last_idx} → {current_idx}, paused={status == STATUS_PAUSED}",
+				config
 			)
 			stdscr_timeout(0)
 			
@@ -2525,30 +2286,21 @@ async def main_async(stdscr, CONFIG, LOGGER):
 				lyric_future is not None and not lyric_future.done(),
 				alignment=alignment,
 				player_info=(player_type, player_data),
+				config_manager=config_manager,
 			)
 
-			# sync compensation based on how long drawing took
-			# sync_compensation = (perf() - draw_start) * 0.965
-			
-			# sync_compensation = 0.0
-			
-			# time_delta = current_time - last_pos_time - sync_compensation
 			time_delta = current_time - last_pos_time
 			
-			# log_debug(
-			# 	f"Triggered at: {continuous_position}, Compensated: {sync_compensation}, Time_delta: {time_delta}"
-			# )
 			log_debug(
-				f"Triggered at: {continuous_position}, Time_delta: {time_delta}"
+				f"Triggered at: {continuous_position}, Time_delta: {time_delta}",
+				config
 			)
-			# Update state
+			
 			manual_offset = start_screen_line
 			last_idx = current_idx
 			force_redraw = False
 
-		# CPU throttling: set sleep_time conservatively - but only when NOT in manual scroll
 		if status == STATUS_PAUSED and not manual_scroll:
-			# Keep coarse timeout values for curses
 			if time_since_input > 5.0:
 				stdscr_timeout(400)
 				sleep_time = 0.002
@@ -2562,7 +2314,6 @@ async def main_async(stdscr, CONFIG, LOGGER):
 			stdscr_timeout(refresh_interval_2)
 			sleep_time = 0.0
 
-		# High-frequency conditions (override)
 		if poll or proximity_active or manual_scroll:
 			sleep_time = 0.0
 		else:
@@ -2570,52 +2321,42 @@ async def main_async(stdscr, CONFIG, LOGGER):
 
 		await asyncio.sleep(sleep_time)
 
-
-	# except Exception as e:
-		# log_debug(f"Main loop error: {str(e)}")
-		# await asyncio.sleep(0)
-		# log_debug("System fault")
-
-def main(stdscr, config_path=None, use_default=False, player=None): #Hacks
+def main(stdscr):
 	"""Main function that runs the async event loop"""
-	CONFIG_MANAGER = ConfigManager(
-		config_path=config_path, 
-		use_default=use_default, 
-		player_override=player
-	)
+	args = parse_args()
 	
-	CONFIG = CONFIG_MANAGER.config
-	LOGGER = Logger(CONFIG_MANAGER)
-	
-	asyncio.run(main_async(stdscr, CONFIG, LOGGER))
-
-def run_main(stdscr):
-	main(
-		stdscr, 
-		config_path=args.config, 
+	# Create ConfigManager with command-line arguments
+	config_manager = ConfigManager(
+		config_path=args.config,
 		use_default=args.default,
-		player=args.player
+		player_override=args.player
 	)
+	
+	# Create Logger with config_manager
+	logger = Logger(config_manager)
+	
+	# Run the async main loop
+	asyncio.run(main_async(stdscr, config_manager, logger))
 
 if __name__ == "__main__":
 	args = parse_args()
-
-	# while True:
+	
 	try:
-		curses.wrapper(run_main)
+		curses.wrapper(main)
 	except KeyboardInterrupt:
 		print("Exited by user (Ctrl+C).")
 		try:
 			atexit.register(executor.shutdown)
 		except NameError:
-			# executor may not exist in some contexts; ignore if so
 			pass
 		exit()
 	except Exception as e:
-		try:
-			temp_config = ConfigManager(config_path=args.config, use_default=args.default)
-			temp_logger = Logger(temp_config)
-			temp_logger.log_debug(f"Fatal error: {str(e)}")
-		except Exception:
-			print(f"Fatal error (and failed to create temp logger): {e}", file=sys.stderr)
+		temp_config = ConfigManager(
+			config_path=args.config,
+			use_default=args.default,
+			player_override=args.player
+		)
+		temp_logger = Logger(temp_config)
+		temp_logger.log_error(f"Fatal error: {str(e)}", temp_config.config)
+		print(f"Fatal error: {e}", file=sys.stderr)
 		time.sleep(1)
