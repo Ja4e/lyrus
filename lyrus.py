@@ -45,6 +45,9 @@ LOG_LEVELS = {
 	"TRACE": 0
 }
 
+# Global thread pool executor with fixed size
+THREAD_POOL_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lyrus_worker")
+
 # ==============
 #  CONFIGURATION
 # ==============
@@ -574,10 +577,8 @@ def validate_lyrics(content, artist, title, config_manager):
 	
 	return True
 
-executor = concurrent.futures.ThreadPoolExecutor(max_workers=2)
-
 async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None, timeout=15, config_manager=None):
-	"""Async version of syncedlyrics fetch"""
+	"""Async version of syncedlyrics fetch using global thread pool"""
 	# LOGGER.log_debug(f"Starting syncedlyrics search: {artist_name} - {track_name} ({duration}s)")
 	try:
 		import syncedlyrics
@@ -600,7 +601,8 @@ async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None
 
 		loop = asyncio.get_event_loop()
 		
-		lyrics, is_synced = await loop.run_in_executor(None, worker, search_term, True)
+		# Use global thread pool executor instead of creating new ones
+		lyrics, is_synced = await loop.run_in_executor(THREAD_POOL_EXECUTOR, worker, search_term, True)
 		
 		if lyrics:
 			# LOGGER.log_debug(f"Found {'synced' if is_synced else 'plain'} lyrics via syncedlyrics")
@@ -609,7 +611,7 @@ async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None
 			return lyrics, is_synced
 		
 		# LOGGER.log_trace("Initiating plain lyrics fallback search")
-		lyrics, is_synced = await loop.run_in_executor(None, worker, search_term, False)
+		lyrics, is_synced = await loop.run_in_executor(THREAD_POOL_EXECUTOR, worker, search_term, False)
 		
 		if lyrics and validate_lyrics(lyrics, artist_name, track_name, config_manager):
 			return lyrics, False
@@ -1026,7 +1028,10 @@ async def get_mpd_info(config_manager):
 			pass  # LOGGER.log_debug(f"Unexpected MPD error: {str(e)}", config_manager.config)
 		update_fetch_status("mpd", config_manager=config_manager)
 		return (None, 0.0, "", None, 0.0, "stopped")
-	return await asyncio.to_thread(_sync_mpd)
+	
+	# Use global thread pool executor
+	loop = asyncio.get_event_loop()
+	return await loop.run_in_executor(THREAD_POOL_EXECUTOR, _sync_mpd)
 
 async def get_playerctl_info():
 	"""Async get current playback info from any player via playerctl"""
@@ -2183,7 +2188,7 @@ async def main_async(stdscr, config_manager, logger):
 		if new_input:
 			if key in quit_keys:
 				try:
-					atexit.register(executor.shutdown)
+					atexit.register(THREAD_POOL_EXECUTOR.shutdown, wait=False)
 				except NameError:
 					pass
 				sys.exit("Exiting")
@@ -2338,15 +2343,22 @@ def main(stdscr):
 	# Run the async main loop
 	asyncio.run(main_async(stdscr, config_manager, logger))
 
+def shutdown():
+	"""Clean shutdown of thread pool"""
+	THREAD_POOL_EXECUTOR.shutdown(wait=False)
+
 if __name__ == "__main__":
 	args = parse_args()
+	
+	# Register shutdown handler
+	atexit.register(shutdown)
 	
 	try:
 		curses.wrapper(main)
 	except KeyboardInterrupt:
 		print("Exited by user (Ctrl+C).")
 		try:
-			atexit.register(executor.shutdown)
+			shutdown()
 		except NameError:
 			pass
 		exit()
