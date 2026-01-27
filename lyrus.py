@@ -173,7 +173,7 @@ class ConfigManager:
 				"done": "Loaded",
 				"clear": ""
 			},
-			"terminal_states": ["done", "instrumental", "time_out", "failed", "mpd", "clear", "cmus"],
+			"terminal_states": ["done", "instrumental", "time_out", "failed", "mpd", "clear", "cmus", "no_player"],
 			"lyrics": {
 				"search_timeout": 15,
 				"cache_dir": "~/.local/state/lyrus/synced_lyrics",
@@ -370,7 +370,7 @@ class Logger:
 				with open(log_path, "r+") as f:
 					lines = f.readlines()
 					if len(lines) > config["global"]["max_log_count"]:
-						keep = lines[-config["global"]["max_log_count"]]
+						keep = lines[-config["global"]["max_log_count"]:]
 						f.seek(0)
 						f.truncate()
 						f.writelines(keep)
