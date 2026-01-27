@@ -48,6 +48,26 @@ LOG_LEVELS = {
 # Global thread pool executor with fixed size
 THREAD_POOL_EXECUTOR = ThreadPoolExecutor(max_workers=4, thread_name_prefix="lyrus_worker")
 
+# Player status constants
+STATUS_PLAYING = "playing"
+STATUS_PAUSED = "paused"
+STATUS_STOPPED = "stopped"
+
+# Player type constants
+PLAYER_CMUS = "cmus"
+PLAYER_MPD = "mpd"
+PLAYER_PLAYERCTL = "playerctl"
+
+# Lyric format constants
+FORMAT_A2 = '.a2'
+FORMAT_LRC = '.lrc'
+FORMAT_TXT = '.txt'
+
+# Alignment constants
+ALIGN_LEFT = "left"
+ALIGN_CENTER = "center"
+ALIGN_RIGHT = "right"
+
 # ==============
 #  CONFIGURATION
 # ==============
@@ -350,7 +370,7 @@ class Logger:
 				with open(log_path, "r+") as f:
 					lines = f.readlines()
 					if len(lines) > config["global"]["max_log_count"]:
-						keep = lines[-config["global"]["max_log_count"]:]
+						keep = lines[-config["global"]["max_log_count"]]
 						f.seek(0)
 						f.truncate()
 						f.writelines(keep)
@@ -858,7 +878,7 @@ def load_lyrics(file_path, logger, config_manager):
 			return lyrics, errors
 
 		# A2 Format Parsing
-		if file_path.endswith('.a2'):
+		if file_path.endswith(FORMAT_A2):
 			current_line = []
 			
 			line_pattern = _A2_LINE_PATTERN
@@ -897,7 +917,7 @@ def load_lyrics(file_path, logger, config_manager):
 						continue
 
 		# Plain Text Format
-		elif file_path.endswith('.txt'):
+		elif file_path.endswith(FORMAT_TXT):
 			for line in lines:
 				raw_line = line.rstrip('\n')
 				lyrics.append((None, raw_line))
@@ -937,7 +957,7 @@ async def get_cmus_info():
 		)
 		stdout, _ = await proc.communicate()
 		if proc.returncode != 0:
-			return (None, 0, "", None, 0, "stopped")
+			return (None, 0, "", None, 0, STATUS_STOPPED)
 
 		output = stdout.decode().splitlines()
 		
@@ -946,7 +966,7 @@ async def get_cmus_info():
 		artist = []
 		title = None
 		duration = 0
-		status = "stopped"
+		status = STATUS_STOPPED
 		tags = {}
 		
 		for line in output:
@@ -994,7 +1014,7 @@ async def get_cmus_info():
 		return (file, position, artist_str, title, duration, status)
 		
 	except Exception:
-		return (None, 0, "", None, 0, "stopped")
+		return (None, 0, "", None, 0, STATUS_STOPPED)
 
 async def get_mpd_info(config_manager):
 	"""Async get current playback info from MPD"""
@@ -1016,7 +1036,7 @@ async def get_mpd_info(config_manager):
 			position = float(status.get("elapsed", 0))
 			title = current_song.get("title", None),
 			duration = float(status.get("duration", status.get("time", 0)))
-			status = status.get("state", "stopped")
+			status = status.get("state", STATUS_STOPPED)
 			
 			client.close()
 			client.disconnect()
@@ -1027,7 +1047,7 @@ async def get_mpd_info(config_manager):
 		except Exception as e:
 			pass  # LOGGER.log_debug(f"Unexpected MPD error: {str(e)}", config_manager.config)
 		update_fetch_status("mpd", config_manager=config_manager)
-		return (None, 0.0, "", None, 0.0, "stopped")
+		return (None, 0.0, "", None, 0.0, STATUS_STOPPED)
 	
 	# Use global thread pool executor
 	loop = asyncio.get_event_loop()
@@ -1049,25 +1069,25 @@ async def get_playerctl_info():
 		# LOGGER.log_debug("playerctl polling...", config_manager.config)
 
 		if "No players found" in output or not output:
-			return (None, 0.0, "", None, 0.0, "stopped")
+			return (None, 0.0, "", None, 0.0, STATUS_STOPPED)
 
 		fields = output.split("|")
 		if len(fields) != 6:
-			return (None, 0.0, "", None, 0.0, "stopped")
+			return (None, 0.0, "", None, 0.0, STATUS_STOPPED)
 
 		_, artist, title, position, status, duration = fields
 
 		position_sec = float(position) / 1_000_000 if position else 0.0
 		duration_sec = float(duration) / 1_000_000 if duration else 0.0
 
-		status = status.lower() if status else "stopped"
+		status = status.lower() if status else STATUS_STOPPED
 		if position_sec < 0 or (duration_sec > 0 and position_sec > duration_sec * 1.5):
-			position_sec = duration_sec if status == "paused" else 0.0
+			position_sec = duration_sec if status == STATUS_PAUSED else 0.0
 
 		return (None, position_sec, artist or "", title, duration_sec, status)
 
 	except Exception:
-		return (None, 0.0, "", None, 0.0, "stopped")
+		return (None, 0.0, "", None, 0.0, STATUS_STOPPED)
 
 
 async def get_player_info(config_manager):
@@ -1076,7 +1096,7 @@ async def get_player_info(config_manager):
 		try:
 			cmus_info = await get_cmus_info()
 			if cmus_info[0] is not None:
-				return 'cmus', cmus_info
+				return PLAYER_CMUS, cmus_info
 		except Exception as e:
 			pass  # LOGGER.log_debug(f"CMUS detection failed: {str(e)}", config_manager.config)
 
@@ -1084,7 +1104,7 @@ async def get_player_info(config_manager):
 		try:
 			mpd_info = await get_mpd_info(config_manager)
 			if mpd_info[0] is not None:
-				return 'mpd', mpd_info
+				return PLAYER_MPD, mpd_info
 		except Exception as e:
 			pass  # LOGGER.log_debug(f"MPD detection failed: {str(e)}", config_manager.config)
 
@@ -1092,13 +1112,13 @@ async def get_player_info(config_manager):
 		try:
 			playerctl_info = await get_playerctl_info()
 			if playerctl_info[3] is not None:
-				return "playerctl", playerctl_info
+				return PLAYER_PLAYERCTL, playerctl_info
 		except Exception as e:
 			pass  # LOGGER.log_debug(f"MPRIS detection failed: {str(e)}", config_manager.config)
 
 	update_fetch_status("no_player", config_manager=config_manager)
 	# LOGGER.log_debug("No active music player detected", config_manager.config)
-	return None, (None, 0, "", None, 0, "stopped")
+	return None, (None, 0, "", None, 0, STATUS_STOPPED)
 
 # ==============
 #  UI RENDERING
@@ -1321,9 +1341,9 @@ def display_lyrics(
 			line_str, word_widths = _display_cache['a2_word_cache'][line_key]
 			
 			total_width = sum(word_widths) + (len(word_widths) - 1)
-			if alignment == 'right':
+			if alignment == ALIGN_RIGHT:
 				x = max_func(0, width - total_width - 1)
-			elif alignment == 'center':
+			elif alignment == ALIGN_CENTER:
 				x = max_func(0, (width - total_width) // 2)
 			else:
 				x = 1
@@ -1400,9 +1420,9 @@ def display_lyrics(
 			txt = line.strip()[:width - 1]
 			disp_width = widths[start_screen_line + i]
 			
-			if alignment == 'right':
+			if alignment == ALIGN_RIGHT:
 				x = max_func(0, width - disp_width - 1)
-			elif alignment == 'center':
+			elif alignment == ALIGN_CENTER:
 				x = max_func(0, (width - disp_width) // 2)
 			else:
 				x = 1
@@ -1584,8 +1604,8 @@ async def fetch_lyrics_async(audio_file, directory, artist, title, duration, con
 	try:
 		lyrics_file = await find_lyrics_file_async(audio_file, directory, artist, title, duration, config_manager, logger)
 		if lyrics_file:
-			is_txt_format = lyrics_file.endswith('.txt')
-			is_a2_format = lyrics_file.endswith('.a2')
+			is_txt_format = lyrics_file.endswith(FORMAT_TXT)
+			is_a2_format = lyrics_file.endswith(FORMAT_A2)
 			lyrics, errors = load_lyrics(lyrics_file, logger, config_manager)
 			update_fetch_status('done', len(lyrics), config_manager)
 			return (lyrics, errors), is_txt_format, is_a2_format
@@ -1603,7 +1623,7 @@ def sync_player_position(status, raw_pos, last_time, time_adjust, duration):
 	now = time.perf_counter()
 	elapsed = now - last_time
 	
-	if status == "playing":
+	if status == STATUS_PLAYING:
 		estimated = raw_pos + elapsed + time_adjust
 	else:
 		estimated = raw_pos + time_adjust
@@ -1674,12 +1694,6 @@ def get_monitor_refresh_rate():
 # ================
 #  MAIN APPLICATION
 # ================
-# --- Module-level constants and cached immutable data (hot) ---
-PLAYER_TYPES = ("cmus", "playerctl")
-INSTRUMENTAL_KEYWORDS = ("instrumental", "karaoke")
-STATUS_PLAYING = "playing"
-STATUS_PAUSED = "paused"
-STATUS_STOPPED = "stopped"
 
 async def main_async(stdscr, config_manager, logger):
 	# Local references
@@ -1773,13 +1787,16 @@ async def main_async(stdscr, config_manager, logger):
 	wrap_func = wrap_by_display_width
 	get_width_func = wcswidth
 
-	alignments_list = ("left", "center", "right")
-	alignment_index = {"left": 0, "center": 1, "right": 2}
+	alignments_list = (ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT)
+	alignment_index = {ALIGN_LEFT: 0, ALIGN_CENTER: 1, ALIGN_RIGHT: 2}
 
 	stdscr_curs_set(0)
 	stdscr_nodelay(True)
 	stdscr_keypad(True)
 	stdscr_timeout(0)
+
+	PLAYER_TYPES = (PLAYER_CMUS, PLAYER_PLAYERCTL)
+	INSTRUMENTAL_KEYWORDS = ("instrumental", "karaoke")
 
 	# Initialize application state
 	current_title = None
@@ -1940,7 +1957,7 @@ async def main_async(stdscr, config_manager, logger):
 			last_pos_time = current_time
 			
 			if (p_title, p_artist, p_audio_file) != (current_title, current_artist, current_file) and p_status != STATUS_STOPPED:
-				if p_audio_file and path_exists(p_audio_file) and player_type in ("cmus", "mpd"):
+				if p_audio_file and path_exists(p_audio_file) and player_type in (PLAYER_CMUS, PLAYER_MPD):
 					try:
 						log_info(f"New track detected: {path_basename(p_audio_file)}", config)
 					except (TypeError, AttributeError):
@@ -1974,7 +1991,7 @@ async def main_async(stdscr, config_manager, logger):
 						lyric_future = None
 
 				search_directory = None
-				if p_audio_file and path_exists(p_audio_file) and player_type in ('cmus', 'mpd'):
+				if p_audio_file and path_exists(p_audio_file) and player_type in (PLAYER_CMUS, PLAYER_MPD):
 					search_directory = path_dirname(p_audio_file)
 
 				if current_title and current_artist:
@@ -2025,7 +2042,7 @@ async def main_async(stdscr, config_manager, logger):
 					timestamps = []
 					valid_indices = []
 
-				if status == STATUS_PLAYING and player_type in ("cmus", "mpd"):
+				if status == STATUS_PLAYING and player_type in (PLAYER_CMUS, PLAYER_MPD):
 					resume_trigger_time = current_time
 					log_debug("Refresh triggered by new lyrics loading", config)
 
@@ -2062,7 +2079,7 @@ async def main_async(stdscr, config_manager, logger):
 			else:
 				estimated_position = raw_position
 		else:
-			playback_paused = (status == "pause")
+			playback_paused = (status == STATUS_PAUSED)
 
 		offset_val = base_offset + next_frame_time
 		
@@ -2223,13 +2240,13 @@ async def main_async(stdscr, config_manager, logger):
 				time_adjust -= 5.0
 				needs_redraw_input = True
 			elif key in align_left_keys:
-				alignment = "left"
+				alignment = ALIGN_LEFT
 				needs_redraw_input = True
 			elif key in align_center_keys:
-				alignment = "center"
+				alignment = ALIGN_CENTER
 				needs_redraw_input = True
 			elif key in align_right_keys:
-				alignment = "right"
+				alignment = ALIGN_RIGHT
 				needs_redraw_input = True
 			elif key in align_cycle_forward_keys:
 				current_idx_align = alignment_index[alignment]
