@@ -32,6 +32,17 @@ import unicodedata
 from wcwidth import wcswidth
 import os, json, sys
 import atexit
+import tempfile
+
+# embbeded lyrics
+from typing import Optional, Dict
+import mutagen
+import mutagen.flac
+import mutagen.oggvorbis
+import mutagen.oggopus
+import mutagen.mp3
+import mutagen.id3
+import mutagen.mp4
 
 # ==============
 #  GLOBALS
@@ -109,7 +120,8 @@ class ConfigManager:
 		'LYRIC_EXTENSIONS', 'LYRIC_CACHE_DIR', 'SEARCH_TIMEOUT',
 		'VALIDATION_LENGTHS', 'ALLOW_SYNCEDLYRIC', 'PROVIDERS',
 		'PROVIDER_FALLBACK', 'PROVIDER_FORMAT_PRIORITY',
-		'DISPLAY_NAME', 'MESSAGES', 'TERMINAL_STATES'
+		'DISPLAY_NAME', 'MESSAGES', 'TERMINAL_STATES',
+		'READ_EMBEDDED_LYRICS', 'SKIP_EMBEDDED_TXT'
 	)
 	
 	def __init__(self, use_user_dirs=True, config_path=None, use_default=False, player_override=None):
@@ -182,7 +194,9 @@ class ConfigManager:
 				"Syncedlyrics": True,
 				"Sources": ["Musixmatch", "Lrclib", "NetEase", "Megalobiz", "Genius"],
 				"Fallback": True,
-				"Format_priority": ["a2", "lrc" ,"txt"]
+				"Format_priority": ["a2", "lrc" ,"txt"],
+				"read_embedded_lyrics": True,
+				"skip_embedded_txt": True
 			},
 			"ui": {
 				"alignment": "left",
@@ -319,6 +333,9 @@ class ConfigManager:
 		
 		self.PROVIDER_FALLBACK = self.config["lyrics"]["Fallback"]
 		self.PROVIDER_FORMAT_PRIORITY = self.config["lyrics"]["Format_priority"]
+		
+		self.READ_EMBEDDED_LYRICS = self.config["lyrics"].get("read_embedded_lyrics")
+		self.SKIP_EMBEDDED_TXT = self.config["lyrics"].get("skip_embedded_txt")
 		
 	def setup_ui(self):
 		self.DISPLAY_NAME = self.config["ui"]["name"]
@@ -553,10 +570,12 @@ def log_timeout(artist, title, config_manager, logger):
 # Pre-compiled regex patterns for performance
 _FILENAME_SANITIZE_PATTERN = re.compile(r'[<>:"/\\|?*]')
 _STRING_SANITIZE_PATTERN = re.compile(r'[^a-zA-Z0-9]')
-_TIMESTAMP_PATTERN = re.compile(r'\[\d+:\d+\.\d+\]')
+# Updated timestamp patterns to handle both . and : as millisecond separators
+_TIMESTAMP_PATTERN = re.compile(r'\[\d+:\d+(?:[.:]\d+)?\]')
 _A2_WORD_PATTERN = re.compile(r'<(\d{2}:\d{2}\.\d{2})>(.*?)<(\d{2}:\d{2}\.\d{2})>')
 _A2_LINE_PATTERN = re.compile(r'^\[(\d{2}:\d{2}\.\d{2})\](.*)')
-_LRC_PATTERN = re.compile(r'\[(\d+:\d+\.\d+)\](.*)')
+# Updated LRC pattern to allow optional whitespace and both . or : for milliseconds
+_LRC_PATTERN = re.compile(r'^\s*\[(\d+:\d+(?:[.:]\d+)?)\]\s*(.*)$')
 _TIME_PATTERNS = [
 	re.compile(r'^(?P<m>\d+):(?P<s>\d+\.\d+)$'),
 	re.compile(r'^(?P<m>\d+):(?P<s>\d+):(?P<ms>\d{1,3})$'),
@@ -684,6 +703,197 @@ def is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
 		logger.log_debug(f"Timeout check error: {e}", config_manager.config)
 		return False 
 
+# ====================================
+#  Generic embedded lyrics reader
+# ====================================
+
+async def read_embedded_lyrics(audio_file: str, logger, config_manager) -> Optional[Dict]:
+	"""
+	Unified async embedded lyrics reader.
+
+	Supports:
+		- FLAC
+		- OGG Vorbis
+		- Opus
+		- MP3 (ID3 USLT / SYLT)
+		- M4A / MP4 (©lyr)
+
+	Returns:
+		{
+			"type": "embedded",
+			"format": "lrc" or "txt",
+			"content": "...",
+			"path": None
+		}
+		or None
+	"""
+
+	if not audio_file or not os.path.exists(audio_file):
+		return None
+
+	ext = os.path.splitext(audio_file)[1].lower()
+
+	try:
+		# -------------------------
+		# FLAC
+		# -------------------------
+		if ext == ".flac":
+			audio = await asyncio.to_thread(mutagen.flac.FLAC, audio_file)
+			return _read_vorbis_comments(audio, logger, config_manager)
+
+		# -------------------------
+		# OGG Vorbis
+		# -------------------------
+		if ext == ".ogg":
+			audio = await asyncio.to_thread(mutagen.oggvorbis.OggVorbis, audio_file)
+			return _read_vorbis_comments(audio, logger, config_manager)
+
+		# -------------------------
+		# Opus
+		# -------------------------
+		if ext == ".opus":
+			audio = await asyncio.to_thread(mutagen.oggopus.OggOpus, audio_file)
+			return _read_vorbis_comments(audio, logger, config_manager)
+
+		# -------------------------
+		# MP3 (ID3)
+		# -------------------------
+		if ext == ".mp3":
+			audio = await asyncio.to_thread(mutagen.mp3.MP3, audio_file)
+			if not audio.tags:
+				return None
+
+			# SYLT (synced lyrics)
+			sylt_frames = audio.tags.getall("SYLT")
+			if sylt_frames:
+				frame = sylt_frames[0]
+				lines = []
+				for text, timestamp in frame.text:
+					minutes = int(timestamp // 60000)
+					seconds = (timestamp % 60000) / 1000
+					lines.append(f"[{minutes:02d}:{seconds:05.2f}]{text}")
+				content = "\n".join(lines).strip()
+				if content:
+					return {
+						"type": "embedded",
+						"format": "lrc",
+						"content": content,
+						"path": None
+					}
+
+			# USLT (unsynced)
+			uslt_frames = audio.tags.getall("USLT")
+			if uslt_frames:
+				content = uslt_frames[0].text.strip()
+				if content:
+					return {
+						"type": "embedded",
+						"format": "txt",
+						"content": content,
+						"path": None
+					}
+
+			return None
+
+		# -------------------------
+		# M4A / MP4
+		# -------------------------
+		if ext in {".m4a", ".mp4"}:
+			audio = await asyncio.to_thread(mutagen.mp4.MP4, audio_file)
+
+			if "©lyr" in audio:
+				values = audio["©lyr"]
+				if values:
+					content = "\n".join(v.strip() for v in values if v.strip())
+					if content:
+						return {
+							"type": "embedded",
+							"format": "txt",
+							"content": content,
+							"path": None
+						}
+
+			return None
+
+	except Exception:
+		return None
+
+	return None
+
+def _read_vorbis_comments(audio, logger, config_manager) -> Optional[Dict]:
+	"""
+	Reads LYRICS / LRC / UNSYNCEDLYRICS from Vorbis Comment containers.
+	Detects format based on content (presence of LRC timestamps).
+	"""
+	
+	# # Debug: dump all Vorbis comments
+	# if logger.ENABLE_DEBUG_LOGGING:
+		# logger.log_debug(f"Vorbis comments in {getattr(audio, 'filename', 'unknown')}:", config_manager.config)
+		# for key in sorted(audio.keys()):
+			# value = audio.get(key)
+			# if isinstance(value, list):
+				# value = " | ".join(str(v) for v in value)
+			# logger.log_debug(f"  {key} = {value}", config_manager.config)
+
+	lower_map = {k.lower(): k for k in audio.keys()}
+	
+	# Helper to detect LRC format (presence of [mm:ss.xx] or [mm:ss:xx] timestamps)
+	def detect_format(content: str) -> str:
+		# Look for typical LRC timestamp pattern: [mm:ss.xx] or [mm:ss:xx]
+		if re.search(r'\[\d+:\d+(?:[.:]\d+)?\]', content):
+			return "lrc"
+		return "txt"
+
+	# Check for "lrc" key explicitly (may contain synced lyrics)
+	if "lrc" in lower_map:
+		key = lower_map["lrc"]
+		values = audio.get(key)
+		if values:
+			content = "\n".join(v.strip() for v in values if v.strip())
+			if content:
+				fmt = detect_format(content)
+				return {
+					"type": "embedded",
+					"format": fmt,
+					"content": content,
+					"path": None
+				}
+
+	# Check for "lyrics" key (commonly unsynced, but could be synced)
+	if "lyrics" in lower_map:
+		key = lower_map["lyrics"]
+		values = audio.get(key)
+		if values:
+			content = "\n".join(v.strip() for v in values if v.strip())
+			if content:
+				fmt = detect_format(content)
+				return {
+					"type": "embedded",
+					"format": fmt,
+					"content": content,
+					"path": None
+				}
+
+	# Fallback to unsyncedlyrics (always txt)
+	if "unsyncedlyrics" in lower_map:
+		key = lower_map["unsyncedlyrics"]
+		values = audio.get(key)
+		if values:
+			content = "\n".join(v.strip() for v in values if v.strip())
+			if content:
+				return {
+					"type": "embedded",
+					"format": "txt",
+					"content": content,
+					"path": None
+				}
+
+	return None
+
+# ============================================================
+#  find_lyrics_file_async (modified to use the new reader)
+# ============================================================
+
 async def find_lyrics_file_async(audio_file, directory, artist_name, track_name, duration=None, config_manager=None, logger=None):
 	"""Async version of find_lyrics_file with non-blocking operations and concurrent online fetch"""
 	update_fetch_status('local', config_manager=config_manager)
@@ -701,6 +911,25 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			# LOGGER.log_debug("Instrumental track detected")
 			update_fetch_status('instrumental', config_manager=config_manager)
 			return save_lyrics("[Instrumental]", track_name, artist_name, 'txt', config_manager, logger)
+
+		# --- Embedded lyrics (any format) ---
+		if (config_manager.READ_EMBEDDED_LYRICS and audio_file and 
+				os.path.exists(audio_file)):
+			embedded = await read_embedded_lyrics(audio_file, logger, config_manager)
+			if embedded:
+				logger.log_debug(f"First 200 chars of embedded lyrics:\n{embedded['content'][:200]}", config_manager.config)
+				# Skip plain text embedded lyrics if configured to do so
+				if config_manager.SKIP_EMBEDDED_TXT and embedded['format'] == 'txt':
+					logger.log_debug("Skipping embedded plain text lyrics (skip_embedded_txt=True)", config_manager.config)
+				else:
+					if validate_lyrics(embedded['content'], artist_name, track_name, config_manager):
+						update_fetch_status('done', config_manager=config_manager)
+						logger.log_debug("Using Embedded", config_manager.config)
+						return embedded
+					else:
+						embedded['warning'] = "Validation warning"
+						update_fetch_status('done', config_manager=config_manager)
+						return embedded
 
 		# --- Local file search (direct audio_file base name) ---
 		if audio_file and directory and audio_file != "None":
@@ -849,6 +1078,51 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 		update_fetch_status("failed", config_manager=config_manager)
 		return None
 
+# ===================
+#  fetch_lyrics_async
+# ===================
+
+async def fetch_lyrics_async(audio_file, directory, artist, title, duration, config_manager, logger):
+	"""Async function to fetch lyrics with non-blocking operations"""
+	try:
+		result = await find_lyrics_file_async(audio_file, directory, artist, title, duration, config_manager, logger)
+		if result is None:
+			return ([], []), False, False
+
+		# Case 1: Embedded lyrics (dictionary)
+		if isinstance(result, dict) and result.get('type') == 'embedded':
+			lyrics_content = result['content']
+			
+			fmt = result['format']  # 'lrc' or 'txt'
+			# Write to temporary file so load_lyrics can read it
+			with tempfile.NamedTemporaryFile(mode='w', suffix=f'.{fmt}', delete=False) as tmp:
+				tmp.write(lyrics_content)
+				tmp_path = tmp.name
+			try:
+				lyrics, errors = load_lyrics(tmp_path, logger, config_manager)
+				is_txt = (fmt == 'txt')
+				is_a2 = (fmt == 'a2')  # a2 never comes from embedded, but keep for completeness
+				update_fetch_status('done', len(lyrics), config_manager)
+				return (lyrics, errors), is_txt, is_a2
+			finally:
+				os.unlink(tmp_path)  # delete temp file
+
+		# Case 2: Regular file path (string)
+		elif isinstance(result, str):
+			is_txt = result.endswith(FORMAT_TXT)
+			is_a2 = result.endswith(FORMAT_A2)
+			lyrics, errors = load_lyrics(result, logger, config_manager)
+			update_fetch_status('done', len(lyrics), config_manager)
+			return (lyrics, errors), is_txt, is_a2
+
+		else:
+			return ([], []), False, False
+
+	except Exception as e:
+		logger.log_error(f"{title} lyrics fetch error: {e}", config_manager.config)
+		update_fetch_status('failed', config_manager=config_manager)
+		return ([], []), False, False
+
 def parse_time_to_seconds(time_str):
 	"""Convert various timestamp formats to seconds with millisecond precision."""
 	patterns = _TIME_PATTERNS
@@ -923,6 +1197,7 @@ def load_lyrics(file_path, logger, config_manager):
 				lyrics.append((None, raw_line))
 		# LRC Format
 		else:
+			# Use updated _LRC_PATTERN which handles flexible timestamps and whitespace
 			lrc_pattern = _LRC_PATTERN
 			for line in lines:
 				raw_line = line.rstrip('\n')
@@ -1595,26 +1870,6 @@ def update_display(stdscr, lyrics, errors, position, current_title, manual_offse
 							  current_title, manual_offset, 
 							  is_txt_format, is_a2_format, current_idx, 
 							  manual_scroll_active, time_adjust, is_fetching, subframe_fraction, alignment, player_info, config_manager)
-
-# ================
-#  LYRIC FETCHING
-# ================
-async def fetch_lyrics_async(audio_file, directory, artist, title, duration, config_manager, logger):
-	"""Async function to fetch lyrics with non-blocking operations"""
-	try:
-		lyrics_file = await find_lyrics_file_async(audio_file, directory, artist, title, duration, config_manager, logger)
-		if lyrics_file:
-			is_txt_format = lyrics_file.endswith(FORMAT_TXT)
-			is_a2_format = lyrics_file.endswith(FORMAT_A2)
-			lyrics, errors = load_lyrics(lyrics_file, logger, config_manager)
-			update_fetch_status('done', len(lyrics), config_manager)
-			return (lyrics, errors), is_txt_format, is_a2_format
-		update_fetch_status('failed', config_manager=config_manager)
-		return ([], []), False, False
-	except Exception as e:
-		logger.log_error(f"{title} lyrics fetch error: {e}", config_manager.config)
-		update_fetch_status('failed', config_manager=config_manager)
-		return ([], []), False, False
 
 # ================
 #  SYNC UTILITIES
