@@ -82,7 +82,7 @@ ALIGN_RIGHT = "right"
 # ==============
 #  CONFIGURATION
 # ==============
-VERSION = "1.0.1"
+VERSION = "1.0.2"
 
 config_dir = "~/.config/lyrus"
 config_files = ["config.json", "config1.json", "config2.json"]
