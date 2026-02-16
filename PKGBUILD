@@ -1,8 +1,8 @@
 # Maintainer: Ja4e <Jakie101@proton.me>
 pkgname=lyrus-git
 pkgver=1.0.0
-pkgrel=2
-pkgdesc="A python lyrics player for cmus"
+pkgrel=3
+pkgdesc="A Python curses lyrics player primarily for cmus, with playerctl as a fallback"
 arch=('any')
 url="https://github.com/Ja4e/Lyrus"
 license=('AGPL-3.0')
@@ -34,4 +34,3 @@ package() {
     install -Dm644 "LICENSE" "$pkgdir/usr/share/licenses/$pkgname/LICENSE"
     install -Dm644 "README.md" "$pkgdir/usr/share/doc/$pkgname/README"
 }
-
