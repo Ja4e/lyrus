@@ -14,6 +14,7 @@ depends=(
     'python-wcwidth'
     'python-appdirs'
     'python-syncedlyrics'
+    'python-mutagen'
 )
 
 optdepends=(
