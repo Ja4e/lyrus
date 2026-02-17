@@ -5,7 +5,7 @@ automatic lyrics fetcher and supports local lyrics player, txt and lrc scrolling
 supports wide range of lyric sources
 curses, scrollable
 
-use ``PKGBUILD``  and  ``makepkg -si`` (currently on arch works)
+use ``PKGBUILD``  and  ``makepkg -si`` (currently on arch works) bewarned that ``python-syncedlyrics`` dependencies is AUR you might need to install that beforehand
 or through AUR ``yay -S lyrus-git`` (recommended)
 , for other linux do use make sure use virual environment to get it working (it should)
 like
@@ -16,10 +16,8 @@ python -m venv lyrus-123
 pip -r requirements.txt
 python lyrus.py
 ```
+``python-syncedlyrics`` exist as mandatory because it provides best source of lrc
 
-just make sure
-
-ustomizable through this local where this program installed.
 
 ![image](https://github.com/user-attachments/assets/5d5fdbc5-7d4b-4b38-b2db-0cee5722806f)
 
