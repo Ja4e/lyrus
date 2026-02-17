@@ -346,10 +346,11 @@ class ConfigManager:
 #  LOGGING SYSTEM
 # ================
 class Logger:
-	"""Handle application logging"""
+	"""Handle application logging. Stores config internally."""
 	__slots__ = (
 		'LOG_DIR', 'LYRICS_TIMEOUT_LOG', 'DEBUG_LOG', 
-		'LOG_RETENTION_DAYS', 'MAX_DEBUG_COUNT', 'ENABLE_DEBUG_LOGGING'
+		'LOG_RETENTION_DAYS', 'MAX_DEBUG_COUNT', 'ENABLE_DEBUG_LOGGING',
+		'config'  # store full config for log level and log file
 	)
 	
 	def __init__(self, config_manager):
@@ -359,6 +360,7 @@ class Logger:
 		self.LOG_RETENTION_DAYS = config_manager.LOG_RETENTION_DAYS
 		self.MAX_DEBUG_COUNT = config_manager.MAX_DEBUG_COUNT
 		self.ENABLE_DEBUG_LOGGING = config_manager.ENABLE_DEBUG_LOGGING
+		self.config = config_manager.config  # keep reference to full config
 	
 	def clean_debug_log(self):
 		"""Maintain debug log size by keeping only last 100 entries"""
@@ -378,34 +380,34 @@ class Logger:
 		except Exception as e:
 			print(f"Error cleaning debug log: {e}")
 
-	def clean_log(self, config):
+	def clean_log(self):
 		"""Maintain log size by rotating files"""
-		log_path = os.path.join(self.LOG_DIR, config["global"]["log_file"])
+		log_path = os.path.join(self.LOG_DIR, self.config["global"]["log_file"])
 		
 		try:
 			if os.path.exists(log_path):
 				with open(log_path, "r+") as f:
 					lines = f.readlines()
-					if len(lines) > config["global"]["max_log_count"]:
-						keep = lines[-config["global"]["max_log_count"]:]
+					if len(lines) > self.config["global"]["max_log_count"]:
+						keep = lines[-self.config["global"]["max_log_count"]:]
 						f.seek(0)
 						f.truncate()
 						f.writelines(keep)
 		except Exception as e:
 			print(f"Log cleanup failed: {str(e)}", file=sys.stderr)
 
-	def log_message(self, level: str, message: str, config):
+	def log_message(self, level: str, message: str):
 		"""Unified logging function with level-based filtering and rotation"""
-		main_log = os.path.join(self.LOG_DIR, config["global"]["log_file"])
+		main_log = os.path.join(self.LOG_DIR, self.config["global"]["log_file"])
 		debug_log = os.path.join(self.LOG_DIR, self.DEBUG_LOG)
-		configured_level = LOG_LEVELS.get(config["global"]["log_level"], 2)
+		configured_level = LOG_LEVELS.get(self.config["global"]["log_level"], 2)
 		message_level = LOG_LEVELS.get(level.upper(), 2)
 		
 		try:
 			os.makedirs(self.LOG_DIR, exist_ok=True)
 			timestamp = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.{int(time.time() * 1000000) % 1000000:06d}"
 			
-			if config["global"]["enable_debug"] and message_level <= LOG_LEVELS["DEBUG"]:
+			if self.config["global"]["enable_debug"] and message_level <= LOG_LEVELS["DEBUG"]:
 				debug_entry = f"{timestamp} | {level.upper()} | {message}\n"
 				with open(debug_log, "a", encoding='utf-8') as f:
 					f.write(debug_entry)
@@ -416,29 +418,29 @@ class Logger:
 				with open(main_log, "a", encoding='utf-8') as f:
 					f.write(main_entry)
 				
-				if os.path.getsize(main_log) > config["global"]["max_log_count"] * 1024:
-					self.clean_log(config)
+				if os.path.getsize(main_log) > self.config["global"]["max_log_count"] * 1024:
+					self.clean_log()
 
 		except Exception as e:
 			sys.stderr.write(f"Logging failed: {str(e)}\n")
 
-	def log_fatal(self, message: str, config):
-		self.log_message("FATAL", message, config)
+	def log_fatal(self, message: str):
+		self.log_message("FATAL", message)
 
-	def log_error(self, message: str, config):
-		self.log_message("ERROR", message, config)
+	def log_error(self, message: str):
+		self.log_message("ERROR", message)
 
-	def log_warn(self, message: str, config):
-		self.log_message("WARN", message, config)
+	def log_warn(self, message: str):
+		self.log_message("WARN", message)
 
-	def log_info(self, message: str, config):
-		self.log_message("INFO", message, config)
+	def log_info(self, message: str):
+		self.log_message("INFO", message)
 
-	def log_debug(self, message: str, config):
-		self.log_message("DEBUG", message, config)
+	def log_debug(self, message: str):
+		self.log_message("DEBUG", message)
 
-	def log_trace(self, message: str, config):
-		self.log_message("TRACE", message, config)
+	def log_trace(self, message: str):
+		self.log_message("TRACE", message)
 
 # Status system
 fetch_status_lock = threading.Lock()
@@ -525,11 +527,11 @@ async def fetch_lrclib_async(artist, title, duration=None, session=None):
 					return data.get('syncedLyrics') or data.get('plainLyrics'), bool(data.get('syncedLyrics'))
 				except (aiohttp.ContentTypeError, json.JSONDecodeError):
 					content = await response.text()
-					# LOGGER.log_debug(f"LRCLIB async error: Invalid JSON. Raw response: {content[:200]}")
+					# logger.log_debug(f"LRCLIB async error: Invalid JSON. Raw response: {content[:200]}")
 			else:
-				pass  # LOGGER.log_debug(f"LRCLIB async error: HTTP {response.status}")
+				pass  # logger.log_debug(f"LRCLIB async error: HTTP {response.status}")
 	except (aiohttp.ClientError, asyncio.TimeoutError) as e:
-		pass  # LOGGER.log_debug(f"LRCLIB async error: {e}")
+		pass  # logger.log_debug(f"LRCLIB async error: {e}")
 	finally:
 		if own_session:
 			await session.close()
@@ -560,9 +562,9 @@ def log_timeout(artist, title, config_manager, logger):
 		if not entry_exists:
 			with open(log_path, 'a', encoding='utf-8') as f:
 				f.write(log_entry)
-			logger.clean_log(config_manager.config)
+			logger.clean_log()
 	except Exception as e:
-		logger.log_error(f"Failed to write timeout log: {e}", config_manager.config)
+		logger.log_error(f"Failed to write timeout log: {e}")
 
 # ======================
 #  CORE LYRIC FUNCTIONS
@@ -594,14 +596,14 @@ def sanitize_string(s):
 
 async def fetch_lyrics_lrclib_async(artist_name, track_name, duration=None):
 	"""Async version of LRCLIB fetch"""
-	# LOGGER.log_debug(f"Querying LRCLIB API: {artist_name} - {track_name}")
+	# logger.log_debug(f"Querying LRCLIB API: {artist_name} - {track_name}")
 	try:
 		result = await fetch_lrclib_async(artist_name, track_name, duration)
 		if result[0]:
-			pass  # LOGGER.log_info(f"LRCLIB returned {'synced' if result[1] else 'plain'} lyrics")
+			pass  # logger.log_info(f"LRCLIB returned {'synced' if result[1] else 'plain'} lyrics")
 		return result
 	except Exception as e:
-		# LOGGER.log_error(f"LRCLIB fetch failed: {str(e)}")
+		# logger.log_error(f"LRCLIB fetch failed: {str(e)}")
 		return None, None
 
 def validate_lyrics(content, artist, title, config_manager):
@@ -618,11 +620,11 @@ def validate_lyrics(content, artist, title, config_manager):
 
 async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None, timeout=15, config_manager=None):
 	"""Async version of syncedlyrics fetch using global thread pool"""
-	# LOGGER.log_debug(f"Starting syncedlyrics search: {artist_name} - {track_name} ({duration}s)")
+	# logger.log_debug(f"Starting syncedlyrics search: {artist_name} - {track_name} ({duration}s)")
 	try:
 		import syncedlyrics
 		
-		# LOGGER.log_debug(f"Loaded providers: {config_manager.PROVIDERS}")
+		# logger.log_debug(f"Loaded providers: {config_manager.PROVIDERS}")
 		
 		def worker(search_term, synced=True):
 			"""Worker for lyric search"""
@@ -630,12 +632,12 @@ async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None
 				result = syncedlyrics.search(search_term) if synced else syncedlyrics.search(search_term, plain_only=True, providers=config_manager.PROVIDERS)
 				return result, synced
 			except Exception as e:
-				# LOGGER.log_debug(f"Lyrics search error: {e}")
+				# logger.log_debug(f"Lyrics search error: {e}")
 				return None, False
 
 		search_term = f"{track_name} {artist_name}".strip()
 		if not search_term:
-			# LOGGER.log_debug("Empty search term")
+			# logger.log_debug("Empty search term")
 			return None, None
 
 		loop = asyncio.get_event_loop()
@@ -644,12 +646,12 @@ async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None
 		lyrics, is_synced = await loop.run_in_executor(THREAD_POOL_EXECUTOR, worker, search_term, True)
 		
 		if lyrics:
-			# LOGGER.log_debug(f"Found {'synced' if is_synced else 'plain'} lyrics via syncedlyrics")
+			# logger.log_debug(f"Found {'synced' if is_synced else 'plain'} lyrics via syncedlyrics")
 			if not validate_lyrics(lyrics, artist_name, track_name, config_manager):
-				pass  # LOGGER.log_warn("Lyrics validation failed but using anyway")
+				pass  # logger.log_warn("Lyrics validation failed but using anyway")
 			return lyrics, is_synced
 		
-		# LOGGER.log_trace("Initiating plain lyrics fallback search")
+		# logger.log_trace("Initiating plain lyrics fallback search")
 		lyrics, is_synced = await loop.run_in_executor(THREAD_POOL_EXECUTOR, worker, search_term, False)
 		
 		if lyrics and validate_lyrics(lyrics, artist_name, track_name, config_manager):
@@ -658,7 +660,7 @@ async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None
 		return None, None
 		
 	except Exception as e:
-		# LOGGER.log_debug(f"Lyrics fetch error: {e}")
+		# logger.log_debug(f"Lyrics fetch error: {e}")
 		return None, None
 
 def save_lyrics(lyrics, track_name, artist_name, extension, config_manager, logger):
@@ -674,11 +676,11 @@ def save_lyrics(lyrics, track_name, artist_name, extension, config_manager, logg
 		
 		with open(file_path, "w", encoding="utf-8") as f:
 			f.write(lyrics)
-		# LOGGER.log_info(f"Saved lyrics to: {file_path}", config_manager.config)
-		# LOGGER.log_trace(f"Lyrics content sample: {lyrics[:200]}...", config_manager.config)
+		# logger.log_info(f"Saved lyrics to: {file_path}")
+		# logger.log_trace(f"Lyrics content sample: {lyrics[:200]}...")
 		return file_path
 	except Exception as e:
-		logger.log_error(f"Failed to save lyrics: {str(e)}", config_manager.config)
+		logger.log_error(f"Failed to save lyrics: {str(e)}")
 		return None
 
 def is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
@@ -700,7 +702,7 @@ def is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
 					return True
 		return False
 	except Exception as e:
-		logger.log_debug(f"Timeout check error: {e}", config_manager.config)
+		logger.log_debug(f"Timeout check error: {e}")
 		return False 
 
 # ====================================
@@ -828,12 +830,12 @@ def _read_vorbis_comments(audio, logger, config_manager) -> Optional[Dict]:
 	
 	# # Debug: dump all Vorbis comments
 	# if logger.ENABLE_DEBUG_LOGGING:
-		# logger.log_debug(f"Vorbis comments in {getattr(audio, 'filename', 'unknown')}:", config_manager.config)
+		# logger.log_debug(f"Vorbis comments in {getattr(audio, 'filename', 'unknown')}:")
 		# for key in sorted(audio.keys()):
 			# value = audio.get(key)
 			# if isinstance(value, list):
 				# value = " | ".join(str(v) for v in value)
-			# logger.log_debug(f"  {key} = {value}", config_manager.config)
+			# logger.log_debug(f"  {key} = {value}")
 
 	lower_map = {k.lower(): k for k in audio.keys()}
 	
@@ -897,10 +899,10 @@ def _read_vorbis_comments(audio, logger, config_manager) -> Optional[Dict]:
 async def find_lyrics_file_async(audio_file, directory, artist_name, track_name, duration=None, config_manager=None, logger=None):
 	"""Async version of find_lyrics_file with non-blocking operations and concurrent online fetch"""
 	update_fetch_status('local', config_manager=config_manager)
-	# LOGGER.log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
+	logger.log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
 
 	try:
-		# LOGGER.log_debug(f"{audio_file}, {directory}, {artist_name}, {track_name}, {duration}")
+		# logger.log_debug(f"{audio_file}, {directory}, {artist_name}, {track_name}, {duration}")
 
 		# --- Instrumental early check ---
 		is_instrumental = (
@@ -908,7 +910,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			(artist_name and "instrumental" in artist_name.lower())
 		)
 		if is_instrumental:
-			# LOGGER.log_debug("Instrumental track detected")
+			logger.log_debug("Instrumental track detected")
 			update_fetch_status('instrumental', config_manager=config_manager)
 			return save_lyrics("[Instrumental]", track_name, artist_name, 'txt', config_manager, logger)
 
@@ -917,14 +919,14 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 				os.path.exists(audio_file)):
 			embedded = await read_embedded_lyrics(audio_file, logger, config_manager)
 			if embedded:
-				logger.log_debug(f"First 200 chars of embedded lyrics:\n{embedded['content'][:200]}", config_manager.config)
+				logger.log_debug(f"First 200 chars of embedded lyrics:\n{embedded['content'][:200]}")
 				# Skip plain text embedded lyrics if configured to do so
 				if config_manager.SKIP_EMBEDDED_TXT and embedded['format'] == 'txt':
-					logger.log_debug("Skipping embedded plain text lyrics (skip_embedded_txt=True)", config_manager.config)
+					logger.log_debug("Skipping embedded plain text lyrics (skip_embedded_txt=True)")
 				else:
 					if validate_lyrics(embedded['content'], artist_name, track_name, config_manager):
 						update_fetch_status('done', config_manager=config_manager)
-						logger.log_debug("Using Embedded", config_manager.config)
+						logger.log_debug("Using Embedded")
 						return embedded
 					else:
 						embedded['warning'] = "Validation warning"
@@ -944,7 +946,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 				if os.path.exists(file_path):
 					try:
 						if os.path.getsize(file_path) == 0:
-							# LOGGER.log_debug(f"Deleting empty file: {file_path}")
+							logger.log_debug(f"Deleting empty file: {file_path}")
 							os.remove(file_path)
 							continue
 
@@ -952,19 +954,19 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 							content = f.read()
 
 						if not content.strip():
-							# LOGGER.log_debug(f"Deleting blank lyric file: {file_path}")
+							logger.log_debug(f"Deleting blank lyric file: {file_path}")
 							os.remove(file_path)
 							continue
 
 						if validate_lyrics(content, artist_name, track_name, config_manager):
-							# LOGGER.log_info(f"Using validated lyrics file: {file_path}")
+							logger.log_info(f"Using validated lyrics file: {file_path}")
 							return file_path
 						else:
-							# LOGGER.log_info(f"Using unvalidated local {ext} file: {file_path}")
+							logger.log_info(f"Using unvalidated local {ext} file: {file_path}")
 							return file_path
 
 					except Exception as e:
-						# LOGGER.log_debug(f"File read error: {file_path} - {e}")
+						logger.log_debug(f"File read error: {file_path} - {e}")
 						continue
 
 		# --- Build possible filename patterns ---
@@ -987,7 +989,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 				if os.path.exists(file_path):
 					try:
 						if os.path.getsize(file_path) == 0:
-							# LOGGER.log_debug(f"Deleting empty file: {file_path}")
+							logger.log_debug(f"Deleting empty file: {file_path}")
 							os.remove(file_path)
 							continue
 
@@ -995,29 +997,29 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 							content = f.read()
 
 						if not content.strip():
-							# LOGGER.log_debug(f"Deleting blank lyric file: {file_path}")
+							logger.log_debug(f"Deleting blank lyric file: {file_path}")
 							os.remove(file_path)
 							continue
 
 						if validate_lyrics(content, artist_name, track_name, config_manager):
-							# LOGGER.log_debug(f"Using validated file: {file_path}")
+							logger.log_debug(f"Using validated file: {file_path}")
 							return file_path
 						else:
-							# LOGGER.log_debug(f"Using unvalidated file: {file_path}")
+							logger.log_debug(f"Using unvalidated file: {file_path}")
 							return file_path
 					except Exception as e:
-						# LOGGER.log_debug(f"Error reading {file_path}: {e}")
+						logger.log_debug(f"Error reading {file_path}: {e}")
 						continue
 
 		# --- Timeout check ---
 		if is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
 			update_fetch_status('time_out', config_manager=config_manager)
-			# LOGGER.log_debug(f"Lyrics timeout active for {artist_name} - {track_name}")
+			logger.log_debug(f"Lyrics timeout active for {artist_name} - {track_name}")
 			return None
 
 		# --- Concurrent online fetch ---
 		update_fetch_status('synced', config_manager=config_manager)
-		# LOGGER.log_debug(f"Fetching lyrics concurrently for: {artist_name} - {track_name}")
+		logger.log_debug(f"Fetching lyrics concurrently for: {artist_name} - {track_name}")
 
 		tasks = [fetch_lyrics_lrclib_async(artist_name, track_name, duration)]
 
@@ -1031,7 +1033,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 		candidates = []
 		for idx, result in enumerate(results):
 			if isinstance(result, Exception):
-				# LOGGER.log_debug(f"Fetch task {idx} raised an exception: {result}")
+				logger.log_debug(f"Fetch task {idx} raised an exception: {result}")
 				continue
 
 			fetched_lyrics, is_synced = result
@@ -1039,7 +1041,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 				continue
 
 			if not validate_lyrics(fetched_lyrics, artist_name, track_name, config_manager):
-				# LOGGER.log_debug("Validation warning - possible mismatch")
+				logger.log_debug("Validation warning - possible mismatch")
 				fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
 
 			is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
@@ -1055,12 +1057,12 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			candidates.append((extension, fetched_lyrics))
 
 			line_count = len(fetched_lyrics.split('\n'))
-			# LOGGER.log_debug(f"Lyrics stats - Lines: {line_count}, "
-			#                  f"Chars: {len(fetched_lyrics)}, "
-			#                  f"Synced: {is_synced}, Format: {extension}")
+			logger.log_debug(f"Lyrics stats - Lines: {line_count}, "
+			                 f"Chars: {len(fetched_lyrics)}, "
+			                 f"Synced: {is_synced}, Format: {extension}")
 
 		if not candidates:
-			# LOGGER.log_debug("No lyrics found from any source")
+			logger.log_debug("No lyrics found from any source")
 			update_fetch_status("failed", config_manager=config_manager)
 			if has_internet_global():
 				log_timeout(artist_name, track_name, config_manager, logger)
@@ -1070,11 +1072,11 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 		candidates.sort(key=lambda x: priority_order.index(x[0]))
 		best_extension, best_lyrics = candidates[0]
 
-		# LOGGER.log_debug(f"Selected lyrics format: {best_extension}")
+		logger.log_debug(f"Selected lyrics format: {best_extension}")
 		return save_lyrics(best_lyrics, track_name, artist_name, best_extension, config_manager, logger)
 
 	except Exception as e:
-		logger.log_error(f"Error in find_lyrics_file: {str(e)}", config_manager.config)
+		logger.log_error(f"Error in find_lyrics_file: {str(e)}")
 		update_fetch_status("failed", config_manager=config_manager)
 		return None
 
@@ -1119,7 +1121,7 @@ async def fetch_lyrics_async(audio_file, directory, artist, title, duration, con
 			return ([], []), False, False
 
 	except Exception as e:
-		logger.log_error(f"{title} lyrics fetch error: {e}", config_manager.config)
+		logger.log_error(f"{title} lyrics fetch error: {e}")
 		update_fetch_status('failed', config_manager=config_manager)
 		return ([], []), False, False
 
@@ -1142,7 +1144,7 @@ def load_lyrics(file_path, logger, config_manager):
 	"""Parse lyric file into time-text pairs with robust error handling"""
 	lyrics = []
 	errors = []
-	# LOGGER.log_trace(f"Parsing lyrics file: {file_path}", config_manager.config)
+	logger.log_trace(f"Parsing lyrics file: {file_path}")
 	try:
 		try:
 			with open(file_path, 'r', encoding="utf-8") as f:
@@ -1217,7 +1219,7 @@ def load_lyrics(file_path, logger, config_manager):
 	except Exception as e:
 		errors.append(f"Unexpected parsing error: {str(e)}")
 		if errors:
-			logger.log_warn(f"Found {len(errors)} parsing errors", config_manager.config)
+			logger.log_warn(f"Found {len(errors)} parsing errors")
 		return lyrics, errors
 
 # ==============
@@ -1298,7 +1300,7 @@ async def get_mpd_info(config_manager):
 		client.timeout = config_manager.MPD_TIMEOUT
 		try:
 			client.connect(config_manager.MPD_HOST, config_manager.MPD_PORT)
-			# LOGGER.log_debug("MPD polling...", config_manager.config)
+			# logger.log_debug("MPD polling...")
 			if config_manager.MPD_PASSWORD:
 				client.password(config_manager.MPD_PASSWORD)
 			status = client.status()
@@ -1320,7 +1322,7 @@ async def get_mpd_info(config_manager):
 		except (socket.error, ConnectionRefusedError):
 			pass
 		except Exception as e:
-			pass  # LOGGER.log_debug(f"Unexpected MPD error: {str(e)}", config_manager.config)
+			pass  # logger.log_debug(f"Unexpected MPD error: {str(e)}")
 		update_fetch_status("mpd", config_manager=config_manager)
 		return (None, 0.0, "", None, 0.0, STATUS_STOPPED)
 	
@@ -1341,7 +1343,7 @@ async def get_playerctl_info():
 		stdout, _ = await proc.communicate()
 		output = stdout.decode().strip()
 
-		# LOGGER.log_debug("playerctl polling...", config_manager.config)
+		# logger.log_debug("playerctl polling...")
 
 		if "No players found" in output or not output:
 			return (None, 0.0, "", None, 0.0, STATUS_STOPPED)
@@ -1373,7 +1375,7 @@ async def get_player_info(config_manager):
 			if cmus_info[0] is not None:
 				return PLAYER_CMUS, cmus_info
 		except Exception as e:
-			pass  # LOGGER.log_debug(f"CMUS detection failed: {str(e)}", config_manager.config)
+			pass  # logger.log_debug(f"CMUS detection failed: {str(e)}")
 
 	if config_manager.ENABLE_MPD:
 		try:
@@ -1381,7 +1383,7 @@ async def get_player_info(config_manager):
 			if mpd_info[0] is not None:
 				return PLAYER_MPD, mpd_info
 		except Exception as e:
-			pass  # LOGGER.log_debug(f"MPD detection failed: {str(e)}", config_manager.config)
+			pass  # logger.log_debug(f"MPD detection failed: {str(e)}")
 
 	if config_manager.ENABLE_PLAYERCTL:
 		try:
@@ -1389,10 +1391,10 @@ async def get_player_info(config_manager):
 			if playerctl_info[3] is not None:
 				return PLAYER_PLAYERCTL, playerctl_info
 		except Exception as e:
-			pass  # LOGGER.log_debug(f"MPRIS detection failed: {str(e)}", config_manager.config)
+			pass  # logger.log_debug(f"MPRIS detection failed: {str(e)}")
 
 	update_fetch_status("no_player", config_manager=config_manager)
-	# LOGGER.log_debug("No active music player detected", config_manager.config)
+	# logger.log_debug("No active music player detected")
 	return None, (None, 0, "", None, 0, STATUS_STOPPED)
 
 # ==============
@@ -1882,7 +1884,7 @@ def sync_player_position(status, raw_pos, last_time, time_adjust, duration):
 		estimated = raw_pos + elapsed + time_adjust
 	else:
 		estimated = raw_pos + time_adjust
-	# LOGGER.log_debug(f"Position sync - Raw: {raw_pos}, Adjusted: {estimated}")
+	# logger.log_debug(f"Position sync - Raw: {raw_pos}, Adjusted: {estimated}")
 	return max(0.0, min(estimated, duration)), now
 
 def find_current_lyric_index(position, timestamps):
@@ -2188,16 +2190,16 @@ async def main_async(stdscr, config_manager, logger):
 				drift = abs_func(new_raw - estimated_position)
 				if drift > JUMP_THRESHOLD and status_val == STATUS_PLAYING:
 					resume_trigger_time = current_time
-					log_debug(f"Jump detected: {drift:.3f}s", config)
+					log_debug(f"Jump detected: {drift:.3f}s")
 					needs_redraw = True
 
 				if player_type and prev_status == STATUS_PAUSED and status_val == STATUS_PLAYING:
 					resume_trigger_time = current_time
-					log_debug("Pause→play refresh", config)
+					log_debug("Pause→play refresh")
 					needs_redraw = True
 
 			except Exception as e:
-				log_debug(f"Error refreshing player info: {e}", config)
+				log_debug(f"Error refreshing player info: {e}")
 			finally:
 				last_player_update = current_time
 
@@ -2214,11 +2216,11 @@ async def main_async(stdscr, config_manager, logger):
 			if (p_title, p_artist, p_audio_file) != (current_title, current_artist, current_file) and p_status != STATUS_STOPPED:
 				if p_audio_file and path_exists(p_audio_file) and player_type in (PLAYER_CMUS, PLAYER_MPD):
 					try:
-						log_info(f"New track detected: {path_basename(p_audio_file)}", config)
+						log_info(f"New track detected: {path_basename(p_audio_file)}")
 					except (TypeError, AttributeError):
-						log_info("New track detected: Unknown File", config)
+						log_info("New track detected: Unknown File")
 				else:
-					log_info(f"New track detected: {p_title or 'Unknown Track'}", config)
+					log_info(f"New track detected: {p_title or 'Unknown Track'}")
 
 				current_title = p_title or ""
 				current_artist = p_artist or ""
@@ -2241,7 +2243,7 @@ async def main_async(stdscr, config_manager, logger):
 					try:
 						await asyncio.wait_for(lyric_future, timeout=4.0)
 					except (asyncio.CancelledError, asyncio.TimeoutError):
-						log_debug("Previous lyric fetching task cancelled", config)
+						log_debug("Previous lyric fetching task cancelled")
 					finally:
 						lyric_future = None
 
@@ -2261,7 +2263,7 @@ async def main_async(stdscr, config_manager, logger):
 							logger=logger
 						)
 					)
-					log_debug(f"{p_audio_file}, {p_artist}, {p_title}, {p_duration}", config)
+					log_debug(f"{p_audio_file}, {p_artist}, {p_title}, {p_duration}")
 
 				last_cmus_position = p_raw_pos
 				estimated_position = p_raw_pos
@@ -2277,7 +2279,7 @@ async def main_async(stdscr, config_manager, logger):
 			try:
 				(new_lyrics, new_errors), new_is_txt, new_is_a2 = lyric_future.result()
 				if new_errors:
-					log_debug(new_errors, config)
+					log_debug(str(new_errors))
 
 				lyrics = new_lyrics
 				errors = new_errors
@@ -2299,15 +2301,15 @@ async def main_async(stdscr, config_manager, logger):
 
 				if status == STATUS_PLAYING and player_type in (PLAYER_CMUS, PLAYER_MPD):
 					resume_trigger_time = current_time
-					log_debug("Refresh triggered by new lyrics loading", config)
+					log_debug("Refresh triggered by new lyrics loading")
 
 				estimated_position = raw_position
 
 			except (asyncio.CancelledError, Exception) as e:
 				if isinstance(e, asyncio.CancelledError):
-					log_debug("Lyric fetching cancelled", config)
+					log_debug("Lyric fetching cancelled")
 				else:
-					log_debug(f"Lyric load error: {e}", config)
+					log_debug(f"Lyric load error: {e}")
 				errors = [f"Lyric load error: {e}"]
 				force_redraw = True
 				lyrics_loaded_time = current_time
@@ -2345,12 +2347,12 @@ async def main_async(stdscr, config_manager, logger):
 		if (duration_val > 0.0 and (duration_val - continuous_position) <= END_TRIGGER_SEC and not end_triggered):
 			end_triggered = True
 			force_redraw = True
-			log_debug(f"End-of-track reached (pos={continuous_position:.3f}s)", config)
+			log_debug(f"End-of-track reached (pos={continuous_position:.3f}s)")
 
 		if status != STATUS_PLAYING and proximity_active:
 			proximity_active = False
 			proximity_trigger_time = None
-			log_debug("Proximity reset due to pause", config)
+			log_debug("Proximity reset due to pause")
 
 		if (smart_proximity and timestamps and not is_txt and last_idx >= 0 and last_idx + 1 < len(timestamps)
 			and status == STATUS_PLAYING and not poll and not playback_paused):
@@ -2369,14 +2371,14 @@ async def main_async(stdscr, config_manager, logger):
 				proximity_active = True
 				stdscr_timeout(refresh_proximity_interval_ms)
 				last_player_update = 0.0
-				log_debug(f"Proximity TRIG: time_to_next={time_to_next:.3f}s within [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]", config)
+				log_debug(f"Proximity TRIG: time_to_next={time_to_next:.3f}s within [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]")
 			elif (proximity_trigger_time is not None and (time_to_next < PROXIMITY_MIN_THRESHOLD_SEC or time_to_next > threshold
 				  or current_time - proximity_trigger_time > threshold)):
 				
 				stdscr_timeout(refresh_interval_2)
 				proximity_trigger_time = None
 				proximity_active = False
-				log_debug(f"Proximity RESET: time_to_next={time_to_next:.3f}s outside [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]", config)
+				log_debug(f"Proximity RESET: time_to_next={time_to_next:.3f}s outside [{PROXIMITY_MIN_THRESHOLD_SEC:.3f}, {threshold:.3f}]")
 			else:
 				proximity_active = False
 		else:
@@ -2541,8 +2543,7 @@ async def main_async(stdscr, config_manager, logger):
 		if new_input or needs_redraw or force_redraw or (current_idx != last_idx):
 			log_debug(
 				f"Redraw triggered: new_input={new_input}, needs_redraw={needs_redraw}, "
-				f"force_redraw={force_redraw}, idx={last_idx} → {current_idx}, paused={status == STATUS_PAUSED}",
-				config
+				f"force_redraw={force_redraw}, idx={last_idx} → {current_idx}, paused={status == STATUS_PAUSED}"
 			)
 			stdscr_timeout(0)
 			
@@ -2569,8 +2570,7 @@ async def main_async(stdscr, config_manager, logger):
 			time_delta = current_time - last_pos_time
 			
 			log_debug(
-				f"Triggered at: {continuous_position}, Time_delta: {time_delta}",
-				config
+				f"Triggered at: {continuous_position}, Time_delta: {time_delta}"
 			)
 			
 			manual_offset = start_screen_line
@@ -2641,6 +2641,6 @@ if __name__ == "__main__":
 			player_override=args.player
 		)
 		temp_logger = Logger(temp_config)
-		temp_logger.log_error(f"Fatal error: {str(e)}", temp_config.config)
+		temp_logger.log_error(f"Fatal error: {str(e)}")
 		print(f"Fatal error: {e}", file=sys.stderr)
 		time.sleep(1)
