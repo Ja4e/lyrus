@@ -5,10 +5,21 @@ automatic lyrics fetcher and supports local lyrics player, txt and lrc scrolling
 supports wide range of lyric sources
 curses, scrollable
 
-use PKGBUILD  and  makepkg -si (currently on arch works)
-other linux do use make sure use virual environment to get it working (it should)
+use ``PKGBUILD``  and  ``makepkg -si`` (currently on arch works)
+or through AUR ``yay -S lyrus-git`` (recommended)
+, for other linux do use make sure use virual environment to get it working (it should)
+like
+```bash
+git clone https://github.com/Ja4e/lyrus.git
+cd lyrus
+python -m venv lyrus-123 
+pip -r requirements.txt
+python lyrus.py
+```
 
-customizable through this local where this program installed.
+just make sure
+
+ustomizable through this local where this program installed.
 
 ![image](https://github.com/user-attachments/assets/5d5fdbc5-7d4b-4b38-b2db-0cee5722806f)
 
