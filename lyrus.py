@@ -20,6 +20,10 @@ import bisect
 import time
 import asyncio
 from datetime import datetime
+from wcwidth import wcswidth
+
+import urllib.request
+import syncedlyrics
 
 try:
 	from mpd import MPDClient
@@ -540,7 +544,6 @@ def has_internet_global(timeout=3):
 
 	for url in (global_hosts + china_hosts):
 		try:
-			import urllib.request
 			urllib.request.urlopen(url, timeout=timeout)
 			return True
 		except Exception:
@@ -675,8 +678,6 @@ async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None
 	"""Async version of syncedlyrics fetch using global thread pool"""
 	# logger.log_debug(f"Starting syncedlyrics search: {artist_name} - {track_name} ({duration}s)")
 	try:
-		import syncedlyrics
-
 		# logger.log_debug(f"Loaded providers: {config_manager.PROVIDERS}")
 
 		def worker(search_term, synced=True):
@@ -1528,7 +1529,6 @@ def wrap_by_display_width(text, width, subsequent_indent=''):
 	Wrap text by display cell width, not character count.
 	Uses wcswidth to handle multi-byte characters properly.
 	"""
-	from wcwidth import wcswidth
 	get_width = wcswidth
 
 	if not text:
@@ -1639,7 +1639,6 @@ def display_lyrics(
 		except Exception:
 			pass
 
-	from wcwidth import wcswidth
 	get_width = wcswidth
 	max_func = max
 	min_func = min
@@ -2677,10 +2676,10 @@ async def main_async(stdscr, config_manager, logger):
 		if status == STATUS_PAUSED and not manual_scroll:
 			if time_since_input > 5.0:
 				stdscr_timeout(400)
-				sleep_time = 0.002
+				sleep_time = 0.004
 			elif time_since_input > 2.0:
 				stdscr_timeout(300)
-				sleep_time = 0.002
+				sleep_time = 0.003
 			else:
 				stdscr_timeout(250)
 				sleep_time = 0.002
