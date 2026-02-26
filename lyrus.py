@@ -21,6 +21,7 @@ import time
 import asyncio
 from datetime import datetime
 from wcwidth import wcswidth
+from functools import lru_cache
 
 import urllib.request
 import syncedlyrics
@@ -127,7 +128,7 @@ class ConfigManager:
 		'ENABLE_CMUS', 'ENABLE_MPD', 'ENABLE_PLAYERCTL',
 		'LYRIC_EXTENSIONS', 'LYRIC_CACHE_DIR', 'SEARCH_TIMEOUT',
 		'VALIDATION_LENGTHS', 'ALLOW_SYNCEDLYRIC', 'PROVIDERS',
-		'PROVIDER_FALLBACK', 'PROVIDER_FORMAT_PRIORITY',
+		'PROVIDER_FALLBACK', 'PROVIDER_FORMAT_PRIORITY', 'ALLOW_TRANSLATION', 'LANGUAGE',
 		'DISPLAY_NAME', 'MESSAGES', 'TERMINAL_STATES',
 		'READ_EMBEDDED_LYRICS', 'SKIP_EMBEDDED_TXT'
 	)
@@ -169,6 +170,8 @@ class ConfigManager:
 		self.PROVIDERS = None
 		self.PROVIDER_FALLBACK = None
 		self.PROVIDER_FORMAT_PRIORITY = None
+		self.ALLOW_TRANSLATION = None
+		self.LANGUAGE = None
 		self.DISPLAY_NAME = None
 		self.MESSAGES = None
 		self.TERMINAL_STATES = None
@@ -239,7 +242,11 @@ class ConfigManager:
 				"Fallback": True,
 				"Format_priority": ["a2", "lrc", "txt"],
 				"read_embedded_lyrics": True,
-				"skip_embedded_txt": True
+				"skip_embedded_txt": True,
+				"Translation": {
+					"enable_translation": False,
+					"language": "en",
+				}
 			},
 			"ui": {
 				"alignment": "left",
@@ -368,6 +375,7 @@ class ConfigManager:
 		if not self.use_user_dirs and cache_dir.startswith("~"):
 			cache_dir = os.path.join(os.getcwd(), os.path.basename(cache_dir))
 		self.LYRIC_CACHE_DIR = self.normalize_path(cache_dir)
+		# Create cache directory once during setup
 		os.makedirs(self.LYRIC_CACHE_DIR, exist_ok=True)
 		self.SEARCH_TIMEOUT = self.config["lyrics"]["search_timeout"]
 		self.VALIDATION_LENGTHS = self.config["lyrics"]["validation"]
@@ -377,6 +385,9 @@ class ConfigManager:
 
 		self.PROVIDER_FALLBACK = self.config["lyrics"]["Fallback"]
 		self.PROVIDER_FORMAT_PRIORITY = self.config["lyrics"]["Format_priority"]
+
+		self.ALLOW_TRANSLATION = self.config["lyrics"]["Translation"]["enable_translation"]
+		self.LANGUAGE = self.config["lyrics"]["Translation"]["language"]
 
 		self.READ_EMBEDDED_LYRICS = self.config["lyrics"].get("read_embedded_lyrics")
 		self.SKIP_EMBEDDED_TXT = self.config["lyrics"].get("skip_embedded_txt")
@@ -395,7 +406,8 @@ class Logger:
 	__slots__ = (
 		'LOG_DIR', 'LYRICS_TIMEOUT_LOG', 'DEBUG_LOG',
 		'LOG_RETENTION_DAYS', 'MAX_DEBUG_COUNT', 'ENABLE_DEBUG_LOGGING',
-		'config'  # store full config for log level and log file
+		'config', '_log_dir_created',
+		'_timeout_log_cache', '_timeout_log_cache_loaded'
 	)
 
 	def __init__(self, config_manager):
@@ -405,7 +417,11 @@ class Logger:
 		self.LOG_RETENTION_DAYS = config_manager.LOG_RETENTION_DAYS
 		self.MAX_DEBUG_COUNT = config_manager.MAX_DEBUG_COUNT
 		self.ENABLE_DEBUG_LOGGING = config_manager.ENABLE_DEBUG_LOGGING
-		self.config = config_manager.config  # keep reference to full config
+		self.config = config_manager.config
+		os.makedirs(self.LOG_DIR, exist_ok=True)
+		self._log_dir_created = True
+		self._timeout_log_cache = set()
+		self._timeout_log_cache_loaded = False
 
 	def clean_debug_log(self):
 		"""Maintain debug log size by keeping only last 100 entries"""
@@ -449,7 +465,6 @@ class Logger:
 		message_level = LOG_LEVELS.get(level.upper(), 2)
 
 		try:
-			os.makedirs(self.LOG_DIR, exist_ok=True)
 			timestamp = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.{int(time.time() * 1000000) % 1000000:06d}"
 
 			if self.config["global"]["enable_debug"] and message_level <= LOG_LEVELS["DEBUG"]:
@@ -486,6 +501,40 @@ class Logger:
 
 	def log_trace(self, message: str):
 		self.log_message("TRACE", message)
+
+	def log_timeout(self, artist, title):
+		"""Record failed lyric lookup with duplicate prevention and robust error handling"""
+		try:
+			timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+			log_entry = f"{timestamp} | Artist: {artist or 'Unknown'} | Title: {title or 'Unknown'}\n"
+
+			log_path = os.path.join(self.LOG_DIR, self.LYRICS_TIMEOUT_LOG)
+
+			# Load cache if not already done
+			if not self._timeout_log_cache_loaded and os.path.exists(log_path):
+				with open(log_path, 'r', encoding='utf-8') as f:
+					for line in f:
+						# Extract artist and title from line (crude but effective)
+						if "Artist: " in line and "Title: " in line:
+							parts = line.split("|")
+							if len(parts) >= 3:
+								artist_part = parts[1].replace("Artist:", "").strip()
+								title_part = parts[2].replace("Title:", "").strip()
+								self._timeout_log_cache.add((artist_part, title_part))
+				self._timeout_log_cache_loaded = True
+
+			# Check cache
+			entry_key = (artist or 'Unknown', title or 'Unknown')
+			if entry_key in self._timeout_log_cache:
+				return
+
+			# Write new entry
+			with open(log_path, 'a', encoding='utf-8') as f:
+				f.write(log_entry)
+			self._timeout_log_cache.add(entry_key)
+			self.clean_log()
+		except Exception as e:
+			self.log_error(f"Failed to write timeout log: {e}")
 
 
 # Status system
@@ -588,35 +637,6 @@ async def fetch_lrclib_async(artist, title, duration=None, session=None):
 	return None, None
 
 
-def log_timeout(artist, title, config_manager, logger):
-	"""Record failed lyric lookup with duplicate prevention and robust error handling"""
-	try:
-		timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-		log_entry = f"{timestamp} | Artist: {artist or 'Unknown'} | Title: {title or 'Unknown'}\n"
-
-		log_path = os.path.join(config_manager.LOG_DIR, config_manager.LYRICS_TIMEOUT_LOG)
-
-		entry_exists = False
-		if os.path.exists(log_path):
-			search_artist = artist or 'Unknown'
-			search_title = title or 'Unknown'
-			with open(log_path, 'r', encoding='utf-8') as f:
-				for line in f:
-					if (
-							f"Artist: {search_artist}" in line and
-							f"Title: {search_title}" in line
-					):
-						entry_exists = True
-						break
-
-		if not entry_exists:
-			with open(log_path, 'a', encoding='utf-8') as f:
-				f.write(log_entry)
-			logger.clean_log()
-	except Exception as e:
-		logger.log_error(f"Failed to write timeout log: {e}")
-
-
 # ======================
 #  CORE LYRIC FUNCTIONS
 # ======================
@@ -638,11 +658,13 @@ _TIME_PATTERNS = [
 ]
 
 
+@lru_cache(maxsize=128)
 def sanitize_filename(name):
 	"""Make strings safe for filenames"""
 	return _FILENAME_SANITIZE_PATTERN.sub('_', str(name))
 
 
+@lru_cache(maxsize=128)
 def sanitize_string(s):
 	"""Normalize strings for comparison"""
 	return _STRING_SANITIZE_PATTERN.sub('', str(s)).lower()
@@ -681,11 +703,20 @@ async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None
 		# logger.log_debug(f"Loaded providers: {config_manager.PROVIDERS}")
 
 		def worker(search_term, synced=True):
-			"""Worker for lyric search"""
 			try:
-				result = syncedlyrics.search(search_term) if synced else syncedlyrics.search(search_term,
-																							 plain_only=True,
-																							 providers=config_manager.PROVIDERS)
+				kwargs = {}
+
+				if synced:
+					kwargs["synced_only"] = True
+				else:
+					kwargs["plain_only"] = True
+					kwargs["providers"] = config_manager.PROVIDERS
+
+				if config_manager.ALLOW_TRANSLATION:
+					kwargs["lang"] = config_manager.LANGUAGE
+
+				result = syncedlyrics.search(search_term, **kwargs)
+
 				return result, synced
 			except Exception as exc:
 				# logger.log_debug(f"Lyrics search error: {exc}")
@@ -724,8 +755,6 @@ def save_lyrics(lyrics, track_name, artist_name, extension, config_manager, logg
 	"""Save lyrics to appropriate file format with robust error handling"""
 	try:
 		folder = config_manager.LYRIC_CACHE_DIR
-		os.makedirs(folder, exist_ok=True)
-
 		sanitized_track = sanitize_filename(track_name)
 		sanitized_artist = sanitize_filename(artist_name)
 		filename = f"{sanitized_track}_{sanitized_artist}.{extension}"
@@ -953,9 +982,9 @@ def _read_vorbis_comments(audio, logger, config_manager) -> Optional[Dict]:
 	return None
 
 
-# ============================================================
-#  find_lyrics_file_async (modified to use the new reader)
-# ============================================================
+# ========================
+#  find_lyrics_file_async
+# ========================
 
 async def find_lyrics_file_async(audio_file, directory, artist_name, track_name, duration=None, config_manager=None,
 								 logger=None):
@@ -1005,7 +1034,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			]
 
 			for file_path, ext in local_files:
-				if os.path.exists(file_path):
+				if os.path.isfile(file_path):
 					try:
 						if os.path.getsize(file_path) == 0:
 							logger.log_debug(f"Deleting empty file: {file_path}")
@@ -1048,7 +1077,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 		for dir_path in dirs_to_check:
 			for filename in possible_filenames:
 				file_path = os.path.join(dir_path, filename)
-				if os.path.exists(file_path):
+				if os.path.isfile(file_path):
 					try:
 						if os.path.getsize(file_path) == 0:
 							logger.log_debug(f"Deleting empty file: {file_path}")
@@ -1128,7 +1157,7 @@ async def find_lyrics_file_async(audio_file, directory, artist_name, track_name,
 			logger.log_debug("No lyrics found from any source")
 			update_fetch_status("failed", config_manager=config_manager)
 			if has_internet_global():
-				log_timeout(artist_name, track_name, config_manager, logger)
+				logger.log_timeout(artist_name, track_name)
 			return None
 
 		priority_order = config_manager.PROVIDER_FORMAT_PRIORITY
@@ -2308,7 +2337,7 @@ async def main_async(stdscr, config_manager, logger):
 													 current_file) and p_status != STATUS_STOPPED:
 				if p_audio_file and path_exists(p_audio_file) and player_type in (PLAYER_CMUS, PLAYER_MPD):
 					try:
-						log_info(t"New track detected: {path_basename(p_audio_file)}")
+						log_info("New track detected: {path_basename(p_audio_file)}")
 					except (TypeError, AttributeError):
 						log_info("New track detected: Unknown File")
 				else:
@@ -2386,10 +2415,8 @@ async def main_async(stdscr, config_manager, logger):
 
 				if not (is_txt or is_a2):
 					timestamps = sorted(t for t, _ in lyrics if t is not None)
-					# valid_indices = [i for i, (t, _) in enumerate(lyrics) if t is not None]  # unused
 				else:
 					timestamps = []
-					# valid_indices = []  # unused
 
 				if status == STATUS_PLAYING and player_type in (PLAYER_CMUS, PLAYER_MPD):
 					resume_trigger_time = current_time
@@ -2450,14 +2477,13 @@ async def main_async(stdscr, config_manager, logger):
 				and status == STATUS_PLAYING and not poll and not playback_paused):
 
 			idx = last_idx
-			t0, t1 = timestamps[idx], timestamps[idx + 1]
-			line_duration = t1 - t0
+			line_duration = timestamps[idx + 1] - timestamps[idx]
 			percent_thresh = line_duration * (proximity_threshold_percent / 100)
 			abs_thresh = proximity_threshold_sec
 			raw_thresh = max_func(percent_thresh, abs_thresh)
 			threshold = min_func(max_func(raw_thresh, proximity_min_threshold_sec),
 								 min_func(proximity_max_threshold_sec, line_duration))
-			time_to_next = min_func(line_duration, max_func(0.0, t1 - continuous_position))
+			time_to_next = min_func(line_duration, max_func(0.0, timestamps[idx + 1] - continuous_position))
 
 			if proximity_min_threshold_sec <= time_to_next <= threshold:
 				proximity_trigger_time = current_time
@@ -2481,6 +2507,7 @@ async def main_async(stdscr, config_manager, logger):
 			proximity_active = False
 
 		if is_txt:
+			lyrics_area_height = window_height - 3
 			if not wrapped_lines or prev_window_width != window_width:
 				wrap_width = max_func(10, window_width - 2)
 				wrapped = []
@@ -2491,7 +2518,6 @@ async def main_async(stdscr, config_manager, logger):
 					else:
 						wrapped.append((orig_idx, ""))
 				wrapped_lines = wrapped
-				lyrics_area_height = window_height - 3
 				max_wrapped_offset = max_func(0, len(wrapped) - lyrics_area_height)
 				prev_window_width = window_width
 
