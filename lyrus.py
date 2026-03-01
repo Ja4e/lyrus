@@ -11,7 +11,6 @@ Remember fetched lyrics has inaccuracies... this code has a very robust sync to 
 # ==============
 import curses
 import argparse
-import aiohttp
 import threading
 from concurrent.futures import ThreadPoolExecutor
 import subprocess
@@ -22,30 +21,19 @@ import asyncio
 from datetime import datetime
 from wcwidth import wcswidth
 from functools import lru_cache
-
 import urllib.request
-import syncedlyrics
+import tempfile
+import os
+import json
+import sys
+import atexit
+import socket
 
 try:
 	from mpd import MPDClient
 except ImportError:
 	MPDClient = None  # type: ignore
-import socket
-import os
-import json
-import sys
-import atexit
-import tempfile
 
-# embedded lyrics
-from typing import Optional, Dict
-import mutagen
-import mutagen.flac
-import mutagen.oggvorbis
-import mutagen.oggopus
-import mutagen.mp3
-import mutagen.id3
-import mutagen.mp4
 
 # ==============
 #  GLOBALS
@@ -605,6 +593,9 @@ def has_internet_global(timeout=3):
 # ================
 async def fetch_lrclib_async(artist, title, duration=None, session=None):
 	"""Async version of LRCLIB fetch using aiohttp with robust error handling"""
+	
+	import aiohttp
+	
 	base_url = "https://lrclib.net/api/get"
 	params = {'artist_name': artist, 'track_name': title}
 	if duration:
@@ -698,6 +689,9 @@ def validate_lyrics(content, artist, title, config_manager):
 
 async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None, timeout=15, config_manager=None):
 	"""Async version of syncedlyrics fetch using global thread pool"""
+	
+	import syncedlyrics
+	
 	# logger.log_debug(f"Starting syncedlyrics search: {artist_name} - {track_name} ({duration}s)")
 	try:
 		# logger.log_debug(f"Loaded providers: {config_manager.PROVIDERS}")
@@ -729,7 +723,7 @@ async def fetch_lyrics_syncedlyrics_async(artist_name, track_name, duration=None
 
 		loop = asyncio.get_event_loop()
 
-		# Use global thread pool executor instead of creating new ones
+		# Use global thread pool executor
 		lyrics, is_synced = await loop.run_in_executor(THREAD_POOL_EXECUTOR, worker, search_term, True)
 
 		if lyrics:
@@ -797,7 +791,7 @@ def is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
 #  Generic embedded lyrics reader
 # ====================================
 
-async def read_embedded_lyrics(audio_file: str, logger, config_manager) -> Optional[Dict]:
+async def read_embedded_lyrics(audio_file: str, logger, config_manager):
 	"""
 	Unified async embedded lyrics reader.
 
@@ -818,36 +812,36 @@ async def read_embedded_lyrics(audio_file: str, logger, config_manager) -> Optio
 		or None
 	"""
 
+	import mutagen
+	import mutagen.flac
+	import mutagen.oggvorbis
+	import mutagen.oggopus
+	import mutagen.mp3
+	import mutagen.id3
+	import mutagen.mp4
+
 	if not audio_file or not os.path.exists(audio_file):
 		return None
 
 	ext = os.path.splitext(audio_file)[1].lower()
 
 	try:
-		# -------------------------
 		# FLAC
-		# -------------------------
 		if ext == ".flac":
 			audio = await asyncio.to_thread(mutagen.flac.FLAC, audio_file)
 			return _read_vorbis_comments(audio, logger, config_manager)
-
-		# -------------------------
+		
 		# OGG Vorbis
-		# -------------------------
 		if ext == ".ogg":
 			audio = await asyncio.to_thread(mutagen.oggvorbis.OggVorbis, audio_file)
 			return _read_vorbis_comments(audio, logger, config_manager)
 
-		# -------------------------
 		# Opus
-		# -------------------------
 		if ext == ".opus":
 			audio = await asyncio.to_thread(mutagen.oggopus.OggOpus, audio_file)
 			return _read_vorbis_comments(audio, logger, config_manager)
 
-		# -------------------------
 		# MP3 (ID3)
-		# -------------------------
 		if ext == ".mp3":
 			audio = await asyncio.to_thread(mutagen.mp3.MP3, audio_file)
 			if not audio.tags:
@@ -885,9 +879,7 @@ async def read_embedded_lyrics(audio_file: str, logger, config_manager) -> Optio
 
 			return None
 
-		# -------------------------
 		# M4A / MP4
-		# -------------------------
 		if ext in {".m4a", ".mp4"}:
 			audio = await asyncio.to_thread(mutagen.mp4.MP4, audio_file)
 
@@ -911,7 +903,7 @@ async def read_embedded_lyrics(audio_file: str, logger, config_manager) -> Optio
 	return None
 
 
-def _read_vorbis_comments(audio, logger, config_manager) -> Optional[Dict]:
+def _read_vorbis_comments(audio, logger, config_manager):
 	"""
 	Reads LYRICS / LRC / UNSYNCEDLYRICS from Vorbis Comment containers.
 	Detects format based on content (presence of LRC timestamps).
@@ -1411,7 +1403,7 @@ async def get_mpd_info(config_manager):
 
 			file = current_song.get("file", "")
 			position = float(status.get("elapsed", 0))
-			title = current_song.get("title", None)  # FIXED: removed trailing comma
+			title = current_song.get("title", None)
 			duration = float(status.get("duration", status.get("time", 0)))
 			state = status.get("state", STATUS_STOPPED)
 
@@ -2200,7 +2192,7 @@ async def main_async(stdscr, config_manager, logger):
 	player_type = None
 	player_data = (None, 0, "", None, 0, STATUS_STOPPED)
 
-	# Initialize player data variables to avoid "referenced before assignment"
+	# Initialize player data variables
 	p_audio_file = None
 	p_raw_pos = 0.0
 	p_artist = ""
