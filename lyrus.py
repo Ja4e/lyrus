@@ -2304,11 +2304,15 @@ async def main_async(stdscr, config_manager, logger):
 					resume_trigger_time = current_time
 					log_debug(f"Jump detected: {drift:.3f}s")
 					needs_redraw = True
-
+					if smart_tracking == 1:
+						last_idx = -1
+					
 				if player_type and prev_status == STATUS_PAUSED and status_val == STATUS_PLAYING:
 					resume_trigger_time = current_time
 					log_debug("Pause→play refresh")
 					needs_redraw = True
+					if smart_tracking == 1:
+						last_idx = -1
 
 			except Exception as e:
 				log_debug(f"Error refreshing player info: {e}")
@@ -2449,7 +2453,9 @@ async def main_async(stdscr, config_manager, logger):
 		else:
 			playback_paused = (status == STATUS_PAUSED)
 
-		offset_val = base_offset + next_frame_time
+		# offset_val = base_offset + next_frame_time
+		
+		offset_val = base_offset
 
 		continuous_position = max_func(0.0, estimated_position + time_adjust + offset_val)
 		if continuous_position > p_duration:
@@ -2519,7 +2525,8 @@ async def main_async(stdscr, config_manager, logger):
 				ts = timestamps
 				n = len(ts)
 				if current_idx < 0:
-					current_idx = bisect_right(ts, continuous_position + offset_val) - 1
+					# current_idx = bisect_right(ts, continuous_position + offset_val) - 1
+					current_idx = bisect_right(ts, continuous_position) - 1
 					current_idx = max_func(-1, min_func(current_idx, n - 1))
 				elif current_idx + 1 < n:
 					# t_cur = ts[current_idx]  # unused
@@ -2533,14 +2540,14 @@ async def main_async(stdscr, config_manager, logger):
 				current_idx = max_func(0, min_func(target_idx, num_wrapped - 1))
 			else:
 				current_idx = -1
-			last_idx = current_idx
 		else:
 			if timestamps and not is_txt:
 				ts = timestamps
-				idx = bisect_right(ts, continuous_position + offset_val) - 1
+				# idx = bisect_right(ts, continuous_position + offset_val) - 1
+				idx = bisect_right(ts, continuous_position) - 1
 				if idx >= 0:
 					current_idx = idx
-					continuous_position = ts[idx]
+					# continuous_position = ts[idx]
 				else:
 					current_idx = -1
 			elif is_txt and wrapped_lines and p_duration > 0.0:
