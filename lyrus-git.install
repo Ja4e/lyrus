@@ -8,7 +8,7 @@ post_install() {
     echo "Cached synced lyrics directory:"
     echo "  ~/.local/state/lyrus/synced_lyrics"
     echo
-    echo You can copy paste the default config form the wiki and save it under ~/.config/lyrus 
-    echo make sure you create the directory yourself with mkdir ~/.config/lyrus
+    echo "You can copy paste the default config form the wiki and save it under ~/.config/lyrus"
+    echo "make sure you create the directory yourself with mkdir ~/.config/lyrus"
     echo "=================================================="
 }
