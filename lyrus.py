@@ -25,6 +25,8 @@ from datetime import datetime
 from wcwidth import wcswidth
 from functools import lru_cache
 import urllib.request
+import urllib.error
+import urllib.parse
 import tempfile
 import os
 import json
@@ -71,7 +73,7 @@ ALIGN_RIGHT = "right"
 # ==============
 #  CONFIGURATION
 # ==============
-VERSION = "1.0.2"
+VERSION = "1.0.3"
 
 config_dir = "~/.config/lyrus"
 config_files = ["config.json", "config1.json", "config2.json"]
@@ -231,7 +233,7 @@ class ConfigManager:
 			"global": {
 				"logs_dir": "~/.cache/lyrus",
 				"log_file": "application.log",
-				"log_level": "FATAL",
+				"log_level": "WARN",
 				"lyrics_timeout_log": "lyrics_timeouts.log",
 				"lyrics_instrument_log": "instrument.log",
 				"debug_log": "debug.log",
@@ -435,10 +437,10 @@ class ConfigManager:
 # ================
 class Logger:
 	__slots__ = (
-		'LOG_DIR', 'LYRICS_TIMEOUT_LOG', 'LYRICS_INSTRUMENT_LOG','DEBUG_LOG',
+		'LOG_DIR', 'LYRICS_TIMEOUT_LOG', 'LYRICS_INSTRUMENT_LOG', 'DEBUG_LOG',
 		'LOG_RETENTION_DAYS', 'MAX_DEBUG_COUNT', 'ENABLE_DEBUG_LOGGING',
 		'config', '_log_dir_created',
-		'_timeout_log_cache', '_timeout_log_cache_loaded', 
+		'_timeout_log_cache', '_timeout_log_cache_loaded',
 		'_instrumental_log_cache', '_instrumental_log_cache_loaded'
 	)
 
@@ -492,12 +494,15 @@ class Logger:
 		message_level = LOG_LEVELS.get(level.upper(), 2)
 		try:
 			timestamp = f"{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}.{int(time.time() * 1000000) % 1000000:06d}"
+			# DEBUG/TRACE go to the debug log when debug is enabled
 			if self.config["global"]["enable_debug"] and message_level <= LOG_LEVELS["DEBUG"]:
 				debug_entry = f"{timestamp} | {level.upper()} | {message}\n"
 				with open(debug_log, "a", encoding='utf-8') as f:
 					f.write(debug_entry)
 				self.clean_debug_log()
-			if message_level >= configured_level:
+			# WARN+ always lands in the main log so real problems are never
+			# silently swallowed by a high configured log_level.
+			if message_level >= configured_level or message_level >= LOG_LEVELS["WARN"]:
 				main_entry = f"{timestamp} | {level.upper()} | {message}\n"
 				with open(main_log, "a", encoding='utf-8') as f:
 					f.write(main_entry)
@@ -539,7 +544,7 @@ class Logger:
 			self.clean_log()
 		except OSError as e:
 			self.log_error(f"Failed to write timeout log: {e}")
-	
+
 	def log_instrumental(self, artist, title):
 		try:
 			timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
@@ -655,37 +660,32 @@ def has_internet_global(timeout: int = 3) -> bool:
 # ================
 #  ASYNC HELPERS
 # ================
-async def fetch_lrclib_async(artist, title, instrumental = False, duration=None, session=None):
-	import aiohttp
+async def _run_blocking_with_timeout(fn, *args, timeout: float, logger=None, tag: str = "task"):
+	"""Run fn(*args) in a disposable single-thread executor.
 
-	base_url = "https://lrclib.net/api/get"
-	params = {'artist_name': artist, 'track_name': title}
-	if duration:
-		params['duration'] = duration
+	Returns (ok, result). ok=False on timeout or unexpected error.
+	"""
+	import concurrent.futures  # local import so top-level deps stay unchanged
 
-	own_session = session is None
-	if own_session:
-		session = aiohttp.ClientSession()
-
+	loop = asyncio.get_running_loop()
+	ex = concurrent.futures.ThreadPoolExecutor(
+		max_workers=1, thread_name_prefix=f"lyrus_{tag}"
+	)
 	try:
-		async with session.get(
-			base_url, params=params, timeout=aiohttp.ClientTimeout(total=15)
-		) as response:
-			if response.status == 200:
-				try:
-					data = await response.json(content_type=None)
-					if data.get('instrumental', False):
-						return None, None, True
-					return data.get('syncedLyrics') or data.get('plainLyrics'), bool(data.get('syncedLyrics')), False
-				except (aiohttp.ContentTypeError, json.JSONDecodeError):
-					pass
-	except (aiohttp.ClientError, asyncio.TimeoutError):
-		pass
+		fut = loop.run_in_executor(ex, fn, *args)
+		result = await asyncio.wait_for(fut, timeout=timeout)
+		return True, result
+	except asyncio.TimeoutError:
+		if logger:
+			logger.log_debug(f"{tag}: timed out after {timeout:.1f}s (thread abandoned)")
+		return False, None
+	except Exception as e:  # noqa: BLE001
+		if logger:
+			logger.log_debug(f"{tag}: raised {type(e).__name__}: {e}")
+		return False, None
 	finally:
-		if own_session:
-			await session.close()
-
-	return None, None, False
+		# Never block on a stuck worker thread.
+		ex.shutdown(wait=False)
 
 
 # ======================
@@ -716,13 +716,65 @@ def sanitize_string(s):
 	return _STRING_SANITIZE_PATTERN.sub('', str(s)).lower()
 
 
-async def fetch_lyrics_lrclib_async(artist_name: str, track_name: str, instrumental: bool, duration: Optional[float] = None):
+# ------------------
+#  LRCLIB provider
+# ------------------
+def _lrclib_sync_query(artist, title, duration=None):
+	"""Synchronous LRCLIB query. Returns (lyrics, is_synced, is_instrumental)."""
+	base_url = "https://lrclib.net/api/get"
+	params = {'artist_name': artist, 'track_name': title}
+	if duration:
+		try:
+			d = int(float(duration))
+			if 1 <= d <= 3600:
+				params['duration'] = d
+		except (TypeError, ValueError):
+			pass
+
+	url = base_url + "?" + urllib.parse.urlencode(params)
+
 	try:
-		result = await fetch_lrclib_async(artist_name, track_name, duration, Instrumental)
-		return result
+		req = urllib.request.Request(url, headers={
+			'User-Agent': f'Lyrus v{VERSION} (https://github.com/)',
+			'Accept': 'application/json',
+		})
+		with urllib.request.urlopen(req, timeout=15) as resp:
+			if resp.status != 200:
+				return None, None, False
+			data = json.loads(resp.read().decode('utf-8'))
+	except urllib.error.HTTPError:
+		# 404 = no match; anything else is a real error but not fatal here.
+		return None, None, False
 	except Exception:
 		return None, None, False
 
+	if not data:
+		return None, None, False
+
+	if data.get('instrumental', False):
+		return None, None, True
+
+	synced = data.get('syncedLyrics') or None
+	plain = data.get('plainLyrics') or None
+	if synced:
+		return synced, True, False
+	if plain:
+		return plain, False, False
+	return None, None, False
+
+
+async def fetch_lyrics_lrclib_async(artist_name: str, track_name: str, instrumental: bool,
+									duration: Optional[float] = None, logger=None):
+	"""LRCLIB provider. Returns (lyrics, is_synced, is_instrumental)."""
+	ok, result = await _run_blocking_with_timeout(
+		_lrclib_sync_query, artist_name, track_name, duration,
+		timeout=15.0, logger=logger, tag="lrclib",
+	)
+	if not ok or result is None:
+		if logger:
+			logger.log_debug("LRCLIB: no result / timed out")
+		return None, None, False
+	return result
 
 
 def validate_lyrics(content: str) -> bool:
@@ -737,50 +789,89 @@ def validate_lyrics(content: str) -> bool:
 	return len(non_empty) >= 2
 
 
+# ------------------------
+#  syncedlyrics provider
+# -------------------------
 async def fetch_lyrics_syncedlyrics_async(
-	artist_name, track_name, config_manager=None
+	artist_name, track_name, config_manager=None, logger=None
 ):
-	import syncedlyrics
+	"""syncedlyrics provider. Returns (lyrics, is_synced, is_instrumental)."""
+	try:
+		import syncedlyrics  # noqa: WPS433 (local import to keep startup fast)
+	except ImportError as e:
+		if logger:
+			logger.log_debug(f"syncedlyrics not installed: {e}")
+		return None, None, False
+
+	search_term = f"{track_name} {artist_name}".strip()
+	if not search_term:
+		return None, None, False
+
+	providers = None
+	lang = None
+	if config_manager:
+		providers = [p.lower() for p in config_manager.PROVIDERS] or None
+		if config_manager.ALLOW_TRANSLATION and config_manager.LANGUAGE:
+			lang = config_manager.LANGUAGE
+
+	# Honour config SEARCH_TIMEOUT if available, otherwise default to 15s.
+	timeout = 15.0
+	if config_manager and getattr(config_manager, "SEARCH_TIMEOUT", None):
+		try:
+			timeout = float(config_manager.SEARCH_TIMEOUT)
+		except (TypeError, ValueError):
+			timeout = 15.0
+
+	def worker(term: str, plain_only: bool):
+		try:
+			return syncedlyrics.search(
+				term,
+				plain_only=plain_only,
+				providers=providers,
+				lang=lang,
+			)
+		except TypeError:
+			# xnetcat fork fallback: try allow_plain_format
+			try:
+				return syncedlyrics.search(
+					term,
+					allow_plain_format=plain_only,
+					providers=providers,
+					lang=lang,
+				)
+			except Exception as inner:  # noqa: BLE001
+				if logger:
+					logger.log_debug(f"syncedlyrics (alt fork) failed: {inner}")
+				return None
+		except Exception as e:  # noqa: BLE001
+			if logger:
+				logger.log_debug(f"syncedlyrics search failed: {e}")
+			return None
 
 	try:
-		search_term = f"{track_name} {artist_name}".strip()
+		asyncio.get_running_loop()
+	except RuntimeError:
+		return None, None, False
 
-		def worker(term: str, synced: bool = True):
-			try:
-				kwargs: dict = {}
-				if synced:
-					kwargs["synced_only"] = True
-				else:
-					kwargs["plain_only"] = True
-					kwargs["providers"] = config_manager.PROVIDERS
-				if config_manager.ALLOW_TRANSLATION:
-					kwargs["lang"] = config_manager.LANGUAGE
-				return syncedlyrics.search(term, **kwargs), synced
-			except Exception:
-				return None, False
+	# 1) synced only
+	ok, lyrics = await _run_blocking_with_timeout(
+		worker, search_term, False,
+		timeout=timeout, logger=logger, tag="sl_synced",
+	)
+	if ok and lyrics and validate_lyrics(lyrics):
+		return lyrics, True, False
 
-		if not search_term:
-			return None, None
+	# 2) plain allowed
+	ok, lyrics = await _run_blocking_with_timeout(
+		worker, search_term, True,
+		timeout=timeout, logger=logger, tag="sl_plain",
+	)
+	if ok and lyrics and validate_lyrics(lyrics):
+		return lyrics, False, False
 
-		# FIX: asyncio.get_event_loop() is deprecated in 3.10+; use get_running_loop()
-		loop = asyncio.get_running_loop()
-		lyrics, is_synced = await loop.run_in_executor(THREAD_POOL_EXECUTOR, worker, search_term, True)
-		if lyrics:
-			if not validate_lyrics(lyrics):
-				pass  # use anyway, caller may prepend a warning
-			return lyrics, is_synced
-
-		lyrics, is_synced = await loop.run_in_executor(THREAD_POOL_EXECUTOR, worker, search_term, False)
-		if lyrics and validate_lyrics(lyrics):
-			return lyrics, False
-
-		return None, None
-	except Exception:
-		return None, None
+	return None, None, False
 
 
-# FIX: save_lyrics now returns (path, error) so callers can distinguish a
-# successful save from a save failure, rather than treating both as "no lyrics".
 def save_lyrics(lyrics, track_name, artist_name, extension, config_manager, logger):
 	try:
 		folder = config_manager.LYRIC_CACHE_DIR
@@ -940,7 +1031,8 @@ def _load_lyric_path(file_path: str, logger) -> str | None:
 
 async def find_lyrics_file_async(
 	audio_file, directory, artist_name, track_name,
-	duration=None, config_manager=None, logger=None
+	duration=None, config_manager=None, logger=None,
+	on_lyrics_ready=None,
 ):
 	update_fetch_status('local', config_manager=config_manager)
 	logger.log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
@@ -1016,60 +1108,148 @@ async def find_lyrics_file_async(
 		update_fetch_status('synced', config_manager=config_manager)
 		logger.log_debug(f"Fetching lyrics online: {artist_name} - {track_name}")
 
-		tasks = [fetch_lyrics_lrclib_async(artist_name, track_name, instrumental, duration)]
-		if config_manager.ALLOW_SYNCEDLYRIC:
-			tasks.append(
-				fetch_lyrics_syncedlyrics_async(artist_name, track_name, config_manager=config_manager)
+		# ------------------------------------------------------------------
+		#  Providers race in parallel. The FIRST valid result is streamed to
+		#  the UI immediately via on_lyrics_ready. Once ALL providers finish,
+		#  the best candidate (by Format_priority, ties broken by provider
+		#  order) is chosen and saved. The UI's own future-done handler will
+		#  then swap the display to that saved best.
+		# ------------------------------------------------------------------
+		provider_specs = [
+			(
+				"LRCLIB",
+				fetch_lyrics_lrclib_async(
+					artist_name, track_name, is_instrumental, duration, logger=logger
+				),
+			),
+		]
+
+		if config_manager.ALLOW_SYNCEDLYRIC and config_manager.PROVIDER_FALLBACK:
+			provider_specs.append((
+				"syncedlyrics",
+				fetch_lyrics_syncedlyrics_async(
+					artist_name, track_name,
+					config_manager=config_manager, logger=logger,
+				),
+			))
+		else:
+			if not config_manager.ALLOW_SYNCEDLYRIC:
+				logger.log_debug("syncedlyrics skipped: Syncedlyrics disabled in config")
+			if not config_manager.PROVIDER_FALLBACK:
+				logger.log_debug("syncedlyrics skipped: Fallback disabled in config")
+
+		tasks = {
+			asyncio.create_task(coro, name=name): (name, idx)
+			for idx, (name, coro) in enumerate(provider_specs)
+		}
+
+		candidates: list = []          # [(ext, text, provider_idx), ...]
+		any_instrumental = False
+		first_emitted = False
+
+		pending = set(tasks.keys())
+		while pending:
+			done, pending = await asyncio.wait(
+				pending, return_when=asyncio.FIRST_COMPLETED
 			)
-		elif not config_manager.PROVIDER_FALLBACK:
-			tasks = [fetch_lyrics_lrclib_async(artist_name, track_name, duration)]
-		elif instrumental:
-			logger.log_debug("instrumental detected")
-			logger.log_instrumental(artist_name, track_name)
+			for task in done:
+				pname, pidx = tasks[task]
+				try:
+					result = task.result()
+				except BaseException as e:  # noqa: BLE001  (incl. CancelledError)
+					logger.log_debug(
+						f"Provider {pname}: raised {type(e).__name__}: {e}"
+					)
+					continue
 
-		results = await asyncio.gather(*tasks, return_exceptions=True)
+				if not isinstance(result, tuple) or len(result) != 3:
+					logger.log_debug(
+						f"Provider {pname}: unexpected result shape {result!r}"
+					)
+					continue
 
-		candidates = []
-		for idx, result in enumerate(results):
-			if isinstance(result, Exception):
-				logger.log_debug(f"Fetch task {idx} raised: {result}")
-				continue
-			fetched_lyrics, is_synced = result
-			if not fetched_lyrics:
-				continue
+				lyrics_text, provider_synced, provider_instrumental = result
 
-			if not validate_lyrics(fetched_lyrics):
-				logger.log_debug("Validation warning - possible mismatch")
-				fetched_lyrics = "[Validation Warning] Potential mismatch\n" + fetched_lyrics
+				if provider_instrumental:
+					logger.log_debug(f"Provider {pname}: reports instrumental")
+					any_instrumental = True
+					continue
+				if not lyrics_text:
+					logger.log_debug(f"Provider {pname}: no match")
+					continue
 
-			is_enhanced = any(re.search(r'<\d+:\d+\.\d+>', line) for line in fetched_lyrics.split('\n'))
-			has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+]', fetched_lyrics) is not None
+				text = lyrics_text
+				if not validate_lyrics(text):
+					logger.log_debug(f"Provider {pname}: validation warning")
+					text = "[Validation Warning] Potential mismatch\n" + text
 
-			if is_enhanced:
-				extension = 'a2'
-			elif is_synced and has_lrc_timestamps:
-				extension = 'lrc'
-			else:
-				extension = 'txt'
-			candidates.append((extension, fetched_lyrics))
-			logger.log_debug(f"Candidate: lines={len(fetched_lyrics.splitlines())}, fmt={extension}")
+				is_enhanced = any(
+					re.search(r'<\d+:\d+\.\d+>', line) for line in text.split('\n')
+				)
+				has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+]', text) is not None
+
+				if is_enhanced:
+					ext = 'a2'
+				elif provider_synced and has_lrc_timestamps:
+					ext = 'lrc'
+				else:
+					ext = 'txt'
+
+				candidates.append((ext, text, pidx))
+				logger.log_debug(
+					f"Provider {pname}: candidate fmt={ext} "
+					f"lines={len(text.splitlines())} synced={provider_synced}"
+				)
+
+				# Stream the first usable result to the UI right now.
+				if not first_emitted and on_lyrics_ready is not None:
+					try:
+						on_lyrics_ready(text, ext)
+					except Exception as cb_err:  # noqa: BLE001
+						logger.log_debug(f"on_lyrics_ready failed: {cb_err}")
+					first_emitted = True
 
 		if not candidates:
+			if any_instrumental:
+				logger.log_debug("Online providers report instrumental")
+				logger.log_instrumental(artist_name, track_name)
+				update_fetch_status('instrumental', config_manager=config_manager)
+				return None
 			logger.log_debug("No lyrics found from any source")
 			update_fetch_status("failed", config_manager=config_manager)
 			if has_internet_global():
 				logger.log_timeout(artist_name, track_name)
 			return None
 
-		priority_order = config_manager.PROVIDER_FORMAT_PRIORITY
-		candidates.sort(key=lambda x: priority_order.index(x[0]) if x[0] in priority_order else 99)
-		best_extension, best_lyrics = candidates[0]
+		# Pick the best by format priority; ties keep provider order
+		# (LRCLIB idx 0 before syncedlyrics idx 1) because tuple compare.
+		priority = config_manager.PROVIDER_FORMAT_PRIORITY or ["a2", "lrc", "txt"]
+		candidates.sort(
+			key=lambda c: (
+				priority.index(c[0]) if c[0] in priority else len(priority),
+				c[2],
+			)
+		)
+		best_extension, best_lyrics, _ = candidates[0]
 
-		logger.log_debug(f"Selected format: {best_extension}")
-		# FIX: save_lyrics failure is now distinguishable from "no lyrics found"
-		path, err = save_lyrics(best_lyrics, track_name, artist_name, best_extension, config_manager, logger)
-		if err:
+		logger.log_debug(
+			f"Selected format: {best_extension} "
+			f"(from {len(candidates)} candidate(s))"
+		)
+
+		path, err = save_lyrics(
+			best_lyrics, track_name, artist_name, best_extension,
+			config_manager, logger,
+		)
+		if err or path is None:
 			logger.log_error(f"Lyrics fetched but save failed: {err}")
+			# Hand the winner back in-memory so the UI still shows it.
+			return {
+				'type': 'embedded',
+				'format': best_extension,
+				'content': best_lyrics,
+				'path': None,
+			}
 		return path
 
 	except Exception as e:  # noqa: BLE001
@@ -1078,10 +1258,14 @@ async def find_lyrics_file_async(
 		return None
 
 
-async def fetch_lyrics_async(audio_file, directory, artist, title, duration, config_manager, logger):
+async def fetch_lyrics_async(
+	audio_file, directory, artist, title, duration, config_manager, logger,
+	on_lyrics_ready=None,
+):
 	try:
 		result = await find_lyrics_file_async(
-			audio_file, directory, artist, title, duration, config_manager, logger
+			audio_file, directory, artist, title, duration, config_manager, logger,
+			on_lyrics_ready=on_lyrics_ready,
 		)
 		if result is None:
 			return ([], []), False, False
@@ -1401,6 +1585,33 @@ class DisplayState:
 		self.widths_cache = {}
 		self.a2_groups = None
 		self.a2_word_cache = {}
+
+
+# ==========================
+#  LIVE LYRICS STREAMING
+# ==========================
+class LiveLyricsState:
+	"""Mutable hand-off between the fetch task and the UI loop.
+
+	The on_lyrics_ready callback writes into this from inside the fetch
+	task; the main loop drains it each iteration. Both run on the same
+	asyncio event loop, so no locking is required.
+	"""
+	__slots__ = ('pending', 'lyrics', 'errors', 'is_txt', 'is_a2')
+
+	def __init__(self):
+		self.pending = False
+		self.lyrics = None
+		self.errors = None
+		self.is_txt = False
+		self.is_a2 = False
+
+	def reset(self):
+		self.pending = False
+		self.lyrics = None
+		self.errors = None
+		self.is_txt = False
+		self.is_a2 = False
 
 
 def get_lyrics_hash(lyrics) -> int:
@@ -1864,6 +2075,39 @@ async def main_async(stdscr, config_manager, logger):
 
 	ds = DisplayState()
 
+	# ------------------------------------------------------------------
+	#  Live streaming: first provider to answer wins the screen; once all
+	#  providers are done, the fetch task saves the best-priority result
+	#  and the UI swaps to it via the normal future-done handler.
+	# ------------------------------------------------------------------
+	live_lyrics = LiveLyricsState()
+
+	def on_lyrics_ready(text, ext):
+		"""Invoked from the fetch task the moment a provider returns.
+
+		Parses the raw text into the (timestamp, line) shape the UI uses and
+		flags it as pending so the main loop will pick it up next iteration.
+		"""
+		try:
+			with tempfile.NamedTemporaryFile(
+				mode='w', suffix=f'.{ext}', delete=False, encoding='utf-8'
+			) as tmp:
+				tmp.write(text)
+				tmp_path = tmp.name
+			try:
+				parsed, errs = load_lyrics(tmp_path, logger)
+			finally:
+				with contextlib.suppress(OSError):
+					os.unlink(tmp_path)
+		except Exception as e:  # noqa: BLE001
+			logger.log_debug(f"on_lyrics_ready parse failed: {e}")
+			return
+		live_lyrics.lyrics = parsed
+		live_lyrics.errors = errs
+		live_lyrics.is_txt = (ext == 'txt')
+		live_lyrics.is_a2 = (ext == 'a2')
+		live_lyrics.pending = True
+
 	current_title: Optional[str] = None
 	current_artist: Optional[str] = None
 	current_file: Optional[str] = None
@@ -2080,6 +2324,9 @@ async def main_async(stdscr, config_manager, logger):
 						lyric_future = None
 						log_debug("Previous lyric task cancelled")
 
+					# Drop any streamed partial from the previous track.
+					live_lyrics.reset()
+
 					lyrics = []
 					errors = []
 					last_idx = -1
@@ -2106,12 +2353,38 @@ async def main_async(stdscr, config_manager, logger):
 								duration=p_duration,
 								config_manager=config_manager,
 								logger=logger,
+								on_lyrics_ready=on_lyrics_ready,
 							)
 						)
 						log_debug(f"Lyric task started: {p_artist} - {p_title}")
 
 					last_cmus_position = p_raw_pos
 					estimated_position = p_raw_pos
+
+			# Streamed partial: show whichever provider answered first.
+			# When the future completes below, the chosen best replaces this.
+			if live_lyrics.pending:
+				live_lyrics.pending = False
+				if live_lyrics.lyrics is not None:
+					lyrics = live_lyrics.lyrics
+					errors = live_lyrics.errors or []
+					is_txt = live_lyrics.is_txt
+					is_a2 = live_lyrics.is_a2
+					last_idx = -1
+					force_redraw = True
+					lyrics_loaded_time = current_time
+					wrapped_lines = []
+					max_wrapped_offset = 0
+					if not (is_txt or is_a2):
+						timestamps = sorted(t for t, _ in lyrics if t is not None)
+					else:
+						timestamps = []
+					if p_status == STATUS_PLAYING and player_type in (PLAYER_CMUS, PLAYER_MPD):
+						resume_trigger_time = current_time
+					fmt_label = 'a2' if is_a2 else ('txt' if is_txt else 'lrc')
+					log_debug(
+						f"Live lyrics applied: fmt={fmt_label} lines={len(lyrics)}"
+					)
 
 			# Collect finished lyric task
 			if lyric_future and lyric_future.done():
