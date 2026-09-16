@@ -1190,7 +1190,7 @@ async def find_lyrics_file_async(
 
 				if is_enhanced:
 					ext = 'a2'
-				elif provider_synced and has_lrc_timestamps:
+				elif has_lrc_timestamps:
 					ext = 'lrc'
 				else:
 					ext = 'txt'
