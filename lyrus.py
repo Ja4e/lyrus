@@ -2502,7 +2502,7 @@ async def main_async(stdscr, config_manager, logger):
 					proximity_trigger_time = current_time
 					proximity_active = True
 					stdscr_timeout(refresh_proximity_interval_ms)
-					# last_player_update = 0.0
+					last_player_update = 0.0
 				elif (proximity_trigger_time is not None and
 					  (time_to_next < proximity_min_threshold_sec or
 					   time_to_next > threshold or
