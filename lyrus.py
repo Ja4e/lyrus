@@ -2283,6 +2283,7 @@ async def main_async(stdscr, config_manager, logger):
 			interval = 0.0 if in_smart_window else refresh_interval
 			if proximity_active and p_status == STATUS_PLAYING:
 				interval = refresh_interval
+				# interval = max(refresh_interval, 0.05)
 
 			if current_time - last_player_update >= interval:
 				# Poll player (inlined)
@@ -2501,7 +2502,7 @@ async def main_async(stdscr, config_manager, logger):
 					proximity_trigger_time = current_time
 					proximity_active = True
 					stdscr_timeout(refresh_proximity_interval_ms)
-					last_player_update = 0.0
+					# last_player_update = 0.0
 				elif (proximity_trigger_time is not None and
 					  (time_to_next < proximity_min_threshold_sec or
 					   time_to_next > threshold or
