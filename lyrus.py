@@ -789,6 +789,41 @@ def validate_lyrics(content: str) -> bool:
 	return len(non_empty) >= 2
 
 
+def detect_lyric_format(text: str) -> str:
+	"""Classify lyric text by content shape, tolerating header/metadata lines.
+
+	- 'a2'  : word-level enhanced timing (<MM:SS.xx>word<MM:SS.xx>)
+	- 'lrc' : a meaningful fraction of lines carry [MM:SS.xx] timestamps
+	- 'txt' : anything else
+
+	The 'lrc' rule is ratio-based, not absolute, so a couple of 作词/作曲
+	header lines, blank separators, or inline translations do NOT disqualify
+	a timestamped file. A single stray timestamp in otherwise plain text
+	likewise does NOT promote it to LRC.
+	"""
+	if not text:
+		return 'txt'
+
+	# a2 is unambiguous: word-level enhanced markup only appears in a2 files.
+	if _A2_WORD_PATTERN.search(text):
+		return 'a2'
+
+	non_empty = [ln for ln in text.splitlines() if ln.strip()]
+	if not non_empty:
+		return 'txt'
+
+	timestamped = sum(1 for ln in non_empty if _LRC_PATTERN.match(ln))
+
+	# Need at least 2 timestamped lines AND >=30% of non-empty lines to be
+	# timestamped. Both guards matter:
+	#   - min 2 prevents one stray [00:00.00] from flipping a plain file
+	#   - 30% tolerates headers, translations, and blank-ish lines
+	if timestamped >= 2 and (timestamped / len(non_empty)) >= 0.3:
+		return 'lrc'
+
+	return 'txt'
+
+
 # ------------------------
 #  syncedlyrics provider
 # -------------------------
@@ -1183,17 +1218,9 @@ async def find_lyrics_file_async(
 					logger.log_debug(f"Provider {pname}: validation warning")
 					text = "[Validation Warning] Potential mismatch\n" + text
 
-				is_enhanced = any(
-					re.search(r'<\d+:\d+\.\d+>', line) for line in text.split('\n')
-				)
-				has_lrc_timestamps = re.search(r'\[\d+:\d+\.\d+]', text) is not None
-
-				if is_enhanced:
-					ext = 'a2'
-				elif has_lrc_timestamps:
-					ext = 'lrc'
-				else:
-					ext = 'txt'
+				# Content-shape classification. Provider label is only a hint;
+				# what's actually in the text decides the format.
+				ext = detect_lyric_format(text)
 
 				candidates.append((ext, text, pidx))
 				logger.log_debug(
