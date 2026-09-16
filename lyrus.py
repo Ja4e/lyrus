@@ -790,16 +790,18 @@ def validate_lyrics(content: str) -> bool:
 
 
 def detect_lyric_format(text: str) -> str:
-	"""Classify lyric text by content shape, tolerating header/metadata lines.
+	"""Classify lyric text by content shape.
 
 	- 'a2'  : word-level enhanced timing (<MM:SS.xx>word<MM:SS.xx>)
-	- 'lrc' : a meaningful fraction of lines carry [MM:SS.xx] timestamps
+	- 'lrc' : ANY line carries an [MM:SS.xx] timestamp
 	- 'txt' : anything else
 
-	The 'lrc' rule is ratio-based, not absolute, so a couple of 作词/作曲
-	header lines, blank separators, or inline translations do NOT disqualify
-	a timestamped file. A single stray timestamp in otherwise plain text
-	likewise does NOT promote it to LRC.
+	A single LRC-style timestamp anywhere in the text is enough to call
+	it LRC. This is intentional: translation-style files often only stamp
+	a subset of lines, and we'd rather treat them as timed lyrics (with a
+	few unsynced lines) than as plain text (with no highlight at all).
+	The .lrc parser in load_lyrics() handles bare-timestamp lines by
+	carrying the timestamp forward onto the next lyric line.
 	"""
 	if not text:
 		return 'txt'
@@ -808,17 +810,8 @@ def detect_lyric_format(text: str) -> str:
 	if _A2_WORD_PATTERN.search(text):
 		return 'a2'
 
-	non_empty = [ln for ln in text.splitlines() if ln.strip()]
-	if not non_empty:
-		return 'txt'
-
-	timestamped = sum(1 for ln in non_empty if _LRC_PATTERN.match(ln))
-
-	# Need at least 2 timestamped lines AND >=30% of non-empty lines to be
-	# timestamped. Both guards matter:
-	#   - min 2 prevents one stray [00:00.00] from flipping a plain file
-	#   - 30% tolerates headers, translations, and blank-ish lines
-	if timestamped >= 2 and (timestamped / len(non_empty)) >= 0.3:
+	# ANY LRC-style timestamp promotes the file to LRC.
+	if _TIMESTAMP_PATTERN.search(text):
 		return 'lrc'
 
 	return 'txt'
@@ -1219,7 +1212,8 @@ async def find_lyrics_file_async(
 					text = "[Validation Warning] Potential mismatch\n" + text
 
 				# Content-shape classification. Provider label is only a hint;
-				# what's actually in the text decides the format.
+				# what's actually in the text decides the format. Any single
+				# LRC-style timestamp promotes the file to 'lrc'.
 				ext = detect_lyric_format(text)
 
 				candidates.append((ext, text, pidx))
@@ -1382,18 +1376,42 @@ def load_lyrics(file_path, logger):
 		elif file_path.endswith('.txt'):
 			for line in lines:
 				lyrics.append((None, line.rstrip('\n')))
+
 		else:
+			# LRC branch.
+			#
+			# Some providers (notably translation-merged output from
+			# NetEase/Musixmatch) emit "bare" timestamp lines where the
+			# [MM:SS.xx] sits alone and the actual lyric is on the next
+			# line. We carry the pending timestamp forward onto the next
+			# non-empty text line so those files actually sync instead of
+			# showing a run of empty entries at the stamped times.
+			pending_ts: Optional[float] = None
 			for line in lines:
 				raw_line = line.rstrip('\n')
 				line_match = _LRC_PATTERN.match(raw_line)
 				if line_match:
 					try:
 						line_time = parse_time_to_seconds(line_match.group(1))
-						lyrics.append((line_time, line_match.group(2).strip()))
 					except ValueError as e:
 						errors.append(f"Invalid timestamp: {e}")
+						continue
+					body = line_match.group(2).strip()
+					if body:
+						lyrics.append((line_time, body))
+						pending_ts = None
+					else:
+						# Bare timestamp: hold it for the next text line.
+						pending_ts = line_time
 				else:
-					lyrics.append((None, raw_line))
+					stripped = raw_line.strip()
+					if pending_ts is not None and stripped:
+						lyrics.append((pending_ts, stripped))
+						pending_ts = None
+					else:
+						lyrics.append((None, raw_line))
+			if pending_ts is not None:
+				lyrics.append((pending_ts, ''))
 
 		if errors:
 			logger.log_warn(f"Found {len(errors)} parsing errors in {file_path}")
