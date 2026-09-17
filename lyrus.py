@@ -105,6 +105,26 @@ def resolve_value(item):
 	return item
 
 
+def resolve_search_timeout(config_manager, default: float = 15.0):
+	"""Return search timeout in seconds, or None for 'no timeout'.
+
+	Negative values (-1, -5, ...) mean wait indefinitely. Everything else
+	is treated as a normal seconds value, including 0 (which asyncio
+	interprets as an immediate timeout). Missing / invalid values fall
+	back to `default`.
+	"""
+	if config_manager is None:
+		return default
+	raw = getattr(config_manager, "SEARCH_TIMEOUT", None)
+	if raw is None:
+		return default
+	try:
+		val = float(raw)
+	except (TypeError, ValueError):
+		return default
+	return None if val < 0 else val
+
+
 class ConfigManager:
 	__slots__ = (
 		"use_user_dirs",
@@ -269,7 +289,7 @@ class ConfigManager:
 			},
 			"terminal_states": ["done", "instrumental", "time_out", "failed", "mpd", "clear", "cmus", "no_player"],
 			"lyrics": {
-				"search_timeout": 15,
+				"search_timeout": 30,
 				"cache_dir": "~/.local/state/lyrus/synced_lyrics",
 				"local_extensions": ["a2", "lrc", "txt"],
 				"validation": {"title_match_length": 15, "artist_match_length": 15},
@@ -660,9 +680,10 @@ def has_internet_global(timeout: int = 3) -> bool:
 # ================
 #  ASYNC HELPERS
 # ================
-async def _run_blocking_with_timeout(fn, *args, timeout: float, logger=None, tag: str = "task"):
+async def _run_blocking_with_timeout(fn, *args, timeout, logger=None, tag: str = "task"):
 	"""Run fn(*args) in a disposable single-thread executor.
 
+	timeout=None means wait indefinitely (no timeout).
 	Returns (ok, result). ok=False on timeout or unexpected error.
 	"""
 	import concurrent.futures  # local import so top-level deps stay unchanged
@@ -673,7 +694,10 @@ async def _run_blocking_with_timeout(fn, *args, timeout: float, logger=None, tag
 	)
 	try:
 		fut = loop.run_in_executor(ex, fn, *args)
-		result = await asyncio.wait_for(fut, timeout=timeout)
+		if timeout is None:
+			result = await fut
+		else:
+			result = await asyncio.wait_for(fut, timeout=timeout)
 		return True, result
 	except asyncio.TimeoutError:
 		if logger:
@@ -719,8 +743,13 @@ def sanitize_string(s):
 # ------------------
 #  LRCLIB provider
 # ------------------
-def _lrclib_sync_query(artist, title, duration=None):
-	"""Synchronous LRCLIB query. Returns (lyrics, is_synced, is_instrumental)."""
+def _lrclib_sync_query(artist, title, duration=None, http_timeout=15):
+	"""Synchronous LRCLIB query. Returns (lyrics, is_synced, is_instrumental).
+
+	http_timeout=None means rely on urllib / socket defaults (i.e. no
+	explicit timeout); used when the user has disabled the search timeout
+	with a negative `search_timeout` in config.
+	"""
 	base_url = "https://lrclib.net/api/get"
 	params = {'artist_name': artist, 'track_name': title}
 	if duration:
@@ -738,7 +767,7 @@ def _lrclib_sync_query(artist, title, duration=None):
 			'User-Agent': f'Lyrus v{VERSION} (https://github.com/)',
 			'Accept': 'application/json',
 		})
-		with urllib.request.urlopen(req, timeout=15) as resp:
+		with urllib.request.urlopen(req, timeout=http_timeout) as resp:
 			if resp.status != 200:
 				return None, None, False
 			data = json.loads(resp.read().decode('utf-8'))
@@ -764,11 +793,15 @@ def _lrclib_sync_query(artist, title, duration=None):
 
 
 async def fetch_lyrics_lrclib_async(artist_name: str, track_name: str, instrumental: bool,
-									duration: Optional[float] = None, logger=None):
+									duration: Optional[float] = None, logger=None,
+									config_manager=None):
 	"""LRCLIB provider. Returns (lyrics, is_synced, is_instrumental)."""
+	timeout = resolve_search_timeout(config_manager, default=15.0)
+	# urllib accepts None -> falls back to socket / process default.
+	http_timeout = timeout if timeout is not None else None
 	ok, result = await _run_blocking_with_timeout(
-		_lrclib_sync_query, artist_name, track_name, duration,
-		timeout=15.0, logger=logger, tag="lrclib",
+		_lrclib_sync_query, artist_name, track_name, duration, http_timeout,
+		timeout=timeout, logger=logger, tag="lrclib",
 	)
 	if not ok or result is None:
 		if logger:
@@ -842,13 +875,8 @@ async def fetch_lyrics_syncedlyrics_async(
 		if config_manager.ALLOW_TRANSLATION and config_manager.LANGUAGE:
 			lang = config_manager.LANGUAGE
 
-	# Honour config SEARCH_TIMEOUT if available, otherwise default to 15s.
-	timeout = 15.0
-	if config_manager and getattr(config_manager, "SEARCH_TIMEOUT", None):
-		try:
-			timeout = float(config_manager.SEARCH_TIMEOUT)
-		except (TypeError, ValueError):
-			timeout = 15.0
+	# Honour config SEARCH_TIMEOUT if available. Negative -> None -> no timeout.
+	timeout = resolve_search_timeout(config_manager, default=15.0)
 
 	def worker(term: str, plain_only: bool):
 		try:
@@ -1147,7 +1175,8 @@ async def find_lyrics_file_async(
 			(
 				"LRCLIB",
 				fetch_lyrics_lrclib_async(
-					artist_name, track_name, is_instrumental, duration, logger=logger
+					artist_name, track_name, is_instrumental, duration,
+					logger=logger, config_manager=config_manager,
 				),
 			),
 		]
