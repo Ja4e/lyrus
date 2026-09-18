@@ -33,31 +33,14 @@ python lyrus.py
 
 best cmus simple lyrics player out there
 
-unfortunately it uses traditional polling system couldve used playerctl since the beginning
-
-the dbus does not actually implement properly still doing traditional polling, I know this isnt the right approach to the lrc control but I will need to go through some of the documentation before executing all that
-
-tbh i am happy to introduce this that this program now works on any music player that works with playerctl
-
-
 Scrollable lyrics btw 
 
 very customizeable
 
-
 run this script with these requirement  installable through pip if doownloaded directly through the source code
-
 
 It detects your custon config.json (monfiable btw) make sure you backup this json configurations
 
-
-
-
-
-
 will attempt to get a2 working
-
-also need better instrument detection
-
 
 hmm i wanted to add option to allow tab like functionality to be able to edit the setting in curses interface
