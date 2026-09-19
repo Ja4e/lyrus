@@ -62,6 +62,9 @@ PLAYER_CMUS = "cmus"
 PLAYER_MPD = "mpd"
 PLAYER_PLAYERCTL = "playerctl"
 
+_SMART_PLAYERS = (PLAYER_CMUS, PLAYER_PLAYERCTL)
+_STREAMING_PLAYERS = (PLAYER_CMUS, PLAYER_MPD)
+
 FORMAT_A2 = '.a2'
 FORMAT_LRC = '.lrc'
 FORMAT_TXT = '.txt'
@@ -614,9 +617,9 @@ class FetchState:
 			self.current_step = step
 			self.lyric_count = lyrics_found
 			if step == 'start':
-				self.start_time = time.time()
+				self.start_time = time.monotonic()
 			if config_manager and step in config_manager.TERMINAL_STATES:
-				self.done_time = time.time()
+				self.done_time = time.monotonic()
 			else:
 				self.done_time = None
 
@@ -626,13 +629,13 @@ class FetchState:
 			if not step:
 				return None
 			if step in config_manager.TERMINAL_STATES and self.done_time:
-				if time.time() - self.done_time > 2:
+				if time.monotonic() - self.done_time > 2:
 					return ""
 			if step == 'clear':
 				return ""
 			base_msg = config_manager.MESSAGES.get(step, step)
 			if self.start_time and step != 'done':
-				end_time = self.done_time or time.time()
+				end_time = self.done_time or time.monotonic()
 				elapsed = end_time - self.start_time
 				return f"{base_msg} {elapsed:.1f}s"
 			return base_msg
@@ -1741,6 +1744,9 @@ def display_lyrics(
 	config_manager=None
 ):
 	"""Render lyrics in curses interface."""
+	cp = curses.color_pair
+	CP1, CP2, CP3, CP4, CP5 = cp(1), cp(2), cp(3), cp(4), cp(5)
+
 	height, width = stdscr.getmaxyx()
 	lyrics_hash = get_lyrics_hash(lyrics)
 
@@ -1786,7 +1792,7 @@ def display_lyrics(
 	error_win.erase()
 	if errors:
 		with contextlib.suppress(curses.error):
-			error_win.addstr(0, 0, f"Errors: {len(errors)}"[:width - 1], curses.color_pair(1))
+			error_win.addstr(0, 0, f"Errors: {len(errors)}"[:width - 1], CP1)
 	error_win.noutrefresh()
 
 	# 2) Lyrics area
@@ -1838,7 +1844,7 @@ def display_lyrics(
 				x = 1
 
 			cursor = 0
-			color = curses.color_pair(2) if idx == len(a2_lines) - 1 else curses.color_pair(3)
+			color = CP2 if idx == len(a2_lines) - 1 else CP3
 			for word_idx, (_, (text, _)) in enumerate(line):
 				space_left = width - x - cursor - 1
 				if space_left <= 0:
@@ -1908,9 +1914,9 @@ def display_lyrics(
 				x = 1
 
 			color = (
-				curses.color_pair(4) if orig_i == current_idx else curses.color_pair(5)
+				CP4 if orig_i == current_idx else CP5
 			) if is_txt_format else (
-				curses.color_pair(2) if orig_i == current_idx else curses.color_pair(3)
+				CP2 if orig_i == current_idx else CP3
 			)
 			with contextlib.suppress(curses.error):
 				lyrics_win.addstr(i, x, txt, color)
@@ -1921,12 +1927,12 @@ def display_lyrics(
 	adjust_win.erase()
 	if current_idx is not None and current_idx == len(lyrics) - 1 and not is_txt_format and len(lyrics) > 1:
 		with contextlib.suppress(curses.error):
-			adjust_win.addstr(0, 0, " End of lyrics ", curses.color_pair(2) | curses.A_BOLD)
+			adjust_win.addstr(0, 0, " End of lyrics ", CP2 | curses.A_BOLD)
 	elif time_adjust:
 		adj_str = f" Offset: {time_adjust:+.1f}s "[:width - 1]
 		with contextlib.suppress(curses.error):
 			adjust_win.addstr(0, max(0, width - len(adj_str) - 1),
-							  adj_str, curses.color_pair(2) | curses.A_BOLD)
+							  adj_str, CP2 | curses.A_BOLD)
 	adjust_win.noutrefresh()
 
 	# 4) Status bar
@@ -1964,7 +1970,7 @@ def display_lyrics(
 
 		with contextlib.suppress(curses.error):
 			status_win.addstr(0, 0, display_line[:max(0, width - 1)],
-							  curses.color_pair(5) | curses.A_BOLD)
+							  CP5 | curses.A_BOLD)
 	else:
 		info = f"Line {min(current_idx + 1, len(lyrics))}/{len(lyrics)}"
 		if time_adjust:
@@ -1977,7 +1983,7 @@ def display_lyrics(
 		msg = f"  [{status_msg}]  "[:width - 1]
 		with contextlib.suppress(curses.error):
 			status_win.addstr(0, max(0, (width - len(msg)) // 2),
-							  msg, curses.color_pair(2) | curses.A_BOLD)
+							  msg, CP2 | curses.A_BOLD)
 	status_win.noutrefresh()
 
 	curses.doupdate()
@@ -2092,6 +2098,12 @@ async def main_async(stdscr, config_manager, logger):
 	stdscr_keypad = stdscr.keypad
 	stdscr_curs_set = curses.curs_set
 	get_size = stdscr.getmaxyx
+
+	_timeout_cache = [-1]
+	def set_timeout(ms):
+		if ms != _timeout_cache[0]:
+			stdscr_timeout(ms)
+			_timeout_cache[0] = ms
 
 	config = config_manager.config
 	ui_config = config["ui"]
@@ -2264,7 +2276,7 @@ async def main_async(stdscr, config_manager, logger):
 						manual_offset = int_func(manual_offset * (new_h / old_h))
 					window_size = new_size
 					max_wrapped_offset = max_func(0, max_wrapped_offset)
-					needs_redraw = True
+				needs_redraw = True
 			elif new_input:
 				if key in quit_keys:
 					try:
@@ -2318,12 +2330,12 @@ async def main_async(stdscr, config_manager, logger):
 			# Smart refresh timing
 			in_smart_window = (resume_trigger_time is not None and
 							   (current_time - resume_trigger_time <= temporary_refresh_sec))
-			if (player_type in (PLAYER_CMUS, PLAYER_PLAYERCTL) and
+			if (player_type in _SMART_PLAYERS and
 					in_smart_window and p_status == STATUS_PLAYING and lyrics):
-				stdscr_timeout(int_func(smart_refresh_interval))
+				set_timeout(smart_refresh_interval)
 				poll = True
 			else:
-				stdscr_timeout(int_func(refresh_interval_2))
+				set_timeout(refresh_interval_2)
 				poll = False
 
 			# Player poll interval
@@ -2415,7 +2427,7 @@ async def main_async(stdscr, config_manager, logger):
 
 					search_directory = None
 					if (p_audio_file and path_exists(p_audio_file) and
-							player_type in (PLAYER_CMUS, PLAYER_MPD)):
+							player_type in _STREAMING_PLAYERS):
 						search_directory = path_dirname(p_audio_file)
 
 					if current_title and current_artist:
@@ -2454,7 +2466,7 @@ async def main_async(stdscr, config_manager, logger):
 						timestamps = sorted(t for t, _ in lyrics if t is not None)
 					else:
 						timestamps = []
-					if p_status == STATUS_PLAYING and player_type in (PLAYER_CMUS, PLAYER_MPD):
+					if p_status == STATUS_PLAYING and player_type in _STREAMING_PLAYERS:
 						resume_trigger_time = current_time
 					fmt_label = 'a2' if is_a2 else ('txt' if is_txt else 'lrc')
 					log_debug(
@@ -2480,7 +2492,7 @@ async def main_async(stdscr, config_manager, logger):
 						timestamps = sorted(t for t, _ in lyrics if t is not None)
 					else:
 						timestamps = []
-					if p_status == STATUS_PLAYING and player_type in (PLAYER_CMUS, PLAYER_MPD):
+					if p_status == STATUS_PLAYING and player_type in _STREAMING_PLAYERS:
 						resume_trigger_time = current_time
 					estimated_position = p_raw_pos
 				except (asyncio.CancelledError, Exception) as e:
@@ -2548,13 +2560,13 @@ async def main_async(stdscr, config_manager, logger):
 				if proximity_min_threshold_sec <= time_to_next <= threshold:
 					proximity_trigger_time = current_time
 					proximity_active = True
-					stdscr_timeout(refresh_proximity_interval_ms)
+					set_timeout(refresh_proximity_interval_ms)
 					last_player_update = 0.0
 				elif (proximity_trigger_time is not None and
 					  (time_to_next < proximity_min_threshold_sec or
 					   time_to_next > threshold or
 					   current_time - proximity_trigger_time > threshold)):
-					stdscr_timeout(int_func(refresh_interval_2))
+					set_timeout(refresh_interval_2)
 					proximity_trigger_time = None
 					proximity_active = False
 				else:
@@ -2619,7 +2631,7 @@ async def main_async(stdscr, config_manager, logger):
 					skip_for_vrr = False
 
 			# Render
-			should_render = (new_input or needs_redraw or force_redraw or current_idx != last_idx) and not skip_for_vrr
+			should_render = (needs_redraw or force_redraw or current_idx != last_idx) and not skip_for_vrr
 			if should_render:
 				log_debug(
 					f"Render: new_input={new_input} needs={needs_redraw} "
@@ -2647,16 +2659,16 @@ async def main_async(stdscr, config_manager, logger):
 			# Sleep timeout
 			if playback_paused and not manual_scroll:
 				if time_since_input > 5.0:
-					stdscr_timeout(400)
+					set_timeout(400)
 					sleep_time = 0.004
 				elif time_since_input > 2.0:
-					stdscr_timeout(300)
+					set_timeout(300)
 					sleep_time = 0.003
 				else:
-					stdscr_timeout(250)
+					set_timeout(250)
 					sleep_time = 0.002
 			else:
-				stdscr_timeout(int_func(refresh_interval_2))
+				set_timeout(refresh_interval_2)
 				sleep_time = 0.0
 
 			if poll or proximity_active or manual_scroll:
