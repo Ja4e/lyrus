@@ -23,7 +23,7 @@ python lyrus.py
 
 ---
 
-### All the timeouts, debugs logs are stored in ``~/.cache/lyrus`` by default
+### All the timeouts, instrumental, debugs logs are stored in ``~/.cache/lyrus`` by default
 
 ### All cached lyrics are stored in ``~/.local/state/lyrus/synced_lyrics`` by default
 
