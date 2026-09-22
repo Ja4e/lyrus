@@ -13,6 +13,7 @@ import contextlib
 import curses
 import argparse
 import threading
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -23,7 +24,6 @@ import time
 import asyncio
 from datetime import datetime
 from wcwidth import wcswidth
-from functools import lru_cache
 import urllib.request
 import urllib.error
 import urllib.parse
@@ -72,6 +72,10 @@ FORMAT_TXT = '.txt'
 ALIGN_LEFT = "left"
 ALIGN_CENTER = "center"
 ALIGN_RIGHT = "right"
+
+# Bounds applied at song boundaries (not during a song's lifetime).
+_WIDTHS_CACHE_MAX = 4096
+_A2_WORD_CACHE_MAX = 1024
 
 # ==============
 #  CONFIGURATION
@@ -756,19 +760,21 @@ _TIME_PATTERNS = [
 ]
 
 
-@lru_cache(maxsize=1024)
 def sanitize_filename(name):
+	# Intentionally NOT lru_cached: a handful of calls per track, and caching
+	# would pin every historical track/artist name for the session.
 	return _FILENAME_SANITIZE_PATTERN.sub('_', str(name))
 
 
-@lru_cache(maxsize=1024)
 def sanitize_string(s):
+	# Same reasoning as sanitize_filename.
 	return _STRING_SANITIZE_PATTERN.sub('', str(s)).lower()
 
 
-@lru_cache(maxsize=4096)
 def _wcswidth_cached(s: str) -> int:
-	"""Cached display-width measurement (wcswidth is pure/deterministic)."""
+	# Kept as a thin wrapper for source compatibility. The actual caching is
+	# done by DisplayState.widths_cache (see _BoundedLRU), which is bounded
+	# at song boundaries and reusable across songs.
 	return wcswidth(s)
 
 
@@ -860,22 +866,13 @@ def detect_lyric_format(text: str) -> str:
 	- 'a2'  : word-level enhanced timing (<MM:SS.xx>word<MM:SS.xx>)
 	- 'lrc' : ANY line carries an [MM:SS.xx] timestamp
 	- 'txt' : anything else
-
-	A single LRC-style timestamp anywhere in the text is enough to call
-	it LRC. This is intentional: translation-style files often only stamp
-	a subset of lines, and we'd rather treat them as timed lyrics (with a
-	few unsynced lines) than as plain text (with no highlight at all).
-	The .lrc parser in load_lyrics() handles bare-timestamp lines by
-	carrying the timestamp forward onto the next lyric line.
 	"""
 	if not text:
 		return 'txt'
 
-	# a2 is unambiguous: word-level enhanced markup only appears in a2 files.
 	if _A2_WORD_PATTERN.search(text):
 		return 'a2'
 
-	# ANY LRC-style timestamp promotes the file to LRC.
 	if _TIMESTAMP_PATTERN.search(text):
 		return 'lrc'
 
@@ -907,7 +904,6 @@ async def fetch_lyrics_syncedlyrics_async(
 		if config_manager.ALLOW_TRANSLATION and config_manager.LANGUAGE:
 			lang = config_manager.LANGUAGE
 
-	# Honour config SEARCH_TIMEOUT if available. Negative -> None -> no timeout.
 	timeout = resolve_search_timeout(config_manager, default=15.0)
 
 	def worker(term: str, plain_only: bool):
@@ -1018,9 +1014,6 @@ async def read_embedded_lyrics(audio_file: str, logger):
 	import mutagen.oggopus
 	import mutagen.mp3
 	import mutagen.mp4
-
-	# NOTE: caller (find_lyrics_file_async) already verified existence;
-	# no redundant stat here.
 
 	ext = os.path.splitext(audio_file)[1].lower()
 
@@ -1198,13 +1191,6 @@ async def find_lyrics_file_async(
 		update_fetch_status('synced', config_manager=config_manager)
 		logger.log_debug_fmt("Fetching lyrics online: %s - %s", artist_name, track_name)
 
-		# ------------------------------------------------------------------
-		#  Providers race in parallel. The FIRST valid result is streamed to
-		#  the UI immediately via on_lyrics_ready. Once ALL providers finish,
-		#  the best candidate (by Format_priority, ties broken by provider
-		#  order) is chosen and saved. The UI's own future-done handler will
-		#  then swap the display to that saved best.
-		# ------------------------------------------------------------------
 		provider_specs = [
 			(
 				"LRCLIB",
@@ -1234,7 +1220,7 @@ async def find_lyrics_file_async(
 			for idx, (name, coro) in enumerate(provider_specs)
 		}
 
-		candidates: list = []          # [(ext, text, provider_idx), ...]
+		candidates: list = []
 		any_instrumental = False
 		first_emitted = False
 
@@ -1247,7 +1233,7 @@ async def find_lyrics_file_async(
 				pname, pidx = tasks[task]
 				try:
 					result = task.result()
-				except BaseException as e:  # noqa: BLE001  (incl. CancelledError)
+				except BaseException as e:  # noqa: BLE001
 					logger.log_debug_fmt("Provider %s: raised %s: %s", pname, type(e).__name__, e)
 					continue
 
@@ -1270,9 +1256,6 @@ async def find_lyrics_file_async(
 					logger.log_debug_fmt("Provider %s: validation warning", pname)
 					text = "[Validation Warning] Potential mismatch\n" + text
 
-				# Content-shape classification. Provider label is only a hint;
-				# what's actually in the text decides the format. Any single
-				# LRC-style timestamp promotes the file to 'lrc'.
 				ext = detect_lyric_format(text)
 
 				candidates.append((ext, text, pidx))
@@ -1281,7 +1264,6 @@ async def find_lyrics_file_async(
 					pname, ext, len(text.splitlines()), provider_synced,
 				)
 
-				# Stream the first usable result to the UI right now.
 				if not first_emitted and on_lyrics_ready is not None:
 					try:
 						on_lyrics_ready(text, ext)
@@ -1301,8 +1283,6 @@ async def find_lyrics_file_async(
 				logger.log_timeout(artist_name, track_name)
 			return None
 
-		# Pick the best by format priority; ties keep provider order
-		# (LRCLIB idx 0 before syncedlyrics idx 1) because tuple compare.
 		priority = config_manager.PROVIDER_FORMAT_PRIORITY or ["a2", "lrc", "txt"]
 		candidates.sort(
 			key=lambda c: (
@@ -1323,7 +1303,6 @@ async def find_lyrics_file_async(
 		)
 		if err or path is None:
 			logger.log_error(f"Lyrics fetched but save failed: {err}")
-			# Hand the winner back in-memory so the UI still shows it.
 			return {
 				'type': 'embedded',
 				'format': best_extension,
@@ -1437,14 +1416,6 @@ def load_lyrics(file_path, logger):
 				lyrics.append((None, line.rstrip('\n')))
 
 		else:
-			# LRC branch.
-			#
-			# Some providers (notably translation-merged output from
-			# NetEase/Musixmatch) emit "bare" timestamp lines where the
-			# [MM:SS.xx] sits alone and the actual lyric is on the next
-			# line. We carry the pending timestamp forward onto the next
-			# non-empty text line so those files actually sync instead of
-			# showing a run of empty entries at the stamped times.
 			pending_ts: Optional[float] = None
 			for line in lines:
 				raw_line = line.rstrip('\n')
@@ -1460,7 +1431,6 @@ def load_lyrics(file_path, logger):
 						lyrics.append((line_time, body))
 						pending_ts = None
 					else:
-						# Bare timestamp: hold it for the next text line.
 						pending_ts = line_time
 				else:
 					stripped = raw_line.strip()
@@ -1665,6 +1635,59 @@ def resolve_color(setting: dict) -> int:
 	return get_color_value(raw_value)
 
 
+class _BoundedLRU(OrderedDict):
+	"""OrderedDict with a soft size cap that is only enforced on demand.
+
+	Two modes:
+
+	  * growable (initial / after start_growable()):
+		  No eviction. Entries accumulate freely. This is the mode used
+		  while a song is loaded and played so nothing has to be
+		  re-measured mid-song.
+
+	  * enforced (after enforce_bound()):
+		  The cache is trimmed down to maxsize immediately, and any
+		  subsequent insert that pushes it over maxsize evicts the oldest
+		  entry. Called at song boundaries so the cache cannot grow
+		  without bound across a long session.
+
+	A lookup that hits returns the cached value; a lookup that misses is
+	the caller's responsibility (wcswidth is recomputed and the entry is
+	re-inserted here via __setitem__).
+	"""
+
+	__slots__ = ('_maxsize', '_enforce')
+
+	def __init__(self, maxsize: int):
+		super().__init__()
+		self._maxsize = maxsize
+		self._enforce = False
+
+	def __setitem__(self, key, value):
+		if key in self:
+			self.move_to_end(key)
+			super().__setitem__(key, value)
+			return
+		super().__setitem__(key, value)
+		if self._enforce and len(self) > self._maxsize:
+			self.popitem(last=False)
+
+	def __getitem__(self, key):
+		value = super().__getitem__(key)
+		self.move_to_end(key)
+		return value
+
+	def start_growable(self):
+		"""Enter growable mode: no eviction until enforce_bound() is called."""
+		self._enforce = False
+
+	def enforce_bound(self):
+		"""Trim to maxsize and re-enable LRU eviction on further inserts."""
+		self._enforce = True
+		while len(self) > self._maxsize:
+			self.popitem(last=False)
+
+
 @dataclass(slots=True)
 class DisplayState:
 	"""Encapsulates display cache and curses window handles."""
@@ -1673,9 +1696,13 @@ class DisplayState:
 	window_width: int = -1
 	wrapped_lines: list = field(default_factory=list)
 	wrapped_widths: list = field(default_factory=list)
-	widths_cache: dict = field(default_factory=dict)
+	widths_cache: _BoundedLRU = field(
+		default_factory=lambda: _BoundedLRU(_WIDTHS_CACHE_MAX)
+	)
 	a2_groups: Optional[list] = None
-	a2_word_cache: dict = field(default_factory=dict)
+	a2_word_cache: _BoundedLRU = field(
+		default_factory=lambda: _BoundedLRU(_A2_WORD_CACHE_MAX)
+	)
 	error_win: Any = None
 	lyrics_win: Any = None
 	adjust_win: Any = None
@@ -1683,14 +1710,14 @@ class DisplayState:
 	dims: Optional[tuple[int, int]] = None
 
 	def invalidate(self):
-		self.lyrics_hash = -1
-		self.lyrics_ref = None
+		# Called on terminal resize, NOT on song change. Only derived
+		# structures need rebuilding here; lyrics_ref / lyrics_hash are
+		# deliberately preserved so display_lyrics() doesn't mistake this
+		# for a song boundary and truncate the currently-growing cache.
 		self.window_width = -1
 		self.wrapped_lines = []
 		self.wrapped_widths = []
-		self.widths_cache = {}
 		self.a2_groups = None
-		self.a2_word_cache = {}
 
 
 # ==========================
@@ -1718,6 +1745,15 @@ class LiveLyricsState:
 		self.errors = None
 		self.is_txt = False
 		self.is_a2 = False
+
+	def drop_payload(self):
+		"""Release references to the parsed lyric payload after the UI has
+		copied it into its own locals. Keeps is_* flags so callers can still
+		inspect them if they want; just removes the list references that
+		would otherwise pin the streamed parse result for the rest of the
+		song's lifetime."""
+		self.lyrics = None
+		self.errors = None
 
 
 def get_lyrics_hash(lyrics) -> int:
@@ -1779,10 +1815,11 @@ def display_lyrics(
 
 	height, width = stdscr.getmaxyx()
 
-	# Identity-based cache check: we hold a reference so the previous list
-	# can't be GC'd and its id reused. This avoids the O(n) hash on every
-	# frame when the lyric list hasn't changed.
-	if ds.lyrics_ref is lyrics:
+	# Distinguish a true song boundary (lyrics list identity changed) from
+	# a terminal resize (same list, different width). Only the former
+	# enforces the cache bound; the latter just rebuilds derived structures.
+	song_changed = ds.lyrics_ref is not lyrics
+	if not song_changed:
 		lyrics_hash = ds.lyrics_hash
 		cache_invalid = ds.window_width != width
 	else:
@@ -1804,9 +1841,18 @@ def display_lyrics(
 		ds.window_width = width
 		ds.wrapped_lines = []
 		ds.wrapped_widths = []
-		ds.widths_cache = {}
 		ds.a2_groups = None
-		ds.a2_word_cache = {}
+		if song_changed:
+			# Song boundary: cap the previous song's growing cache, then
+			# reopen growth for the new song so mid-song measurements
+			# don't evict. Cached widths are reusable across songs because
+			# wcswidth is pure.
+			ds.widths_cache.enforce_bound()
+			ds.widths_cache.start_growable()
+			# a2_word_cache keys embed per-line timestamps and are
+			# song-specific, so drop them wholesale and reopen growth.
+			ds.a2_word_cache.clear()
+			ds.a2_word_cache.start_growable()
 
 	if ds.dims != (height, width):
 		curses.resizeterm(height, width)
@@ -1863,6 +1909,8 @@ def display_lyrics(
 				break
 			line = a2_lines[idx]
 			line_key = tuple((t, str(text)) for t, (text, _) in line)
+			# Cache lookup: hit returns cached widths; miss recomputes and
+			# re-inserts (with eviction if the bound is currently enforced).
 			if line_key not in ds.a2_word_cache:
 				word_widths = []
 				for _, (text, _) in line:
@@ -1903,6 +1951,7 @@ def display_lyrics(
 					lines = wrap_by_display_width(ly, wrap_w, subsequent_indent=' ')
 					if lines:
 						wrapped.append((orig_i, lines[0]))
+						# Cache lookup / miss recompute handled inline.
 						if lines[0] not in ds.widths_cache:
 							ds.widths_cache[lines[0]] = _wcswidth_cached(lines[0])
 						widths.append(ds.widths_cache[lines[0]])
@@ -2205,19 +2254,10 @@ async def main_async(stdscr, config_manager, logger):
 
 	ds = DisplayState()
 
-	# ------------------------------------------------------------------
-	#  Live streaming: first provider to answer wins the screen; once all
-	#  providers are done, the fetch task saves the best-priority result
-	#  and the UI swaps to it via the normal future-done handler.
-	# ------------------------------------------------------------------
 	live_lyrics = LiveLyricsState()
 
 	def on_lyrics_ready(text, ext):
-		"""Invoked from the fetch task the moment a provider returns.
-
-		Parses the raw text into the (timestamp, line) shape the UI uses and
-		flags it as pending so the main loop will pick it up next iteration.
-		"""
+		"""Invoked from the fetch task the moment a provider returns."""
 		try:
 			with tempfile.NamedTemporaryFile(
 				mode='w', suffix=f'.{ext}', delete=False, encoding='utf-8'
@@ -2508,6 +2548,7 @@ async def main_async(stdscr, config_manager, logger):
 					errors = live_lyrics.errors or []
 					is_txt = live_lyrics.is_txt
 					is_a2 = live_lyrics.is_a2
+					live_lyrics.drop_payload()
 					last_idx = -1
 					force_redraw = True
 					lyrics_loaded_time = current_time
@@ -2524,6 +2565,8 @@ async def main_async(stdscr, config_manager, logger):
 						"Live lyrics applied: fmt=%s lines=%d",
 						fmt_label, len(lyrics),
 					)
+				else:
+					live_lyrics.drop_payload()
 
 			# Collect finished lyric task
 			if lyric_future and lyric_future.done():
