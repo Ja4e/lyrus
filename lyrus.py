@@ -6,6 +6,7 @@ Displays time-synced lyrics for cmus music player using multiple lyric sources
 Remember fetched lyrics has inaccuracies... this code has a very robust sync to your current play position you can adjust whatever you want
 """
 
+
 # ==============
 #  DEPENDENCIES
 # ==============
