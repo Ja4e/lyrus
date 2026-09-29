@@ -6,7 +6,6 @@ Displays time-synced lyrics for cmus music player using multiple lyric sources
 Remember fetched lyrics has inaccuracies... this code has a very robust sync to your current play position you can adjust whatever you want
 """
 
-
 # ==============
 #  DEPENDENCIES
 # ==============
@@ -1411,15 +1410,15 @@ async def find_lyrics_file_async(
 			(artist_name and "instrumental" in artist_name.lower())
 		)
 
-		if not skip_online:
-			if is_lyrics_instrumental(artist_name, track_name, config_manager, logger):
-				update_fetch_status('instrumental', config_manager=config_manager)
-				logger.log_debug_fmt("%s - %s Lyrics is instrumental", artist_name, track_name)
-				return None
-			if is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
-				update_fetch_status('time_out', config_manager=config_manager)
-				logger.log_debug_fmt("Lyrics timeout active for %s - %s", artist_name, track_name)
-				return None
+		# if not skip_online:
+			# if is_lyrics_instrumental(artist_name, track_name, config_manager, logger):
+				# update_fetch_status('instrumental', config_manager=config_manager)
+				# logger.log_debug_fmt("%s - %s Lyrics is instrumental", artist_name, track_name)
+				# return None
+			# if is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
+				# update_fetch_status('time_out', config_manager=config_manager)
+				# logger.log_debug_fmt("Lyrics timeout active for %s - %s", artist_name, track_name)
+				# return None
 
 		if not skip_local_scan:
 			if is_instrumental:
