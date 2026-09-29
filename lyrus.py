@@ -77,6 +77,24 @@ ALIGN_RIGHT = "right"
 _WIDTHS_CACHE_MAX = 4096
 _A2_WORD_CACHE_MAX = 1024
 
+_mutagen_module: Any = None
+_syncedlyrics_module: Any = None
+
+# Tasks detached from a completed fetch so they can finish and cache
+# their results. Held in a module-level set so asyncio doesn't GC them
+# mid-flight. Capped to avoid runaway accumulation on rapid track skips.
+_detached_tasks: set = set()
+_MAX_DETACHED_TASKS = 64
+
+
+def _on_detached_done(t):
+	_detached_tasks.discard(t)
+	if t.cancelled():
+		return
+	with contextlib.suppress(BaseException):
+		t.exception()
+
+
 # ==============
 #  CONFIGURATION
 # ==============
@@ -188,6 +206,7 @@ class ConfigManager:
 		# Config storage
 		"config",
 	)
+
 	def __init__(self, use_user_dirs=True, config_path=None, use_default=False, player_override=None):
 		self.use_user_dirs: bool = use_user_dirs
 		self.user_config_dir: str = os.path.expanduser(config_dir)
@@ -207,6 +226,7 @@ class ConfigManager:
 		# Logging – set by setup_logging()
 		self.LOG_DIR: str = ""
 		self.LYRICS_TIMEOUT_LOG: str = ""
+		self.LYRICS_INSTRUMENT_LOG: str = ""
 		self.DEBUG_LOG: str = ""
 		self.LOG_RETENTION_DAYS: int = 10
 		self.MAX_DEBUG_COUNT: int = 100
@@ -294,7 +314,8 @@ class ConfigManager:
 				"done": "Loaded",
 				"clear": ""
 			},
-			"terminal_states": ["done", "instrumental", "time_out", "failed", "mpd", "clear", "cmus", "no_player"],
+			"terminal_states": ["done", "instrumental", "time_out", "failed",
+								"mpd", "clear", "cmus", "no_player"],
 			"lyrics": {
 				"search_timeout": 30,
 				"cache_dir": "~/.local/state/lyrus/synced_lyrics",
@@ -462,6 +483,21 @@ class ConfigManager:
 # ================
 #  LOGGING SYSTEM
 # ================
+def _parse_lyric_log_line(line):
+	if "Artist:" not in line or "Title:" not in line:
+		return None
+	artist = album = title = ""
+	for part in line.split("|"):
+		stripped = part.strip()
+		if stripped.startswith("Artist:"):
+			artist = stripped[len("Artist:"):].strip()
+		elif stripped.startswith("Album:"):
+			album = stripped[len("Album:"):].strip()
+		elif stripped.startswith("Title:"):
+			title = stripped[len("Title:"):].strip()
+	return artist, album, title
+
+
 class Logger:
 	__slots__ = (
 		'LOG_DIR', 'LYRICS_TIMEOUT_LOG', 'LYRICS_INSTRUMENT_LOG', 'DEBUG_LOG',
@@ -568,26 +604,36 @@ class Logger:
 		if self._debug_enabled:
 			self.log_message("DEBUG", fmt % args)
 
-	def log_timeout(self, artist, title):
+	def log_timeout(self, artist, title, album=None):
 		try:
 			timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 			log_path = self._timeout_log_path
 			if not self._timeout_log_cache_loaded and os.path.exists(log_path):
 				with open(log_path, 'r', encoding='utf-8') as f:
 					for line in f:
-						if "Artist: " in line and "Title: " in line:
-							parts = line.split("|")
-							if len(parts) >= 3:
-								a = parts[1].replace("Artist:", "").strip()
-								t = parts[2].replace("Title:", "").strip()
-								self._timeout_log_cache.add((a, t))
+						parsed = _parse_lyric_log_line(line)
+						if parsed is None:
+							continue
+						a, _, t = parsed
+						self._timeout_log_cache.add((a, t))
 				self._timeout_log_cache_loaded = True
 
 			entry_key = (artist or 'Unknown', title or 'Unknown')
 			if entry_key in self._timeout_log_cache:
 				return
 
-			log_entry = f"{timestamp} | Artist: {artist or 'Unknown'} | Title: {title or 'Unknown'}\n"
+			artist_str = artist or 'Unknown'
+			title_str = title or 'Unknown'
+			if album:
+				log_entry = (
+					f"{timestamp} | Artist: {artist_str} "
+					f"| Album: {album} | Title: {title_str}\n"
+				)
+			else:
+				log_entry = (
+					f"{timestamp} | Artist: {artist_str} "
+					f"| Title: {title_str}\n"
+				)
 			with open(log_path, 'a', encoding='utf-8') as f:
 				f.write(log_entry)
 			self._timeout_log_cache.add(entry_key)
@@ -595,7 +641,7 @@ class Logger:
 		except OSError as e:
 			self.log_error(f"Failed to write timeout log: {e}")
 
-	def log_instrumental(self, artist, title):
+	def log_instrumental(self, artist, title, album=None):
 		try:
 			timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
 			log_path = self._instrumental_log_path
@@ -604,19 +650,29 @@ class Logger:
 			if not self._instrumental_log_cache_loaded and os.path.exists(log_path):
 				with open(log_path, 'r', encoding='utf-8') as f:
 					for line in f:
-						if "Artist: " in line and "Title: " in line:
-							parts = line.split("|")
-							if len(parts) >= 3:
-								a = parts[1].replace("Artist:", "").strip()
-								t = parts[2].replace("Title:", "").strip()
-								self._instrumental_log_cache.add((a, t))
+						parsed = _parse_lyric_log_line(line)
+						if parsed is None:
+							continue
+						a, _, t = parsed
+						self._instrumental_log_cache.add((a, t))
 				self._instrumental_log_cache_loaded = True
 
 			entry_key = (artist or 'Unknown', title or 'Unknown')
 			if entry_key in self._instrumental_log_cache:
 				return
 
-			log_entry = f"{timestamp} | Artist: {artist or 'Unknown'} | Title: {title or 'Unknown'}\n"
+			artist_str = artist or 'Unknown'
+			title_str = title or 'Unknown'
+			if album:
+				log_entry = (
+					f"{timestamp} | Artist: {artist_str} "
+					f"| Album: {album} | Title: {title_str}\n"
+				)
+			else:
+				log_entry = (
+					f"{timestamp} | Artist: {artist_str} "
+					f"| Title: {title_str}\n"
+				)
 			with open(log_path, 'a', encoding='utf-8') as f:
 				f.write(log_entry)
 			self._instrumental_log_cache.add(entry_key)
@@ -681,26 +737,39 @@ def get_current_status(config_manager) -> Optional[str]:
 # ================
 _internet_cache: dict = {'result': None, 'ts': 0.0, 'ttl': 30.0}
 
-def has_internet_global(timeout: int = 3) -> bool:
+
+async def has_internet_global_async(timeout: int = 3) -> bool:
+	"""Non-blocking internet check.
+
+	Runs the actual probe in a worker thread so the event loop (and the
+	curses render loop) never stalls behind a slow / black-holed host.
+	The result is cached for `_internet_cache['ttl']` seconds.
+	"""
+	
 	now = time.monotonic()
 	if (_internet_cache['result'] is not None and
 			now - _internet_cache['ts'] < _internet_cache['ttl']):
 		return _internet_cache['result']
 
-	hosts = [
-		"https://1.1.1.1",
-		"https://www.google.com",
-		"https://www.baidu.com",
-		"https://www.qq.com",
-	]
-	result = False
-	for url in hosts:
-		try:
-			urllib.request.urlopen(url, timeout=timeout)
-			result = True
-			break
-		except Exception:
-			continue
+	def _probe():
+		hosts = [
+			"https://1.1.1.1",
+			"https://www.google.com",
+			"https://www.baidu.com",
+			"https://www.qq.com",
+		]
+		for url in hosts:
+			try:
+				urllib.request.urlopen(url, timeout=timeout)
+				return True
+			except Exception:
+				continue
+		return False
+
+	try:
+		result = await asyncio.to_thread(_probe)
+	except Exception:
+		result = False
 
 	_internet_cache['result'] = result
 	_internet_cache['ts'] = now
@@ -710,20 +779,41 @@ def has_internet_global(timeout: int = 3) -> bool:
 # ================
 #  ASYNC HELPERS
 # ================
-async def _run_blocking_with_timeout(fn, *args, timeout, logger=None, tag: str = "task"):
-	"""Run fn(*args) in a disposable single-thread executor.
-
-	timeout=None means wait indefinitely (no timeout).
-	Returns (ok, result). ok=False on timeout or unexpected error.
-	"""
-	import concurrent.futures  # local import so top-level deps stay unchanged
-
-	loop = asyncio.get_running_loop()
-	ex = concurrent.futures.ThreadPoolExecutor(
-		max_workers=1, thread_name_prefix=f"lyrus_{tag}"
-	)
+def _deliver(loop, fut, ok, value):
 	try:
-		fut = loop.run_in_executor(ex, fn, *args)
+		loop.call_soon_threadsafe(_resolve, fut, ok, value)
+	except RuntimeError:
+		pass
+
+
+def _resolve(fut, ok, value):
+	if fut.done():
+		return
+	if ok:
+		fut.set_result(value)
+	else:
+		fut.set_exception(value)
+
+
+async def _run_blocking_with_timeout(fn, *args, timeout, logger=None, tag: str = "task"):
+	loop = asyncio.get_running_loop()
+	fut = loop.create_future()
+
+	def runner():
+		try:
+			result = fn(*args)
+		except BaseException as exc:  # noqa: BLE001
+			_deliver(loop, fut, False, exc)
+		else:
+			_deliver(loop, fut, True, result)
+
+	threading.Thread(
+		target=runner,
+		daemon=True,
+		name=f"lyrus_{tag}",
+	).start()
+
+	try:
 		if timeout is None:
 			result = await fut
 		else:
@@ -737,9 +827,74 @@ async def _run_blocking_with_timeout(fn, *args, timeout, logger=None, tag: str =
 		if logger:
 			logger.log_debug_fmt("%s: raised %s: %s", tag, type(e).__name__, e)
 		return False, None
-	finally:
-		# Never block on a stuck worker thread.
-		ex.shutdown(wait=False)
+
+
+# ======================
+#  LAZY MODULE LOADERS
+# ======================
+async def _ensure_mutagen(logger=None):
+	"""Import mutagen (+ codec submodules) off the event loop.
+
+	First-call import cost is hundreds of ms; doing it inline used to
+	stall the curses loop right when a new track started. Subsequent
+	calls are a cached attribute read.
+	"""
+	
+	global _mutagen_module
+	if _mutagen_module is not None:
+		return _mutagen_module or None
+
+	def _load():
+		import mutagen.flac  # noqa: F401
+		import mutagen.oggvorbis  # noqa: F401
+		import mutagen.oggopus  # noqa: F401
+		import mutagen.mp3  # noqa: F401
+		import mutagen.mp4  # noqa: F401
+		import mutagen
+		return mutagen
+
+	try:
+		_mutagen_module = await asyncio.to_thread(_load)
+	except ImportError as e:
+		if logger:
+			logger.log_debug_fmt("mutagen unavailable: %s", e)
+		_mutagen_module = False
+	except Exception as e:  # noqa: BLE001
+		if logger:
+			logger.log_debug_fmt("mutagen load failed: %s", e)
+		_mutagen_module = False
+
+	return _mutagen_module or None
+
+
+async def _ensure_syncedlyrics(logger=None):
+	"""Import syncedlyrics off the event loop.
+
+	`import syncedlyrics` drags in a pile of provider modules and HTTP
+	libs; running it on the loop was the main cause of the visible
+	startup hang during the first online search.
+	"""
+	
+	global _syncedlyrics_module
+	if _syncedlyrics_module is not None:
+		return _syncedlyrics_module or None
+
+	def _load():
+		import syncedlyrics
+		return syncedlyrics
+
+	try:
+		_syncedlyrics_module = await asyncio.to_thread(_load)
+	except ImportError as e:
+		if logger:
+			logger.log_debug_fmt("syncedlyrics not installed: %s", e)
+		_syncedlyrics_module = False
+	except Exception as e:  # noqa: BLE001
+		if logger:
+			logger.log_debug_fmt("syncedlyrics load failed: %s", e)
+		_syncedlyrics_module = False
+
+	return _syncedlyrics_module or None
 
 
 # ======================
@@ -886,11 +1041,8 @@ async def fetch_lyrics_syncedlyrics_async(
 	artist_name, track_name, config_manager=None, logger=None
 ):
 	"""syncedlyrics provider. Returns (lyrics, is_synced, is_instrumental)."""
-	try:
-		import syncedlyrics  # noqa: WPS433 (local import to keep startup fast)
-	except ImportError as e:
-		if logger:
-			logger.log_debug_fmt("syncedlyrics not installed: %s", e)
+	syncedlyrics = await _ensure_syncedlyrics(logger)
+	if syncedlyrics is None:
 		return None, None, False
 
 	search_term = f"{track_name} {artist_name}".strip()
@@ -971,49 +1123,104 @@ def save_lyrics(lyrics, track_name, artist_name, extension, config_manager, logg
 		return None, str(e)
 
 
-def is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
-	log_path = os.path.join(config_manager.LOG_DIR, config_manager.LYRICS_TIMEOUT_LOG)
-	if not os.path.exists(log_path):
-		return False
-	try:
-		search_artist = artist_name or 'Unknown'
-		search_title = track_name or 'Unknown'
-		with open(log_path, 'r', encoding='utf-8') as f:
-			for line in f:
-				if f"Artist: {search_artist}" in line and f"Title: {search_title}" in line:
-					return True
-		return False
-	except (OSError, IOError) as e:
-		logger.log_debug_fmt("Timeout check error: %s", e)
-		return False
+# ===========================
+#  NAME-CANDIDATE GENERATION
+# ===========================
+def _artist_name_candidates(artists_to_try):
+	"""Return [name1, name2, ..., name1_name2_...] for the given artists.
 
-def is_lyrics_instrumental(artist_name, track_name, config_manager, logger):
+	Used by both the cache-file scan and the log-entry scan so the two
+	paths stay in sync. For ["MattYeux", "Videoclub"] this returns:
+
+		["MattYeux", "Videoclub", "MattYeux_Videoclub"]
+
+	The first entries are the individual artist identities. The last
+	entry is the merged form used for cache files and log entries that
+	were written under a combined artist string by older code paths.
+
+	When there is only one artist, no merged entry is generated (it
+	would be identical to the individual entry).
+	"""
+	names: list = []
+	seen: set = set()
+	for a in artists_to_try:
+		if a and a not in seen:
+			seen.add(a)
+			names.append(a)
+	if len(artists_to_try) >= 2:
+		combined = "_".join(artists_to_try)
+		if combined not in seen:
+			names.append(combined)
+	return names
+
+
+def _is_lyrics_instrumental_multi(name_candidates, title, config_manager, logger):
+	"""Return True if any name candidate has an instrumental log entry."""
 	log_path = os.path.join(config_manager.LOG_DIR, config_manager.LYRICS_INSTRUMENT_LOG)
 	if not os.path.exists(log_path):
 		return False
+	search_title = title or 'Unknown'
+	wanted = {(n or 'Unknown', search_title) for n in name_candidates if n}
+	if not wanted:
+		return False
 	try:
-		search_artist = artist_name or 'Unknown'
-		search_title = track_name or 'Unknown'
 		with open(log_path, 'r', encoding='utf-8') as f:
 			for line in f:
-				if f"Artist: {search_artist}" in line and f"Title: {search_title}" in line:
+				parsed = _parse_lyric_log_line(line)
+				if parsed is None:
+					continue
+				a, _, t = parsed
+				if (a, t) in wanted:
 					return True
 		return False
 	except (OSError, IOError) as e:
-		logger.log_debug_fmt("Timeout check error: %s", e)
+		logger.log_debug_fmt("Instrumental multi-check error: %s", e)
 		return False
+
+
+def _is_lyrics_timed_out_multi(name_candidates, title, config_manager, logger):
+	"""Return True if any name candidate has a timeout log entry."""
+	log_path = os.path.join(config_manager.LOG_DIR, config_manager.LYRICS_TIMEOUT_LOG)
+	if not os.path.exists(log_path):
+		return False
+	search_title = title or 'Unknown'
+	wanted = {(n or 'Unknown', search_title) for n in name_candidates if n}
+	if not wanted:
+		return False
+	try:
+		with open(log_path, 'r', encoding='utf-8') as f:
+			for line in f:
+				parsed = _parse_lyric_log_line(line)
+				if parsed is None:
+					continue
+				a, _, t = parsed
+				if (a, t) in wanted:
+					return True
+		return False
+	except (OSError, IOError) as e:
+		logger.log_debug_fmt("Timeout multi-check error: %s", e)
+		return False
+
+
+def is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
+	"""Single-name timeout check — used inside per-artist tasks."""
+	return _is_lyrics_timed_out_multi([artist_name], track_name,
+									  config_manager, logger)
+
+
+def is_lyrics_instrumental(artist_name, track_name, config_manager, logger):
+	"""Single-name instrumental check — used inside per-artist tasks."""
+	return _is_lyrics_instrumental_multi([artist_name], track_name,
+										 config_manager, logger)
 
 
 # ====================================
 #  EMBEDDED LYRICS READER
 # ====================================
-
 async def read_embedded_lyrics(audio_file: str, logger):
-	import mutagen.flac
-	import mutagen.oggvorbis
-	import mutagen.oggopus
-	import mutagen.mp3
-	import mutagen.mp4
+	mutagen = await _ensure_mutagen(logger)
+	if mutagen is None:
+		return None
 
 	ext = os.path.splitext(audio_file)[1].lower()
 
@@ -1112,11 +1319,88 @@ def _load_lyric_path(file_path: str, logger) -> str | None:
 	return file_path
 
 
+def _precheck_track(artists_to_try, title, config_manager, logger):
+	"""Fast synchronous pre-check: cache + logs, no network, no tasks.
+
+	Cache scan tries, for every name candidate (individual + combined):
+
+		{title}_{name}.a2
+		{title}_{name}.lrc
+		{title}_{name}.txt
+
+	and then once each for {title}.{ext} with no artist suffix.
+
+	Log scan checks the same set of name candidates against the
+	instrumental and timeout logs, so an entry written as "Videoclub,
+	MattYeux" by the old code path is still recognized on the new one.
+
+	Returns:
+	  * ((lyrics, errors), is_txt, is_a2)  -- definitive answer
+	  * None                                -- nothing cached/logged
+	"""
+	primary = artists_to_try[0] if artists_to_try else ""
+	name_candidates = _artist_name_candidates(artists_to_try)
+
+	# ---- 1) Cache scan ---------------------------------------------
+	cache_dir = config_manager.LYRIC_CACHE_DIR
+	sanitized_title = sanitize_filename(title)
+
+	filenames: list = []
+	for name in name_candidates:
+		sanitized_name = sanitize_filename(name)
+		for ext in ('a2', 'lrc', 'txt'):
+			filenames.append(f"{sanitized_title}_{sanitized_name}.{ext}")
+	for ext in ('a2', 'lrc', 'txt'):
+		filenames.append(f"{sanitized_title}.{ext}")
+
+	for filename in filenames:
+		candidate = os.path.join(cache_dir, filename)
+		if not os.path.isfile(candidate):
+			continue
+		loaded = _load_lyric_path(candidate, logger)
+		if loaded is None:
+			continue
+		logger.log_debug_fmt("Pre-check cache hit: %s", loaded)
+		is_txt = loaded.endswith('.txt')
+		is_a2 = loaded.endswith('.a2')
+		lyrics, errors = load_lyrics(loaded, logger)
+		update_fetch_status('done', lyrics_found=len(lyrics),
+							config_manager=config_manager)
+		return (lyrics, errors), is_txt, is_a2
+
+	# ---- 2) Log scan (all name candidates) -------------------------
+	if _is_lyrics_instrumental_multi(name_candidates, title,
+									 config_manager, logger):
+		logger.log_debug_fmt(
+			"Pre-check: %s - %s is instrumental (matched one of %r)",
+			primary, title, name_candidates,
+		)
+		update_fetch_status('instrumental', config_manager=config_manager)
+		return ([], []), False, False
+
+	if _is_lyrics_timed_out_multi(name_candidates, title,
+								  config_manager, logger):
+		logger.log_debug_fmt(
+			"Pre-check: %s - %s timed out (matched one of %r)",
+			primary, title, name_candidates,
+		)
+		update_fetch_status('time_out', config_manager=config_manager)
+		return ([], []), False, False
+
+	return None
+
+
 async def find_lyrics_file_async(
 	audio_file, directory, artist_name, track_name,
 	duration=None, config_manager=None, logger=None,
 	on_lyrics_ready=None,
+	skip_local_scan=False,
+	skip_cache=False,
+	skip_online=False,
+	is_primary_artist=True,
+	album_name=None,
 ):
+	"""Locate lyrics for a track, with optional phase skipping."""
 	update_fetch_status('local', config_manager=config_manager)
 	logger.log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
 
@@ -1125,67 +1409,76 @@ async def find_lyrics_file_async(
 			"instrumental" in track_name.lower() or
 			(artist_name and "instrumental" in artist_name.lower())
 		)
-		if is_instrumental:
-			logger.log_debug("Instrumental track detected")
-			logger.log_instrumental(artist_name, track_name)
-			update_fetch_status('instrumental', config_manager=config_manager)
-			path, err = save_lyrics("[Instrumental]", track_name, artist_name, 'txt', config_manager, logger)
-			return path
 
-		if config_manager.READ_EMBEDDED_LYRICS and audio_file and os.path.exists(audio_file):
-			embedded = await read_embedded_lyrics(audio_file, logger)
-			if embedded:
-				logger.log_debug_fmt("Embedded lyrics first 200 chars:\n%s", embedded['content'][:200])
-				if config_manager.SKIP_EMBEDDED_TXT and embedded['format'] == 'txt':
-					logger.log_debug("Skipping embedded plain text (skip_embedded_txt=True)")
-				else:
-					if validate_lyrics(embedded['content']):
-						update_fetch_status('done', config_manager=config_manager)
-						logger.log_debug("Using embedded lyrics")
-						return embedded
+		if not skip_online:
+			if is_lyrics_instrumental(artist_name, track_name, config_manager, logger):
+				update_fetch_status('instrumental', config_manager=config_manager)
+				logger.log_debug_fmt("%s - %s Lyrics is instrumental", artist_name, track_name)
+				return None
+			if is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
+				update_fetch_status('time_out', config_manager=config_manager)
+				logger.log_debug_fmt("Lyrics timeout active for %s - %s", artist_name, track_name)
+				return None
+
+		if not skip_local_scan:
+			if is_instrumental:
+				logger.log_debug("Instrumental track detected (name match)")
+				if is_primary_artist:
+					logger.log_instrumental(artist_name, track_name, album_name)
+				update_fetch_status('instrumental', config_manager=config_manager)
+				path, err = save_lyrics("[Instrumental]", track_name, artist_name,
+										'txt', config_manager, logger)
+				return path
+
+			if config_manager.READ_EMBEDDED_LYRICS and audio_file and os.path.exists(audio_file):
+				embedded = await read_embedded_lyrics(audio_file, logger)
+				if embedded:
+					logger.log_debug_fmt("Embedded lyrics first 200 chars:\n%s",
+										 embedded['content'][:200])
+					if config_manager.SKIP_EMBEDDED_TXT and embedded['format'] == 'txt':
+						logger.log_debug("Skipping embedded plain text (skip_embedded_txt=True)")
 					else:
-						embedded['warning'] = "Validation warning"
-						update_fetch_status('done', config_manager=config_manager)
-						return embedded
+						if validate_lyrics(embedded['content']):
+							update_fetch_status('done', config_manager=config_manager)
+							logger.log_debug("Using embedded lyrics")
+							return embedded
+						else:
+							embedded['warning'] = "Validation warning"
+							update_fetch_status('done', config_manager=config_manager)
+							return embedded
 
-		if audio_file and directory and audio_file != "None":
-			base_name, _ = os.path.splitext(os.path.basename(audio_file))
-			for ext in ('a2', 'lrc', 'txt'):
-				file_path = os.path.join(directory, f"{base_name}.{ext}")
-				if os.path.isfile(file_path):
-					result = _load_lyric_path(file_path, logger)
-					if result is not None:
-						logger.log_info(f"Using local file: {result}")
-						return result
-					continue
+			if audio_file and directory and audio_file != "None":
+				base_name, _ = os.path.splitext(os.path.basename(audio_file))
+				for ext in ('a2', 'lrc', 'txt'):
+					file_path = os.path.join(directory, f"{base_name}.{ext}")
+					if os.path.isfile(file_path):
+						result = _load_lyric_path(file_path, logger)
+						if result is not None:
+							logger.log_info(f"Using local file: {result}")
+							return result
+						continue
 
-		sanitized_track = sanitize_filename(track_name)
-		sanitized_artist = sanitize_filename(artist_name)
-		possible_filenames = [
-			f"{sanitized_track}.a2", f"{sanitized_track}.lrc", f"{sanitized_track}.txt",
-			f"{sanitized_track}_{sanitized_artist}.a2",
-			f"{sanitized_track}_{sanitized_artist}.lrc",
-			f"{sanitized_track}_{sanitized_artist}.txt",
-		]
+		if not skip_cache:
+			sanitized_track = sanitize_filename(track_name)
+			sanitized_artist = sanitize_filename(artist_name)
+			possible_filenames = [
+				f"{sanitized_track}.a2", f"{sanitized_track}.lrc", f"{sanitized_track}.txt",
+				f"{sanitized_track}_{sanitized_artist}.a2",
+				f"{sanitized_track}_{sanitized_artist}.lrc",
+				f"{sanitized_track}_{sanitized_artist}.txt",
+			]
 
-		for dir_path in [d for d in [directory, config_manager.LYRIC_CACHE_DIR] if d]:
-			for filename in possible_filenames:
-				file_path = os.path.join(dir_path, filename)
-				if os.path.isfile(file_path):
-					result = _load_lyric_path(file_path, logger)
-					if result is not None:
-						logger.log_debug_fmt("Using cached file: %s", result)
-						return result
-					continue
+			for dir_path in [d for d in [directory, config_manager.LYRIC_CACHE_DIR] if d]:
+				for filename in possible_filenames:
+					file_path = os.path.join(dir_path, filename)
+					if os.path.isfile(file_path):
+						result = _load_lyric_path(file_path, logger)
+						if result is not None:
+							logger.log_debug_fmt("Using cached file: %s", result)
+							return result
+						continue
 
-		if is_lyrics_instrumental(artist_name, track_name, config_manager, logger):
-			update_fetch_status('instrumental', config_manager=config_manager)
-			logger.log_debug_fmt("%s - %s Lyrics is instrumental", artist_name, track_name)
-			return None
-
-		if is_lyrics_timed_out(artist_name, track_name, config_manager, logger):
-			update_fetch_status('time_out', config_manager=config_manager)
-			logger.log_debug_fmt("Lyrics timeout active for %s - %s", artist_name, track_name)
+		if skip_online:
 			return None
 
 		update_fetch_status('synced', config_manager=config_manager)
@@ -1234,11 +1527,13 @@ async def find_lyrics_file_async(
 				try:
 					result = task.result()
 				except BaseException as e:  # noqa: BLE001
-					logger.log_debug_fmt("Provider %s: raised %s: %s", pname, type(e).__name__, e)
+					logger.log_debug_fmt("Provider %s: raised %s: %s",
+										 pname, type(e).__name__, e)
 					continue
 
 				if not isinstance(result, tuple) or len(result) != 3:
-					logger.log_debug_fmt("Provider %s: unexpected result shape %r", pname, result)
+					logger.log_debug_fmt("Provider %s: unexpected result shape %r",
+										 pname, result)
 					continue
 
 				lyrics_text, provider_synced, provider_instrumental = result
@@ -1274,13 +1569,14 @@ async def find_lyrics_file_async(
 		if not candidates:
 			if any_instrumental:
 				logger.log_debug("Online providers report instrumental")
-				logger.log_instrumental(artist_name, track_name)
+				if is_primary_artist:
+					logger.log_instrumental(artist_name, track_name, album_name)
 				update_fetch_status('instrumental', config_manager=config_manager)
 				return None
 			logger.log_debug("No lyrics found from any source")
 			update_fetch_status("failed", config_manager=config_manager)
-			if has_internet_global():
-				logger.log_timeout(artist_name, track_name)
+			if is_primary_artist and await has_internet_global_async():
+				logger.log_timeout(artist_name, track_name, album_name)
 			return None
 
 		priority = config_manager.PROVIDER_FORMAT_PRIORITY or ["a2", "lrc", "txt"]
@@ -1319,13 +1615,153 @@ async def find_lyrics_file_async(
 
 async def fetch_lyrics_async(
 	audio_file, directory, artist, title, duration, config_manager, logger,
-	on_lyrics_ready=None,
+	on_lyrics_ready=None, fallback_artists=None, album=None,
 ):
+	"""Concurrent fetch with synchronous pre-check, race, and detach."""
+	tasks: dict = {}
+	preflight_task: Optional[asyncio.Task] = None
+	leave_running: bool = False
 	try:
-		result = await find_lyrics_file_async(
-			audio_file, directory, artist, title, duration, config_manager, logger,
-			on_lyrics_ready=on_lyrics_ready,
+		artists_to_try: list = []
+		seen: set = set()
+		for a in [artist] + list(fallback_artists or []):
+			if a and a not in seen:
+				seen.add(a)
+				artists_to_try.append(a)
+
+		if not artists_to_try:
+			return ([], []), False, False
+
+		precheck = _precheck_track(
+			artists_to_try, title, config_manager, logger,
 		)
+		if precheck is not None:
+			logger.log_debug("Pre-check resolved; skipping race")
+			return precheck
+
+		artist_rank = {a: i for i, a in enumerate(artists_to_try)}
+
+		stream_state = {'emitted': False}
+
+		def _stream_cb(text, ext):
+			if on_lyrics_ready is None or stream_state['emitted']:
+				return
+			stream_state['emitted'] = True
+			try:
+				on_lyrics_ready(text, ext)
+			except Exception as cb_err:  # noqa: BLE001
+				logger.log_debug_fmt("on_lyrics_ready failed: %s", cb_err)
+
+		preflight_task = asyncio.create_task(
+			find_lyrics_file_async(
+				audio_file, directory, artist, title, duration,
+				config_manager, logger,
+				on_lyrics_ready=None,
+				skip_cache=True,
+				skip_online=True,
+				is_primary_artist=True,
+				album_name=album,
+			),
+			name="lyrus_preflight",
+		)
+
+		for a in artists_to_try:
+			t = asyncio.create_task(
+				find_lyrics_file_async(
+					audio_file, directory, a, title, duration,
+					config_manager, logger,
+					on_lyrics_ready=_stream_cb,
+					skip_local_scan=True,
+					is_primary_artist=(a == artist),
+					album_name=album,
+				),
+				name=f"lyrus_artist_{a}",
+			)
+			tasks[t] = a
+
+		def _is_txt(res) -> bool:
+			if res is None:
+				return False
+			if isinstance(res, dict) and res.get('type') == 'embedded':
+				return res.get('format') == 'txt'
+			if isinstance(res, str):
+				return res.endswith('.txt')
+			return False
+
+		best_synced = None
+		best_txt = None
+		best_txt_rank = None
+		preflight_result = None
+		preflight_done = False
+
+		pending = set(tasks.keys()) | {preflight_task}
+		while pending:
+			done, pending = await asyncio.wait(
+				pending, return_when=asyncio.FIRST_COMPLETED
+			)
+			for task in done:
+				if task is preflight_task:
+					try:
+						preflight_result = task.result()
+					except BaseException as e:  # noqa: BLE001
+						logger.log_debug_fmt(
+							"Pre-flight raised %s: %s", type(e).__name__, e,
+						)
+						preflight_result = None
+					preflight_done = True
+
+					if preflight_result is not None:
+						logger.log_debug_fmt("Pre-flight local hit; stop waiting")
+						pending = set()
+						break
+
+					if best_synced is not None:
+						pending = set()
+						break
+					continue
+
+				a = tasks[task]
+				try:
+					res = task.result()
+				except BaseException as e:  # noqa: BLE001
+					logger.log_debug_fmt(
+						"Artist %r search raised %s: %s",
+						a, type(e).__name__, e,
+					)
+					continue
+
+				if res is None:
+					logger.log_debug_fmt("Artist %r search: no result", a)
+					continue
+
+				if not _is_txt(res):
+					best_synced = res
+					logger.log_debug_fmt(
+						"Artist %r: synced result%s",
+						a, "" if preflight_done else " (holding for pre-flight)",
+					)
+					if preflight_done:
+						pending = set()
+						break
+					continue
+
+				rank = artist_rank.get(a, len(artists_to_try))
+				if best_txt is None or rank < best_txt_rank:
+					best_txt = res
+					best_txt_rank = rank
+					logger.log_debug_fmt(
+						"Artist %r: plain-text result (rank %d)", a, rank,
+					)
+
+		if preflight_result is not None:
+			result = preflight_result
+		elif best_synced is not None:
+			result = best_synced
+		else:
+			result = best_txt
+
+		leave_running = result is not None
+
 		if result is None:
 			return ([], []), False, False
 
@@ -1339,7 +1775,8 @@ async def fetch_lyrics_async(
 				lyrics, errors = load_lyrics(tmp_path, logger)
 				is_txt = (fmt == 'txt')
 				is_a2 = (fmt == 'a2')
-				update_fetch_status('done', lyrics_found=len(lyrics), config_manager=config_manager)
+				update_fetch_status('done', lyrics_found=len(lyrics),
+									config_manager=config_manager)
 				return (lyrics, errors), is_txt, is_a2
 			finally:
 				with contextlib.suppress(OSError):
@@ -1349,7 +1786,8 @@ async def fetch_lyrics_async(
 			is_txt = result.endswith('.txt')
 			is_a2 = result.endswith('.a2')
 			lyrics, errors = load_lyrics(result, logger)
-			update_fetch_status('done', lyrics_found=len(lyrics), config_manager=config_manager)
+			update_fetch_status('done', lyrics_found=len(lyrics),
+								config_manager=config_manager)
 			return (lyrics, errors), is_txt, is_a2
 
 		return ([], []), False, False
@@ -1358,6 +1796,34 @@ async def fetch_lyrics_async(
 		logger.log_error(f"{title} lyrics fetch error: {e}")
 		update_fetch_status('failed', config_manager=config_manager)
 		return ([], []), False, False
+
+	finally:
+		if preflight_task is not None and not preflight_task.done():
+			preflight_task.cancel()
+
+		if leave_running:
+			for t in tasks:
+				if t.done():
+					continue
+				if len(_detached_tasks) >= _MAX_DETACHED_TASKS:
+					t.cancel()
+					continue
+				_detached_tasks.add(t)
+				t.add_done_callback(_on_detached_done)
+				logger.log_debug_fmt(
+					"Detached task %s for background caching",
+					t.get_name(),
+				)
+		else:
+			for t in tasks:
+				if not t.done():
+					t.cancel()
+			all_tasks = list(tasks.keys())
+			if preflight_task is not None:
+				all_tasks.append(preflight_task)
+			if all_tasks:
+				with contextlib.suppress(asyncio.CancelledError):
+					await asyncio.gather(*all_tasks, return_exceptions=True)
 
 
 def parse_time_to_seconds(time_str: str) -> float:
@@ -1453,70 +1919,129 @@ def load_lyrics(file_path, logger):
 # ==============
 #  PLAYER DETECTION
 # ==============
+def _split_artist_tag(tag_value):
+	if not tag_value:
+		return []
+	return [a.strip() for a in tag_value.replace("/", ";").split(";") if a.strip()]
+
+
+def _pick_artist_candidates(tag_sources):
+	"""Pick the artist strings to search with.
+
+	`tag_sources` is an ordered iterable of (source_name, raw_value)
+	pairs. Only artist-level tags are accepted here. Album is NOT a
+	source: album titles routinely contain '/' and ';', split into
+	bogus "artists," and get sent to lyric providers as search terms.
+
+	Returns (primary_artist, fallback_artists_list).
+
+	Ordering: artist first, albumartist second. For each source:
+	  * its split names joined with ", " is one candidate
+	  * each split name is one candidate
+	Candidates are deduplicated, preserving first occurrence.
+
+	For artist="MattYeux", albumartist="Videoclub":
+		primary   = "MattYeux"
+		fallbacks = ["Videoclub"]
+	"""
+	candidates: list = []
+	seen: set = set()
+
+	for _name, raw in tag_sources:
+		if not raw:
+			continue
+		if raw.strip() == "Various Artists":
+			continue
+		artists = _split_artist_tag(raw)
+		if not artists:
+			continue
+
+		joined = ", ".join(artists)
+		if joined != "Various Artists" and joined not in seen:
+			seen.add(joined)
+			candidates.append(joined)
+
+		for a in artists:
+			if a == "Various Artists" or a in seen:
+				continue
+			seen.add(a)
+			candidates.append(a)
+
+	if not candidates:
+		return "", []
+
+	primary = candidates[0]
+	fallbacks = candidates[1:]
+	return primary, fallbacks
+
+
 async def get_cmus_info():
 	try:
 		proc = await asyncio.create_subprocess_exec(
-			'cmus-remote', '-Q',
+			"cmus-remote", "-Q",
 			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.PIPE
+			stderr=asyncio.subprocess.DEVNULL,
 		)
 		stdout, _ = await proc.communicate()
 		if proc.returncode != 0:
-			return None, 0, "", None, 0, STATUS_STOPPED
+			return None, 0, "", None, 0, STATUS_STOPPED, [], ""
 
-		output = stdout.decode().splitlines()
 		file = None
 		position = 0
 		duration = 0
 		status = STATUS_STOPPED
-		tags = {}
+		artist = None
+		albumartist = None
+		album = None
+		title = None
 
-		for line in output:
-			if line.startswith("file "):
-				file = line[5:].strip()
-			elif line.startswith("status "):
-				status = line[7:].strip()
-			elif line.startswith("position "):
+		for line in stdout.splitlines():
+			if line.startswith(b"file "):
+				file = line[5:].decode(errors="replace").strip()
+			elif line.startswith(b"status "):
+				status = line[7:].decode(errors="replace").strip()
+			elif line.startswith(b"position "):
 				try:
-					position = int(line[9:].strip())
+					position = int(line[9:])
 				except ValueError:
 					position = 0
-			elif line.startswith("duration "):
+			elif line.startswith(b"duration "):
 				try:
-					duration = int(line[9:].strip())
+					duration = int(line[9:])
 				except ValueError:
 					duration = 0
-			elif line.startswith("tag "):
-				parts = line.split(" ", 2)
-				if len(parts) == 3:
-					tags[parts[1]] = parts[2].strip()
+			elif line.startswith(b"tag "):
+				parts = line.split(b" ", 2)
+				if len(parts) != 3:
+					continue
+				key = parts[1]
+				value = parts[2].decode(errors="replace").strip()
+				if key == b"artist":
+					artist = value
+				elif key == b"albumartist":
+					albumartist = value
+				elif key == b"album":
+					album = value
+				elif key == b"title":
+					title = value
 
-		def split_artists(tag_value):
-			if not tag_value:
-				return []
-			return [a.strip() for a in tag_value.replace("/", ";").split(";") if a.strip()]
+		artist_str, artist_fallbacks = _pick_artist_candidates([
+			("artist",      artist),
+			("albumartist", albumartist),
+		])
 
-		aa, ar = tags.get("albumartist"), tags.get("artist")
-		if aa == "Various Artists" and ar:
-			artists_list = split_artists(ar)
-		elif aa:
-			artists_list = split_artists(aa)
-		elif ar:
-			artists_list = split_artists(ar)
-		else:
-			artists_list = []
-
-		artist_str = ", ".join(artists_list) if artists_list else ""
-		return file, position, artist_str, tags.get("title"), duration, status
-
+		return (
+			file, position, artist_str, title, duration, status,
+			artist_fallbacks, album or "",
+		)
 	except Exception:
-		return None, 0, "", None, 0, STATUS_STOPPED
+		return None, 0, "", None, 0, STATUS_STOPPED, [], ""
 
 
 async def get_mpd_info(config_manager):
 	def _sync_mpd():
 		if MPDClient is None:
-			return None, 0.0, "", None, 0.0, STATUS_STOPPED
+			return None, 0.0, "", None, 0.0, STATUS_STOPPED, [], ""
 		client = MPDClient()
 		client.timeout = config_manager.MPD_TIMEOUT
 		try:
@@ -1525,23 +2050,38 @@ async def get_mpd_info(config_manager):
 				client.password(config_manager.MPD_PASSWORD)  # type: ignore
 			status = client.status()  # type: ignore
 			current_song = client.currentsong()  # type: ignore
-			artist = current_song.get("artist", "")
-			if isinstance(artist, list):
-				artist = ", ".join(artist)
+
+			raw_artist = current_song.get("artist", "")
+			raw_albumartist = current_song.get("albumartist", "")
+			raw_album = current_song.get("album", "")
+			if isinstance(raw_artist, list):
+				raw_artist = ", ".join(raw_artist)
+			if isinstance(raw_albumartist, list):
+				raw_albumartist = ", ".join(raw_albumartist)
+			if isinstance(raw_album, list):
+				raw_album = ", ".join(raw_album)
+
+			artist_str, artist_fallbacks = _pick_artist_candidates([
+				("artist",      raw_artist),
+				("albumartist", raw_albumartist),
+			])
+
 			file = current_song.get("file", "")
 			position = float(status.get("elapsed", 0))
 			title = current_song.get("title", None)
 			duration = float(status.get("duration", status.get("time", 0)))
 			state = status.get("state", STATUS_STOPPED)
+
 			client.close()  # type: ignore
 			client.disconnect()  # type: ignore
-			return file, position, artist, title, duration, state
+			return (file, position, artist_str, title, duration, state,
+					artist_fallbacks, raw_album or "")
 		except (socket.error, ConnectionRefusedError):
 			pass
 		except Exception:
 			pass
 		update_fetch_status("mpd", config_manager=config_manager)
-		return None, 0.0, "", None, 0.0, STATUS_STOPPED
+		return None, 0.0, "", None, 0.0, STATUS_STOPPED, [], ""
 
 	loop = asyncio.get_running_loop()
 	return await loop.run_in_executor(THREAD_POOL_EXECUTOR, _sync_mpd)
@@ -1550,23 +2090,27 @@ async def get_mpd_info(config_manager):
 async def get_playerctl_info():
 	try:
 		proc = await asyncio.create_subprocess_exec(
-			"playerctl", "metadata",
-			"--format",
-			"{{playerName}}|{{artist}}|{{title}}|{{position}}|{{status}}|{{mpris:length}}",
+			"playerctl", "metadata", "--format",
+			"{{playerName}}|{{artist}}|{{title}}|{{position}}|{{status}}"
+			"|{{mpris:length}}|{{xesam:albumArtist}}|{{xesam:album}}",
 			stdout=asyncio.subprocess.PIPE,
-			stderr=asyncio.subprocess.PIPE
+			stderr=asyncio.subprocess.PIPE,
 		)
 		stdout, _ = await proc.communicate()
 		output = stdout.decode().strip()
 
 		if "No players found" in output or not output:
-			return None, 0.0, "", None, 0.0, STATUS_STOPPED
+			return None, 0.0, "", None, 0.0, STATUS_STOPPED, [], ""
 
 		fields = output.split("|")
-		if len(fields) != 6:
-			return None, 0.0, "", None, 0.0, STATUS_STOPPED
+		while len(fields) < 8:
+			fields.append("")
+		if len(fields) != 8:
+			return None, 0.0, "", None, 0.0, STATUS_STOPPED, [], ""
 
-		_, artist, title, position, status, duration = fields
+		(_, raw_artist, title, position, status, duration,
+		 raw_albumartist, raw_album) = fields
+
 		position_sec = float(position) / 1_000_000 if position else 0.0
 		duration_sec = float(duration) / 1_000_000 if duration else 0.0
 		status = status.lower() if status else STATUS_STOPPED
@@ -1574,10 +2118,15 @@ async def get_playerctl_info():
 		if position_sec < 0 or (duration_sec > 0 and position_sec > duration_sec * 1.5):
 			position_sec = duration_sec if status == STATUS_PAUSED else 0.0
 
-		return None, position_sec, artist or "", title, duration_sec, status
+		artist_str, artist_fallbacks = _pick_artist_candidates([
+			("artist",      raw_artist or ""),
+			("albumartist", raw_albumartist or ""),
+		])
 
+		return (None, position_sec, artist_str, title, duration_sec,
+				status, artist_fallbacks, raw_album or "")
 	except Exception:
-		return None, 0.0, "", None, 0.0, STATUS_STOPPED
+		return None, 0.0, "", None, 0.0, STATUS_STOPPED, [], ""
 
 
 async def get_player_info(config_manager):
@@ -1606,7 +2155,7 @@ async def get_player_info(config_manager):
 			pass
 
 	update_fetch_status("no_player", config_manager=config_manager)
-	return None, (None, 0, "", None, 0, STATUS_STOPPED)
+	return None, (None, 0, "", None, 0, STATUS_STOPPED, [], "")
 
 
 # ==============
@@ -1783,7 +2332,10 @@ def wrap_by_display_width(text, width, subsequent_indent=''):
 			lines.append(''.join(current_line))
 			stripped = word.lstrip()
 			current_line = [subsequent_indent + stripped] if lines else [word]
-			current_width = _wcswidth_cached(subsequent_indent) + _wcswidth_cached(stripped) if lines else word_width
+			current_width = (
+				_wcswidth_cached(subsequent_indent) + _wcswidth_cached(stripped)
+				if lines else word_width
+			)
 
 	if current_line:
 		lines.append(''.join(current_line))
@@ -2012,7 +2564,8 @@ def display_lyrics(
 
 	# 3) Time-adjust / end-of-lyrics bar
 	adjust_win.erase()
-	if current_idx is not None and current_idx == len(lyrics) - 1 and not is_txt_format and len(lyrics) > 1:
+	if (current_idx is not None and current_idx == len(lyrics) - 1
+			and not is_txt_format and len(lyrics) > 1):
 		with contextlib.suppress(curses.error):
 			adjust_win.addstr(0, 0, " End of lyrics ", CP2 | curses.A_BOLD)
 	elif time_adjust:
@@ -2193,6 +2746,7 @@ async def main_async(stdscr, config_manager, logger):
 	get_size = stdscr.getmaxyx
 
 	_timeout_cache = [-1]
+
 	def set_timeout(ms):
 		if ms != _timeout_cache[0]:
 			stdscr_timeout(ms)
@@ -2280,6 +2834,7 @@ async def main_async(stdscr, config_manager, logger):
 
 	current_title: Optional[str] = None
 	current_artist: Optional[str] = None
+	current_fallback_artists: list = []
 	current_file: Optional[str] = None
 	lyrics: list = []
 	errors: list = []
@@ -2287,8 +2842,8 @@ async def main_async(stdscr, config_manager, logger):
 	is_txt: bool = False
 	is_a2: bool = False
 	player_type: Optional[str] = None
-	player_data: tuple = (None, 0, "", None, 0, STATUS_STOPPED)
-	prev_player_data: tuple = (None, 0, "", None, 0, STATUS_STOPPED)
+	player_data: tuple = (None, 0, "", None, 0, STATUS_STOPPED, [], "")
+	prev_player_data: tuple = (None, 0, "", None, 0, STATUS_STOPPED, [], "")
 	p_audio_file: Optional[str] = None
 	p_file_basename: str = ''
 	p_raw_pos: float = 0.0
@@ -2296,6 +2851,8 @@ async def main_async(stdscr, config_manager, logger):
 	p_title: Optional[str] = None
 	p_duration: float = 0.0
 	p_status: str = STATUS_STOPPED
+	p_fallback_artists: list = []
+	p_album: str = ""
 	estimated_position: float = 0.0
 	last_cmus_position: float = 0.0
 	last_pos_time: float = perf()
@@ -2323,6 +2880,16 @@ async def main_async(stdscr, config_manager, logger):
 	frame_time: Optional[float] = None
 
 	prev_window_width = window_size[1]
+
+	# async def _warmup_imports():
+		# with contextlib.suppress(Exception):
+			# await _ensure_mutagen(logger)
+		# with contextlib.suppress(Exception):
+			# await _ensure_syncedlyrics(logger)
+
+	# warmup_task = asyncio.create_task(_warmup_imports(), name="lyrus_warmup")
+	# _detached_tasks.add(warmup_task)
+	# warmup_task.add_done_callback(_on_detached_done)
 
 	with open(os.devnull, 'w') as _devnull, \
 		 contextlib.redirect_stdout(_devnull), \
@@ -2438,7 +3005,7 @@ async def main_async(stdscr, config_manager, logger):
 						player_type = new_player_type
 						player_data = new_player_data
 
-					_, raw_val, _, _, _, status_val = player_data
+					_, raw_val, _, _, _, status_val, _, _ = player_data
 					new_raw = float_func(raw_val or 0.0)
 					drift = abs_func(new_raw - estimated_position)
 
@@ -2470,12 +3037,15 @@ async def main_async(stdscr, config_manager, logger):
 			# Update player data if changed
 			if player_data != prev_player_data:
 				prev_player_data = player_data
-				p_audio_file, p_raw_pos, p_artist, p_title, p_duration, p_status = player_data
+				(p_audio_file, p_raw_pos, p_artist, p_title,
+				 p_duration, p_status, p_fallback_artists, p_album) = player_data
 
 				if p_audio_file in ("None", ""):
 					p_audio_file = None
 				p_raw_pos = float_func(p_raw_pos or 0.0)
 				p_duration = float_func(p_duration or 0.0)
+				p_fallback_artists = list(p_fallback_artists or [])
+				p_album = p_album or ""
 				estimated_position = p_raw_pos
 				last_pos_time = current_time
 
@@ -2485,13 +3055,16 @@ async def main_async(stdscr, config_manager, logger):
 					with contextlib.suppress(TypeError, AttributeError):
 						p_file_basename = path_basename(p_audio_file)
 
-				track_changed = ((p_title, p_artist, p_audio_file) !=
-								 (current_title, current_artist, current_file) and
-								 p_status != status_stopped)
+				track_changed = (
+					(p_title, p_artist, p_audio_file, tuple(p_fallback_artists)) !=
+					(current_title, current_artist, current_file, tuple(current_fallback_artists))
+					and p_status != status_stopped
+				)
 				if track_changed:
 					log_info(f"New track: {p_title or 'Unknown'} – {p_artist or 'Unknown'}")
 					current_title = p_title or ""
 					current_artist = p_artist or ""
+					current_fallback_artists = list(p_fallback_artists or [])
 					current_file = p_audio_file
 
 					# Cancel previous lyric fetch
@@ -2532,6 +3105,8 @@ async def main_async(stdscr, config_manager, logger):
 								config_manager=config_manager,
 								logger=logger,
 								on_lyrics_ready=on_lyrics_ready,
+								fallback_artists=current_fallback_artists or None,
+								album=p_album or "",
 							)
 						)
 						log_debug_fmt("Lyric task started: %s - %s", p_artist, p_title)
@@ -2794,8 +3369,9 @@ if __name__ == "__main__":
 		curses.wrapper(main, args)
 	except KeyboardInterrupt:
 		print("Exited by user (Ctrl+C).")
-		with contextlib.suppress(Exception):
-			shutdown()
+		os._exit(0)
+		# with contextlib.suppress(Exception):
+		#	shutdown()
 	except Exception as exc:
 		with contextlib.suppress(Exception):
 			temp_config = ConfigManager(
