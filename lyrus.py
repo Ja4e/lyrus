@@ -193,7 +193,7 @@ class ConfigManager:
 		"PROVIDERS",
 		"PROVIDER_FALLBACK",
 		"PROVIDER_FORMAT_PRIORITY",
-        "FORMAT_PRIORITY_TUPLE",
+		"FORMAT_PRIORITY_TUPLE",
 		"ALLOW_TRANSLATION",
 		"LANGUAGE",
 		"READ_EMBEDDED_LYRICS",
@@ -251,7 +251,7 @@ class ConfigManager:
 		self.PROVIDERS: list = []
 		self.PROVIDER_FALLBACK: bool = True
 		self.PROVIDER_FORMAT_PRIORITY: list = []
-        self.FORMAT_PRIORITY_TUPLE: tuple = ("a2", "lrc", "txt")
+		self.FORMAT_PRIORITY_TUPLE: tuple = ("a2", "lrc", "txt")
 		self.ALLOW_TRANSLATION: bool = False
 		self.LANGUAGE: str = "en"
 		self.READ_EMBEDDED_LYRICS: bool = True
