@@ -1611,19 +1611,20 @@ async def find_lyrics_file_async(
 			best_extension, len(candidates),
 		)
 
-		path, err = save_lyrics(
-			best_lyrics, track_name, artist_name, best_extension,
-			config_manager, logger,
-		)
-		if err or path is None:
-			logger.log_error(f"Lyrics fetched but save failed: {err}")
-			return {
-				'type': 'embedded',
-				'format': best_extension,
-				'content': best_lyrics,
-				'path': None,
-			}
-		return path
+		# Do NOT persist here. The race in fetch_lyrics_async resolves
+		# across all artist candidates and picks the best by format tier
+		# first, artist rank second. Saving from inside this task would
+		# let a lower-tier result (e.g. a .txt from the combined artist)
+		# land on disk before a higher-tier result (.lrc from a fallback
+		# artist) has even been considered. The winner is saved exactly
+		# once, under the canonical name, by the caller.
+		return {
+			'type': 'network',
+			'format': best_extension,
+			'content': best_lyrics,
+			'path': None,
+			'origin_artist': artist_name,
+		}
 
 	except Exception as e:  # noqa: BLE001
 		logger.log_error(f"Error in find_lyrics_file: {str(e)}")
@@ -1783,7 +1784,26 @@ async def fetch_lyrics_async(
 		if result is None:
 			return ([], []), False, False
 
-		if isinstance(result, dict) and result.get('type') == 'embedded':
+		# Persist the winner exactly once, under the canonical (first)
+		# artist name — regardless of which candidate actually produced
+		# the content. This is what keeps the on-disk file in sync with
+		# what the race selected (format tier > artist rank).
+		if isinstance(result, dict) and result.get('type') == 'network':
+			canonical_artist = artists_to_try[0]
+			saved_path, err = save_lyrics(
+				result['content'], title, canonical_artist,
+				result['format'], config_manager, logger,
+			)
+			if err or saved_path is None:
+				logger.log_error(f"Failed to save race winner: {err}")
+			else:
+				logger.log_debug_fmt(
+					"Saved race winner (%s from %r) as %r",
+					result['format'], result.get('origin_artist'),
+					canonical_artist,
+				)
+
+		if isinstance(result, dict) and result.get('type') in ('embedded', 'network'):
 			lyrics_content = result['content']
 			fmt = result['format']
 			with tempfile.NamedTemporaryFile(mode='w', suffix=f'.{fmt}', delete=False) as tmp:
@@ -1987,6 +2007,13 @@ def _pick_artist_candidates(artist, albumartist):
 
 	if not candidates:
 		return "", []
+
+	# Prefer the combined "Artist1, Artist2" form as the primary
+	# candidate. It produces the canonical cache filename and matches
+	# how most lyric providers index multi-artist tracks. Stable sort
+	# keeps the original relative order for equal-count entries, so a
+	# single-artist track is unaffected.
+	candidates.sort(key=lambda c: -c.count(","))
 
 	primary = candidates[0]
 	fallbacks = candidates[1:]
