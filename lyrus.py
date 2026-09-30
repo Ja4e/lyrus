@@ -193,6 +193,7 @@ class ConfigManager:
 		"PROVIDERS",
 		"PROVIDER_FALLBACK",
 		"PROVIDER_FORMAT_PRIORITY",
+        "FORMAT_PRIORITY_TUPLE",
 		"ALLOW_TRANSLATION",
 		"LANGUAGE",
 		"READ_EMBEDDED_LYRICS",
@@ -250,6 +251,7 @@ class ConfigManager:
 		self.PROVIDERS: list = []
 		self.PROVIDER_FALLBACK: bool = True
 		self.PROVIDER_FORMAT_PRIORITY: list = []
+        self.FORMAT_PRIORITY_TUPLE: tuple = ("a2", "lrc", "txt")
 		self.ALLOW_TRANSLATION: bool = False
 		self.LANGUAGE: str = "en"
 		self.READ_EMBEDDED_LYRICS: bool = True
@@ -469,6 +471,12 @@ class ConfigManager:
 		self.PROVIDERS = list(dict.fromkeys(self.config["lyrics"]["Sources"]))
 		self.PROVIDER_FALLBACK = self.config["lyrics"]["Fallback"]
 		self.PROVIDER_FORMAT_PRIORITY = self.config["lyrics"]["Format_priority"]
+		# Precomputed once at startup: avoids the `or` fallback and the
+		# tuple/list conversion on every track change, and gives the
+		# hot lyric-search path a single slot read instead of a dict
+		# lookup + boolean short-circuit.
+		priority = self.PROVIDER_FORMAT_PRIORITY or ["a2", "lrc", "txt"]
+		self.FORMAT_PRIORITY_TUPLE = tuple(priority)
 		self.ALLOW_TRANSLATION = self.config["lyrics"]["Translation"]["enable_translation"]
 		self.LANGUAGE = self.config["lyrics"]["Translation"]["language"]
 		self.READ_EMBEDDED_LYRICS = self.config["lyrics"].get("read_embedded_lyrics")
@@ -1328,13 +1336,17 @@ def _load_lyric_path(file_path: str, logger) -> str | None:
 def _precheck_track(artists_to_try, title, config_manager, logger):
 	"""Fast synchronous pre-check: cache + logs, no network, no tasks.
 
-	Cache scan tries, for every name candidate (individual + combined):
+	Cache scan walks formats in PROVIDER_FORMAT_PRIORITY order (outer
+	loop) and name candidates in order (inner loop), then tries the
+	track-only {title}.{ext} form once per format:
 
-		{title}_{name}.a2
-		{title}_{name}.lrc
-		{title}_{name}.txt
+		for ext in (a2, lrc, txt):
+			for name in candidates:
+				{title}_{name}.{ext}
+			{title}.{ext}
 
-	and then once each for {title}.{ext} with no artist suffix.
+	So a `.lrc` under any candidate outranks a `.txt` under any
+	candidate, and within one format tier the earliest candidate wins.
 
 	Log scan checks the same set of name candidates against the
 	instrumental and timeout logs, so an entry written as "Videoclub,
@@ -1350,13 +1362,13 @@ def _precheck_track(artists_to_try, title, config_manager, logger):
 	# ---- 1) Cache scan ---------------------------------------------
 	cache_dir = config_manager.LYRIC_CACHE_DIR
 	sanitized_title = sanitize_filename(title)
+	ext_priority = config_manager.FORMAT_PRIORITY_TUPLE
+	sanitized_names = [sanitize_filename(n) for n in name_candidates]
 
 	filenames: list = []
-	for name in name_candidates:
-		sanitized_name = sanitize_filename(name)
-		for ext in ('a2', 'lrc', 'txt'):
+	for ext in ext_priority:
+		for sanitized_name in sanitized_names:
 			filenames.append(f"{sanitized_title}_{sanitized_name}.{ext}")
-	for ext in ('a2', 'lrc', 'txt'):
 		filenames.append(f"{sanitized_title}.{ext}")
 
 	for filename in filenames:
@@ -1455,7 +1467,7 @@ async def find_lyrics_file_async(
 
 			if audio_file and directory and audio_file != "None":
 				base_name, _ = os.path.splitext(os.path.basename(audio_file))
-				for ext in ('a2', 'lrc', 'txt'):
+				for ext in config_manager.FORMAT_PRIORITY_TUPLE:
 					file_path = os.path.join(directory, f"{base_name}.{ext}")
 					if os.path.isfile(file_path):
 						result = _load_lyric_path(file_path, logger)
@@ -1467,12 +1479,12 @@ async def find_lyrics_file_async(
 		if not skip_cache:
 			sanitized_track = sanitize_filename(track_name)
 			sanitized_artist = sanitize_filename(artist_name)
-			possible_filenames = [
-				f"{sanitized_track}.a2", f"{sanitized_track}.lrc", f"{sanitized_track}.txt",
-				f"{sanitized_track}_{sanitized_artist}.a2",
-				f"{sanitized_track}_{sanitized_artist}.lrc",
-				f"{sanitized_track}_{sanitized_artist}.txt",
-			]
+			possible_filenames = []
+			for ext in config_manager.FORMAT_PRIORITY_TUPLE:
+				possible_filenames.append(
+					f"{sanitized_track}_{sanitized_artist}.{ext}"
+				)
+				possible_filenames.append(f"{sanitized_track}.{ext}")
 
 			for dir_path in [d for d in [directory, config_manager.LYRIC_CACHE_DIR] if d]:
 				for filename in possible_filenames:
@@ -1585,7 +1597,7 @@ async def find_lyrics_file_async(
 				logger.log_timeout(artist_name, track_name, album_name)
 			return None
 
-		priority = config_manager.PROVIDER_FORMAT_PRIORITY or ["a2", "lrc", "txt"]
+		priority = config_manager.FORMAT_PRIORITY_TUPLE
 		candidates.sort(
 			key=lambda c: (
 				priority.index(c[0]) if c[0] in priority else len(priority),
