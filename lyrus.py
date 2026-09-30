@@ -509,6 +509,7 @@ class Logger:
 		'_main_log_path', '_debug_log_path',
 		'_timeout_log_path', '_instrumental_log_path',
 		'_max_log_count', '_configured_level', '_debug_enabled',
+		'_debug_writes_since_clean', '_debug_clean_threshold',
 	)
 
 	def __init__(self, config_manager):
@@ -536,6 +537,8 @@ class Logger:
 		self._max_log_count = gcfg["max_log_count"]
 		self._configured_level = LOG_LEVELS.get(gcfg["log_level"], 2)
 		self._debug_enabled = bool(self.ENABLE_DEBUG_LOGGING)
+		self._debug_writes_since_clean = 0
+		self._debug_clean_threshold = max(1, self.MAX_DEBUG_COUNT // 2)
 
 	def clean_debug_log(self):
 		log_path = self._debug_log_path
@@ -581,7 +584,10 @@ class Logger:
 			if write_debug:
 				with open(self._debug_log_path, "a", encoding='utf-8') as f:
 					f.write(f"{timestamp} | {level.upper()} | {message}\n")
-				self.clean_debug_log()
+				self._debug_writes_since_clean += 1
+				if self._debug_writes_since_clean >= self._debug_clean_threshold:
+					self._debug_writes_since_clean = 0
+					self.clean_debug_log()
 			# WARN+ always lands in the main log so real problems are never
 			# silently swallowed by a high configured log_level.
 			if write_main:
@@ -1925,13 +1931,13 @@ def _split_artist_tag(tag_value):
 	return [a.strip() for a in tag_value.replace("/", ";").split(";") if a.strip()]
 
 
-def _pick_artist_candidates(tag_sources):
+def _pick_artist_candidates(artist, albumartist):
 	"""Pick the artist strings to search with.
 
-	`tag_sources` is an ordered iterable of (source_name, raw_value)
-	pairs. Only artist-level tags are accepted here. Album is NOT a
-	source: album titles routinely contain '/' and ';', split into
-	bogus "artists," and get sent to lyric providers as search terms.
+	Takes the raw `artist` and `albumartist` tags. Only artist-level
+	tags are accepted here. Album is NOT a source: album titles
+	routinely contain '/' and ';', split into bogus "artists," and
+	get sent to lyric providers as search terms.
 
 	Returns (primary_artist, fallback_artists_list).
 
@@ -1947,7 +1953,7 @@ def _pick_artist_candidates(tag_sources):
 	candidates: list = []
 	seen: set = set()
 
-	for _name, raw in tag_sources:
+	for raw in (artist, albumartist):
 		if not raw:
 			continue
 		if raw.strip() == "Various Artists":
@@ -1961,11 +1967,11 @@ def _pick_artist_candidates(tag_sources):
 			seen.add(joined)
 			candidates.append(joined)
 
-		for a in artists:
-			if a == "Various Artists" or a in seen:
+		for name in artists:
+			if name == "Various Artists" or name in seen:
 				continue
-			seen.add(a)
-			candidates.append(a)
+			seen.add(name)
+			candidates.append(name)
 
 	if not candidates:
 		return "", []
@@ -1984,15 +1990,15 @@ async def get_cmus_info():
 		)
 		stdout, _ = await proc.communicate()
 		if proc.returncode != 0:
-			return None, 0, "", None, 0, STATUS_STOPPED, [], ""
+			return None, 0, "", "", None, 0, STATUS_STOPPED, ""
 
 		file = None
 		position = 0
 		duration = 0
 		status = STATUS_STOPPED
-		artist = None
-		albumartist = None
-		album = None
+		artist = ""
+		albumartist = ""
+		album = ""
 		title = None
 
 		for line in stdout.splitlines():
@@ -2025,23 +2031,16 @@ async def get_cmus_info():
 				elif key == b"title":
 					title = value
 
-		artist_str, artist_fallbacks = _pick_artist_candidates([
-			("artist",      artist),
-			("albumartist", albumartist),
-		])
-
-		return (
-			file, position, artist_str, title, duration, status,
-			artist_fallbacks, album or "",
-		)
+		return (file, position, artist, albumartist, title,
+				duration, status, album)
 	except Exception:
-		return None, 0, "", None, 0, STATUS_STOPPED, [], ""
+		return None, 0, "", "", None, 0, STATUS_STOPPED, ""
 
 
 async def get_mpd_info(config_manager):
 	def _sync_mpd():
 		if MPDClient is None:
-			return None, 0.0, "", None, 0.0, STATUS_STOPPED, [], ""
+			return None, 0.0, "", "", None, 0.0, STATUS_STOPPED, ""
 		client = MPDClient()
 		client.timeout = config_manager.MPD_TIMEOUT
 		try:
@@ -2061,11 +2060,6 @@ async def get_mpd_info(config_manager):
 			if isinstance(raw_album, list):
 				raw_album = ", ".join(raw_album)
 
-			artist_str, artist_fallbacks = _pick_artist_candidates([
-				("artist",      raw_artist),
-				("albumartist", raw_albumartist),
-			])
-
 			file = current_song.get("file", "")
 			position = float(status.get("elapsed", 0))
 			title = current_song.get("title", None)
@@ -2074,14 +2068,14 @@ async def get_mpd_info(config_manager):
 
 			client.close()  # type: ignore
 			client.disconnect()  # type: ignore
-			return (file, position, artist_str, title, duration, state,
-					artist_fallbacks, raw_album or "")
+			return (file, position, raw_artist, raw_albumartist, title,
+					duration, state, raw_album or "")
 		except (socket.error, ConnectionRefusedError):
 			pass
 		except Exception:
 			pass
 		update_fetch_status("mpd", config_manager=config_manager)
-		return None, 0.0, "", None, 0.0, STATUS_STOPPED, [], ""
+		return None, 0.0, "", "", None, 0.0, STATUS_STOPPED, ""
 
 	loop = asyncio.get_running_loop()
 	return await loop.run_in_executor(THREAD_POOL_EXECUTOR, _sync_mpd)
@@ -2100,13 +2094,13 @@ async def get_playerctl_info():
 		output = stdout.decode().strip()
 
 		if "No players found" in output or not output:
-			return None, 0.0, "", None, 0.0, STATUS_STOPPED, [], ""
+			return None, 0.0, "", "", None, 0.0, STATUS_STOPPED, ""
 
 		fields = output.split("|")
 		while len(fields) < 8:
 			fields.append("")
 		if len(fields) != 8:
-			return None, 0.0, "", None, 0.0, STATUS_STOPPED, [], ""
+			return None, 0.0, "", "", None, 0.0, STATUS_STOPPED, ""
 
 		(_, raw_artist, title, position, status, duration,
 		 raw_albumartist, raw_album) = fields
@@ -2118,15 +2112,10 @@ async def get_playerctl_info():
 		if position_sec < 0 or (duration_sec > 0 and position_sec > duration_sec * 1.5):
 			position_sec = duration_sec if status == STATUS_PAUSED else 0.0
 
-		artist_str, artist_fallbacks = _pick_artist_candidates([
-			("artist",      raw_artist or ""),
-			("albumartist", raw_albumartist or ""),
-		])
-
-		return (None, position_sec, artist_str, title, duration_sec,
-				status, artist_fallbacks, raw_album or "")
+		return (None, position_sec, raw_artist or "", raw_albumartist or "",
+				title, duration_sec, status, raw_album or "")
 	except Exception:
-		return None, 0.0, "", None, 0.0, STATUS_STOPPED, [], ""
+		return None, 0.0, "", "", None, 0.0, STATUS_STOPPED, ""
 
 
 async def get_player_info(config_manager):
@@ -2149,13 +2138,13 @@ async def get_player_info(config_manager):
 	if config_manager.ENABLE_PLAYERCTL:
 		try:
 			playerctl_info = await get_playerctl_info()
-			if playerctl_info[3] is not None:
+			if playerctl_info[4] is not None:
 				return PLAYER_PLAYERCTL, playerctl_info
 		except Exception:
 			pass
 
 	update_fetch_status("no_player", config_manager=config_manager)
-	return None, (None, 0, "", None, 0, STATUS_STOPPED, [], "")
+	return None, (None, 0, "", "", None, 0, STATUS_STOPPED, "")
 
 
 # ==============
@@ -2580,8 +2569,8 @@ def display_lyrics(
 	if config_manager.DISPLAY_NAME:
 		if player_info:
 			_, data = player_info
-			artist = data[2] or ''
-			title = data[3] or player_basename
+			artist = data[2] or data[3] or ''
+			title = data[4] or player_basename
 			is_inst = any(x in title.lower() for x in ['instrumental', 'karaoke'])
 		else:
 			title, artist, is_inst = 'No track', '', False
@@ -2834,6 +2823,8 @@ async def main_async(stdscr, config_manager, logger):
 
 	current_title: Optional[str] = None
 	current_artist: Optional[str] = None
+	current_raw_artist: str = ""
+	current_raw_albumartist: str = ""
 	current_fallback_artists: list = []
 	current_file: Optional[str] = None
 	lyrics: list = []
@@ -2842,16 +2833,16 @@ async def main_async(stdscr, config_manager, logger):
 	is_txt: bool = False
 	is_a2: bool = False
 	player_type: Optional[str] = None
-	player_data: tuple = (None, 0, "", None, 0, STATUS_STOPPED, [], "")
-	prev_player_data: tuple = (None, 0, "", None, 0, STATUS_STOPPED, [], "")
+	player_data: tuple = (None, 0, "", "", None, 0, STATUS_STOPPED, "")
+	prev_player_data: tuple = (None, 0, "", "", None, 0, STATUS_STOPPED, "")
 	p_audio_file: Optional[str] = None
 	p_file_basename: str = ''
 	p_raw_pos: float = 0.0
-	p_artist: str = ""
+	# p_artist: str = ""
 	p_title: Optional[str] = None
 	p_duration: float = 0.0
 	p_status: str = STATUS_STOPPED
-	p_fallback_artists: list = []
+	# p_fallback_artists: list = []
 	p_album: str = ""
 	estimated_position: float = 0.0
 	last_cmus_position: float = 0.0
@@ -3005,7 +2996,7 @@ async def main_async(stdscr, config_manager, logger):
 						player_type = new_player_type
 						player_data = new_player_data
 
-					_, raw_val, _, _, _, status_val, _, _ = player_data
+					_, raw_val, _, _, _, _, status_val, _ = player_data
 					new_raw = float_func(raw_val or 0.0)
 					drift = abs_func(new_raw - estimated_position)
 
@@ -3037,14 +3028,15 @@ async def main_async(stdscr, config_manager, logger):
 			# Update player data if changed
 			if player_data != prev_player_data:
 				prev_player_data = player_data
-				(p_audio_file, p_raw_pos, p_artist, p_title,
-				 p_duration, p_status, p_fallback_artists, p_album) = player_data
+				(p_audio_file, p_raw_pos, p_raw_artist, p_raw_albumartist,
+				 p_title, p_duration, p_status, p_album) = player_data
 
 				if p_audio_file in ("None", ""):
 					p_audio_file = None
 				p_raw_pos = float_func(p_raw_pos or 0.0)
 				p_duration = float_func(p_duration or 0.0)
-				p_fallback_artists = list(p_fallback_artists or [])
+				p_raw_artist = p_raw_artist or ""
+				p_raw_albumartist = p_raw_albumartist or ""
 				p_album = p_album or ""
 				estimated_position = p_raw_pos
 				last_pos_time = current_time
@@ -3056,16 +3048,23 @@ async def main_async(stdscr, config_manager, logger):
 						p_file_basename = path_basename(p_audio_file)
 
 				track_changed = (
-					(p_title, p_artist, p_audio_file, tuple(p_fallback_artists)) !=
-					(current_title, current_artist, current_file, tuple(current_fallback_artists))
+					(p_title, p_raw_artist, p_raw_albumartist, p_audio_file) !=
+					(current_title, current_raw_artist, current_raw_albumartist, current_file)
 					and p_status != status_stopped
 				)
 				if track_changed:
-					log_info(f"New track: {p_title or 'Unknown'} – {p_artist or 'Unknown'}")
 					current_title = p_title or ""
-					current_artist = p_artist or ""
-					current_fallback_artists = list(p_fallback_artists or [])
+					current_raw_artist = p_raw_artist
+					current_raw_albumartist = p_raw_albumartist
 					current_file = p_audio_file
+
+					artist_str, artist_fallbacks = _pick_artist_candidates(
+						current_raw_artist, current_raw_albumartist,
+					)
+					current_artist = artist_str
+					current_fallback_artists = list(artist_fallbacks)
+
+					log_info(f"New track: {current_title or 'Unknown'} – {current_artist or 'Unknown'}")
 
 					# Cancel previous lyric fetch
 					if lyric_future and not lyric_future.done():
@@ -3109,7 +3108,7 @@ async def main_async(stdscr, config_manager, logger):
 								album=p_album or "",
 							)
 						)
-						log_debug_fmt("Lyric task started: %s - %s", p_artist, p_title)
+						log_debug_fmt("Lyric task started: %s - %s", current_artist, current_title)
 
 					last_cmus_position = p_raw_pos
 					estimated_position = p_raw_pos
