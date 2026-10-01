@@ -3404,12 +3404,12 @@ async def main_async(stdscr, config_manager, logger):
 			elif not (poll or proximity_active or manual_scroll):
 				set_timeout(refresh_interval_2)
 				sleep_time = 0.0
-			# else:
+			else:
 				# set_timeout(refresh_interval_2)
-				# sleep_time = 0.0
-
-			if poll or proximity_active or manual_scroll:
 				sleep_time = 0.0
+
+			# if poll or proximity_active or manual_scroll:
+				# sleep_time = 0.0
 
 			await asyncio.sleep(sleep_time)
 
