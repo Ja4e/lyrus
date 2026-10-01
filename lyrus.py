@@ -710,13 +710,20 @@ class FetchState:
 		self.done_time: Optional[float] = None
 
 	def update(self, step: str, lyrics_found: int = 0, config_manager=None):
+		# Only stamp done_time on first entry into a terminal
+		# state. Repeated updates with the same step (e.g. "no_player"
+		# fired every poll while no player runs) must not keep
+		# refreshing the timer, or the message never expires and the
+		# status bar hangs on it.
 		with self._lock:
+			was_step = self.current_step
 			self.current_step = step
 			self.lyric_count = lyrics_found
 			if step == 'start':
 				self.start_time = time.monotonic()
 			if config_manager and step in config_manager.TERMINAL_STATES:
-				self.done_time = time.monotonic()
+				if was_step != step:
+					self.done_time = time.monotonic()
 			else:
 				self.done_time = None
 
@@ -1611,13 +1618,14 @@ async def find_lyrics_file_async(
 			best_extension, len(candidates),
 		)
 
-		# Do NOT persist here. The race in fetch_lyrics_async resolves
-		# across all artist candidates and picks the best by format tier
-		# first, artist rank second. Saving from inside this task would
-		# let a lower-tier result (e.g. a .txt from the combined artist)
-		# land on disk before a higher-tier result (.lrc from a fallback
-		# artist) has even been considered. The winner is saved exactly
-		# once, under the canonical name, by the caller.
+		# Do NOT persist here. The race in fetch_lyrics_async
+		# resolves across all artist candidates and picks the best by
+		# format tier first, artist rank second. Saving from inside this
+		# task would let a lower-tier result (e.g. a .txt from the
+		# combined artist) land on disk before a higher-tier result
+		# (.lrc from a fallback artist) has even been considered. The
+		# winner is saved exactly once, under the canonical name, by
+		# the caller.
 		return {
 			'type': 'network',
 			'format': best_extension,
@@ -1701,7 +1709,7 @@ async def fetch_lyrics_async(
 		def _is_txt(res) -> bool:
 			if res is None:
 				return False
-			if isinstance(res, dict) and res.get('type') == 'embedded':
+			if isinstance(res, dict) and res.get('type') in ('embedded', 'network'):
 				return res.get('format') == 'txt'
 			if isinstance(res, str):
 				return res.endswith('.txt')
@@ -1784,10 +1792,10 @@ async def fetch_lyrics_async(
 		if result is None:
 			return ([], []), False, False
 
-		# Persist the winner exactly once, under the canonical (first)
-		# artist name — regardless of which candidate actually produced
-		# the content. This is what keeps the on-disk file in sync with
-		# what the race selected (format tier > artist rank).
+		# Persist the race winner exactly once, under the
+		# canonical (first) artist name — regardless of which candidate
+		# actually produced the content. This keeps the on-disk file in
+		# sync with what the race selected (format tier > artist rank).
 		if isinstance(result, dict) and result.get('type') == 'network':
 			canonical_artist = artists_to_try[0]
 			saved_path, err = save_lyrics(
@@ -1973,14 +1981,13 @@ def _pick_artist_candidates(artist, albumartist):
 
 	Returns (primary_artist, fallback_artists_list).
 
-	Ordering: artist first, albumartist second. For each source:
-	  * its split names joined with ", " is one candidate
-	  * each split name is one candidate
-	Candidates are deduplicated, preserving first occurrence.
+	Ordering: multi-artist combined forms first, then the individual
+	identities in tag order. Candidates are deduplicated, preserving
+	first occurrence.
 
-	For artist="MattYeux", albumartist="Videoclub":
-		primary   = "MattYeux"
-		fallbacks = ["Videoclub"]
+	For artist="blackbear", albumartist="blackbear; Gucci Mane":
+		primary   = "blackbear, Gucci Mane"
+		fallbacks = ["blackbear", "Gucci Mane"]
 	"""
 	candidates: list = []
 	seen: set = set()
@@ -2008,11 +2015,11 @@ def _pick_artist_candidates(artist, albumartist):
 	if not candidates:
 		return "", []
 
-	# Prefer the combined "Artist1, Artist2" form as the primary
-	# candidate. It produces the canonical cache filename and matches
-	# how most lyric providers index multi-artist tracks. Stable sort
-	# keeps the original relative order for equal-count entries, so a
-	# single-artist track is unaffected.
+	# Prefer the combined "Artist1, Artist2" form as the
+	# primary candidate. It produces the canonical cache filename and
+	# matches how most lyric providers index multi-artist tracks.
+	# Stable sort keeps the original relative order for equal-count
+	# entries, so a single-artist track is unaffected.
 	candidates.sort(key=lambda c: -c.count(","))
 
 	primary = candidates[0]
@@ -2910,6 +2917,10 @@ async def main_async(stdscr, config_manager, logger):
 	frame_time: Optional[float] = None
 
 	prev_window_width = window_size[1]
+	# Track the last rendered status message so a change (e.g.
+	# "no_player" expiring after its 2-second terminal window) forces a
+	# redraw even when nothing else has changed.
+	last_status_msg: Optional[str] = None
 
 	# async def _warmup_imports():
 		# with contextlib.suppress(Exception):
@@ -3337,6 +3348,12 @@ async def main_async(stdscr, config_manager, logger):
 						next_frame_time += frame_time
 				if current_idx != last_idx or force_redraw:
 					skip_for_vrr = False
+
+            # Status refresh
+			status_now = get_current_status(config_manager)
+			if status_now != last_status_msg:
+				last_status_msg = status_now
+				needs_redraw = True
 
 			# Render
 			should_render = (needs_redraw or force_redraw or current_idx != last_idx) and not skip_for_vrr
