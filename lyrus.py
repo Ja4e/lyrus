@@ -2396,7 +2396,8 @@ def display_lyrics(
 	alignment='center',
 	player_info: Optional[tuple] = None,
 	player_basename: str = '',
-	config_manager=None
+	config_manager=None,
+	window_size=None,
 ):
 	"""Render lyrics in curses interface."""
 	cp = curses.color_pair
@@ -2711,13 +2712,14 @@ def update_display(stdscr, ds, lyrics, errors, position, manual_offset,
 				   is_txt_format, is_a2_format, current_idx, manual_scroll_active,
 				   time_adjust=0, is_fetching=False,
 				   alignment='center', player_info=None, player_basename='',
-				   config_manager=None):
+				   config_manager=None, window_size=None):
 	use_manual = True if is_txt_format else manual_scroll_active
 	return display_lyrics(
 		stdscr, ds, lyrics, errors, position,
 		manual_offset, is_txt_format, is_a2_format, current_idx,
 		use_manual, time_adjust, is_fetching,
-		alignment, player_info, player_basename, config_manager
+		alignment, player_info, player_basename, config_manager,
+		window_size,
 	)
 
 
@@ -3056,6 +3058,7 @@ async def main_async(stdscr, config_manager, logger):
 						resume_trigger_time = current_time
 						log_debug_fmt("Jump detected: %.3fs", drift)
 						needs_redraw = True
+						set_timeout(refresh_interval_2)
 						if smart_tracking == 1:
 							last_idx = -1
 
@@ -3063,6 +3066,7 @@ async def main_async(stdscr, config_manager, logger):
 						resume_trigger_time = current_time
 						log_debug("Pause→play refresh")
 						needs_redraw = True
+						set_timeout(refresh_interval_2)
 						if smart_tracking == 1:
 							last_idx = -1
 
@@ -3070,6 +3074,7 @@ async def main_async(stdscr, config_manager, logger):
 						resume_trigger_time = current_time
 						log_debug_fmt("Paused jump detected: %.3fs", drift)
 						needs_redraw = True
+						set_timeout(refresh_interval_2)
 						last_idx = -1
 
 				except Exception as e:
@@ -3379,6 +3384,7 @@ async def main_async(stdscr, config_manager, logger):
 					player_info=(player_type, player_data),
 					player_basename=p_file_basename,
 					config_manager=config_manager,
+					window_size=window_size,
 				)
 				manual_offset = start_screen_line
 				last_idx = current_idx
@@ -3395,12 +3401,15 @@ async def main_async(stdscr, config_manager, logger):
 				else:
 					set_timeout(250)
 					sleep_time = 0.002
-			else:
+			elif not (poll or proximity_active or manual_scroll):
 				set_timeout(refresh_interval_2)
 				sleep_time = 0.0
+			# else:
+				# set_timeout(refresh_interval_2)
+				# sleep_time = 0.0
 
-			if poll or proximity_active or manual_scroll:
-				sleep_time = 0.0
+			# if poll or proximity_active or manual_scroll:
+				# sleep_time = 0.0
 
 			await asyncio.sleep(sleep_time)
 
