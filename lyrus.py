@@ -1670,10 +1670,16 @@ async def fetch_lyrics_async(
 
 		artist_rank = {a: i for i, a in enumerate(artists_to_try)}
 
-		stream_state = {'emitted': False}
+		# `emitted` = the one-shot "first stream wins" gate for early UI.
+		# `suppress` = hard kill switch. Once the race has a definitive
+		# winner we do NOT want a late-arriving provider on a detached
+		# artist task to overwrite what the UI is already showing
+		stream_state = {'emitted': False, 'suppress': False}
 
 		def _stream_cb(text, ext):
-			if on_lyrics_ready is None or stream_state['emitted']:
+			if (on_lyrics_ready is None
+					or stream_state['emitted']
+					or stream_state['suppress']):
 				return
 			stream_state['emitted'] = True
 			try:
@@ -1741,10 +1747,12 @@ async def fetch_lyrics_async(
 
 					if preflight_result is not None:
 						logger.log_debug_fmt("Pre-flight local hit; stop waiting")
+						stream_state['suppress'] = True
 						pending = set()
 						break
 
 					if best_synced is not None:
+						stream_state['suppress'] = True
 						pending = set()
 						break
 					continue
@@ -1770,6 +1778,7 @@ async def fetch_lyrics_async(
 						a, "" if preflight_done else " (holding for pre-flight)",
 					)
 					if preflight_done:
+						stream_state['suppress'] = True
 						pending = set()
 						break
 					continue
@@ -1789,6 +1798,12 @@ async def fetch_lyrics_async(
 		else:
 			result = best_txt
 
+		# Belt-and-braces: even if we fell through the loop without
+		# hitting an explicit suppress site above, any task we are about
+		# to detach must not be able to feed the UI anymore.
+		if result is not None:
+			stream_state['suppress'] = True
+
 		leave_running = result is not None
 
 		if result is None:
@@ -1796,8 +1811,7 @@ async def fetch_lyrics_async(
 
 		# Persist the race winner exactly once, under the
 		# canonical (first) artist name — regardless of which candidate
-		# actually produced the content. This keeps the on-disk file in
-		# sync with what the race selected (format tier > artist rank).
+		# actually produced the content.
 		if isinstance(result, dict) and result.get('type') == 'network':
 			canonical_artist = artists_to_try[0]
 			saved_path, err = save_lyrics(
