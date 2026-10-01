@@ -1659,9 +1659,11 @@ async def fetch_lyrics_async(
 		if not artists_to_try:
 			return ([], []), False, False
 
+		update_fetch_status('local', config_manager=config_manager)
 		precheck = _precheck_track(
 			artists_to_try, title, config_manager, logger,
 		)
+		
 		if precheck is not None:
 			logger.log_debug("Pre-check resolved; skipping race")
 			return precheck
@@ -3349,7 +3351,7 @@ async def main_async(stdscr, config_manager, logger):
 				if current_idx != last_idx or force_redraw:
 					skip_for_vrr = False
 
-            # Status refresh
+			# Status refresh
 			status_now = get_current_status(config_manager)
 			if status_now != last_status_msg:
 				last_status_msg = status_now
