@@ -2983,11 +2983,13 @@ async def main_async(stdscr, config_manager, logger):
 					new_h, new_w = new_size
 					if old_w != new_w:
 						ds.invalidate()
+						wrapped_lines = []
 					if lyrics and old_h > 0 and new_h > 0:
 						manual_offset = int_func(manual_offset * (new_h / old_h))
 					window_size = new_size
 					max_wrapped_offset = max_func(0, max_wrapped_offset)
 				needs_redraw = True
+				force_redraw = True
 			elif new_input:
 				if key in quit_keys:
 					try:
@@ -3255,7 +3257,7 @@ async def main_async(stdscr, config_manager, logger):
 			playback_paused = (p_status == status_paused)
 			if p_raw_pos != last_cmus_position and not playback_paused:
 				last_cmus_position = p_raw_pos
-				# last_pos_time = current_time
+				last_pos_time = current_time
 				estimated_position = p_raw_pos
 
 			if player_type:
