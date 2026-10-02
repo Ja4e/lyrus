@@ -3093,6 +3093,7 @@ async def main_async(stdscr, config_manager, logger):
 
 				except Exception as e:
 					log_debug_fmt("Error polling player: %s", e)
+					last_player_update = 0.0
 
 				last_player_update = current_time
 
@@ -3205,6 +3206,7 @@ async def main_async(stdscr, config_manager, logger):
 						timestamps = []
 					if p_status == status_playing and player_type in streaming_players:
 						resume_trigger_time = current_time
+						last_player_update = 0.0
 					fmt_label = 'a2' if is_a2 else ('txt' if is_txt else 'lrc')
 					log_debug_fmt(
 						"Live lyrics applied: fmt=%s lines=%d",
@@ -3234,6 +3236,7 @@ async def main_async(stdscr, config_manager, logger):
 						timestamps = []
 					if p_status == status_playing and player_type in streaming_players:
 						resume_trigger_time = current_time
+						last_player_update = 0.0
 					estimated_position = p_raw_pos
 				except (asyncio.CancelledError, Exception) as e:
 					if not isinstance(e, asyncio.CancelledError):
@@ -3252,7 +3255,7 @@ async def main_async(stdscr, config_manager, logger):
 			playback_paused = (p_status == status_paused)
 			if p_raw_pos != last_cmus_position and not playback_paused:
 				last_cmus_position = p_raw_pos
-				last_pos_time = current_time
+				# last_pos_time = current_time
 				estimated_position = p_raw_pos
 
 			if player_type:
