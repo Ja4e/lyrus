@@ -13,7 +13,7 @@ import contextlib
 import curses
 import argparse
 import threading
-from collections import OrderedDict
+from collections import OrderedDict, deque
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from typing import Any, Optional
@@ -204,6 +204,17 @@ class ConfigManager:
 		"MESSAGES",
 		"TERMINAL_STATES",
 
+		# Position phase locking
+		"PHASE_LOCK_ENABLED",
+		"PHASE_LOCK_MAX_WINDOW_MS",
+		"PHASE_LOCK_MIN_WINDOW_MS",
+		"PHASE_LOCK_AUTO_WINDOW",
+		"PHASE_LOCK_AUTO_WINDOW_FACTOR",
+		"PHASE_LOCK_AUTO_WINDOW_SAMPLES",
+		"PHASE_LOCK_WEIGHTED_AVERAGE",
+		"PHASE_LOCK_WEIGHTED_AVERAGE_DECAY",
+		"PHASE_LOCK_WEIGHTED_AVERAGE_FLOOR_VAR_MS2",
+
 		# Config storage
 		"config",
 	)
@@ -216,7 +227,7 @@ class ConfigManager:
 		self.config_path: Optional[str] = config_path
 		self.player_override: Optional[str] = player_override
 
-		# Color – set by setup_colors()
+		# Color
 		self.COLOR_NAMES: dict = {}
 		self.COLOR_TXT_ACTIVE: Any = None
 		self.COLOR_TXT_INACTIVE: Any = None
@@ -224,7 +235,7 @@ class ConfigManager:
 		self.COLOR_LRC_INACTIVE: Any = None
 		self.COLOR_ERROR: Any = None
 
-		# Logging – set by setup_logging()
+		# Logging
 		self.LOG_DIR: str = ""
 		self.LYRICS_TIMEOUT_LOG: str = ""
 		self.LYRICS_INSTRUMENT_LOG: str = ""
@@ -233,7 +244,7 @@ class ConfigManager:
 		self.MAX_DEBUG_COUNT: int = 100
 		self.ENABLE_DEBUG_LOGGING: bool = False
 
-		# Player – set by setup_player()
+		# Player
 		self.MPD_HOST: str = "localhost"
 		self.MPD_PORT: Any = 6600
 		self.MPD_PASSWORD: Optional[str] = None
@@ -242,7 +253,7 @@ class ConfigManager:
 		self.ENABLE_MPD: bool = True
 		self.ENABLE_PLAYERCTL: bool = True
 
-		# Lyrics – set by setup_lyrics()
+		# Lyrics
 		self.LYRIC_EXTENSIONS: list = []
 		self.LYRIC_CACHE_DIR: str = ""
 		self.SEARCH_TIMEOUT: int = 15
@@ -257,12 +268,22 @@ class ConfigManager:
 		self.READ_EMBEDDED_LYRICS: bool = True
 		self.SKIP_EMBEDDED_TXT: bool = True
 
-		# UI – set by setup_ui()
+		# UI
 		self.DISPLAY_NAME: bool = True
 		self.MESSAGES: dict = {}
 		self.TERMINAL_STATES: set = set()
 
-		# Load – must be last so setup_* methods can assign above
+		# Load
+		self.PHASE_LOCK_ENABLED: bool = True
+		self.PHASE_LOCK_MAX_WINDOW_MS: float = 100.0
+		self.PHASE_LOCK_MIN_WINDOW_MS: float = 1.0
+		self.PHASE_LOCK_AUTO_WINDOW: str = "off"
+		self.PHASE_LOCK_AUTO_WINDOW_FACTOR: float = 1.5
+		self.PHASE_LOCK_AUTO_WINDOW_SAMPLES: int = 10
+		self.PHASE_LOCK_WEIGHTED_AVERAGE: bool = False
+		self.PHASE_LOCK_WEIGHTED_AVERAGE_DECAY: float = 0.98
+		self.PHASE_LOCK_WEIGHTED_AVERAGE_FLOOR_VAR_MS2: float = 0.25
+
 		self.config: dict = self.load_config()
 		self.setup_logging()
 		self.setup_colors()
@@ -356,7 +377,7 @@ class ConfigManager:
 					"bisect_offset": 0,
 					"proximity_threshold": 0,
 					"wrap_width_percent": 90,
-					"smart_refresh_duration": 1,
+					"smart_refresh_duration": 2, # from 1 updated to 2 for reliability
 					"smart_coolcpu_ms": 20,
 					"jump_threshold_sec": 1,
 					"end_trigger_threshold_sec": 1,
@@ -369,6 +390,37 @@ class ConfigManager:
 						"proximity_min_threshold_sec": 0.0,
 						"proximity_max_threshold_sec": 1
 					},
+					# Position phase locking: cmus ticks position at 1 Hz
+					# on its own clock. Predict tick times from pairs of
+					# polls that bracket a position change, then anchor
+					# extrapolation to the tick rather than the poll
+					# arrival — removes the up-to-1s polling-phase error.
+					#
+					#   auto_window:  "off" | "warmup" | "rolling" — learn
+					#                 the machine's floor poll window from
+					#                 the smart-window burst and derive
+					#                 max_window_ms from it.
+					#   weighted_average:  inverse-variance averaging over
+					#                 all observations instead of the
+					#                 tightest-window ratchet.
+					"position_phase_lock": {
+						"enabled": True,
+						"max_window_ms": 80.0,
+						"min_window_ms": 1.0,
+						"auto_window": "warmup",
+						"auto_window_factor": 1.5,
+						"auto_window_samples": 10,
+						"weighted_average": True,
+						"weighted_average_decay": 0.98,
+						"weighted_average_floor_var_ms2": 0.25
+					},
+					# Position-loop toggles. Both must
+					# be true for the phase lock to take effect starts with
+					# fresh_position_clock false, the loop re-anchors
+					# to current_time on every position change and
+					# overwrites the lock's anchor.
+					"subprocess_compensated_anchor": True,
+					"fresh_position_clock": True,
 					"sync_offset_sec": 0.005,
 					"VRR_R_bol": False,
 					"VRR_bol": False
@@ -471,10 +523,7 @@ class ConfigManager:
 		self.PROVIDERS = list(dict.fromkeys(self.config["lyrics"]["Sources"]))
 		self.PROVIDER_FALLBACK = self.config["lyrics"]["Fallback"]
 		self.PROVIDER_FORMAT_PRIORITY = self.config["lyrics"]["Format_priority"]
-		# Precomputed once at startup: avoids the `or` fallback and the
-		# tuple/list conversion on every track change, and gives the
-		# hot lyric-search path a single slot read instead of a dict
-		# lookup + boolean short-circuit.
+		# Precomputed
 		priority = self.PROVIDER_FORMAT_PRIORITY or ["a2", "lrc", "txt"]
 		self.FORMAT_PRIORITY_TUPLE = tuple(priority)
 		self.ALLOW_TRANSLATION = self.config["lyrics"]["Translation"]["enable_translation"]
@@ -487,6 +536,18 @@ class ConfigManager:
 		self.MESSAGES = self.config["status_messages"]
 		self.TERMINAL_STATES = set(self.config["terminal_states"])
 
+		sync = self.config["ui"]["sync"]
+		pl = sync.get("position_phase_lock", {}) or {}
+
+		self.PHASE_LOCK_ENABLED = bool(pl.get("enabled", True))
+		self.PHASE_LOCK_MAX_WINDOW_MS = float(pl.get("max_window_ms", 100.0))
+		self.PHASE_LOCK_MIN_WINDOW_MS = float(pl.get("min_window_ms", 1.0))
+		self.PHASE_LOCK_AUTO_WINDOW = str(pl.get("auto_window", "off")).lower()
+		self.PHASE_LOCK_AUTO_WINDOW_FACTOR = float(pl.get("auto_window_factor", 1.5))
+		self.PHASE_LOCK_AUTO_WINDOW_SAMPLES = int(pl.get("auto_window_samples", 10))
+		self.PHASE_LOCK_WEIGHTED_AVERAGE = bool(pl.get("weighted_average", False))
+		self.PHASE_LOCK_WEIGHTED_AVERAGE_DECAY = float(pl.get("weighted_average_decay", 0.98))
+		self.PHASE_LOCK_WEIGHTED_AVERAGE_FLOOR_VAR_MS2 = float(pl.get("weighted_average_floor_var_ms2", 0.25))
 
 # ================
 #  LOGGING SYSTEM
@@ -536,7 +597,7 @@ class Logger:
 		self._instrumental_log_cache = set()
 		self._instrumental_log_cache_loaded = False
 
-		# Precompute everything the hot logging path needs.
+		# Precompute
 		gcfg = config_manager.config["global"]
 		self._main_log_path = os.path.join(self.LOG_DIR, gcfg["log_file"])
 		self._debug_log_path = os.path.join(self.LOG_DIR, self.DEBUG_LOG)
@@ -2356,6 +2417,284 @@ class LiveLyricsState:
 		self.errors = None
 
 
+# ========================
+#  POSITION PHASE LOCK
+# ========================
+class PhaseLock:
+	"""Predict the wall-clock time of cmus's integer position ticks.
+
+	cmus advances its integer position at exactly 1 Hz relative to its
+	internal playback clock. Once the wall-clock time of any single
+	tick is known, every subsequent tick time is that value plus whole
+	seconds. Anchoring the display's extrapolation to the *predicted*
+	tick time rather than to the actual poll arrival time removes the
+	up-to-1s error introduced by polling at an arbitrary phase within
+	each second.
+
+	A tick time is discovered whenever two consecutive polls bracket a
+	position change (N-1 -> N). The tick happened somewhere inside the
+	open interval (T_prev, T_now], so the midpoint is an unbiased
+	estimate with error bounded by half the interval width.
+
+	Two estimators are available:
+
+	  * Ratchet (weighted_average=False): keep the tightest window
+		ever seen and its associated phase estimate. Deterministic,
+		monotonic, and equal to "take the best observation". This is
+		the classical behaviour and is optimal when the observation
+		noise is bounded and the tightest window is also the most
+		accurate.
+
+	  * Weighted average (weighted_average=True): keep a running
+		weighted sum of every phase estimate, weighted by
+		1 / sigma^2 = 4 / window^2. This is the steady-state form of
+		a Kalman filter for a static phase and is optimal when the
+		observation noise is Gaussian and independent across ticks.
+		An exponential forgetting factor bounds the memory so the
+		estimate adapts to load changes, and a floor on sigma
+		prevents a spuriously short window from dominating the sum.
+
+	The subprocess-latency correction is applied OUTSIDE this class,
+	by shifting the poll_time that is fed to `observe()` and used as
+	the `anchor_for` fallback. That keeps this class purely about the
+	1 Hz tick model.
+
+	Auto-window
+	-----------
+	The lock only forms candidates from poll-to-poll windows that are
+	<= `max_window`. On a machine where the subprocess call to fetch
+	the player state takes longer than the configured threshold, no
+	candidate ever qualifies and the lock silently never fires.
+
+	`auto_window` addresses this by measuring the machine's floor
+	poll-to-poll window during the smart window (fast-poll burst) and
+	deriving the threshold from it.
+
+	  "off"      use `max_window_ms` verbatim (old behaviour).
+	  "warmup"   sample the first N smart-window observations, then
+				 set max_window = factor * p20 and never change it
+				 again for the session. Deterministic, self-tuning
+				 per-machine.
+	  "rolling"  recompute max_window = factor * p20 on every sample.
+				 Adapts to machine load changes.
+
+	Sampling is opt-in via `observe(..., sample=True)`. The caller
+	passes `sample=True` only while it is in the fast-poll smart
+	window; slow-poll windows are not sampled. The 20th percentile is
+	used rather than the median, so a couple of slow boundary windows
+	don't drag the estimate up.
+
+	When no interval has yet qualified the class reports `locked=False`
+	and the caller falls back to whatever anchor it passed in.
+	"""
+	__slots__ = ('_enabled', '_max_window', '_base_max_window', '_min_window',
+				 '_auto_window', '_auto_window_factor', '_auto_window_samples',
+				 '_sample_windows', '_warmup_done',
+				 # weighted-average state
+				 '_weighted_average', '_wv_decay', '_wv_floor_var',
+				 '_phase_num', '_phase_den', '_phase_variance',
+				 '_last_poll_time', '_last_raw',
+				 '_best_window', '_phase', '_locked')
+
+	def __init__(self, enabled: bool = True,
+				 max_window_ms: float = 100.0,
+				 min_window_ms: float = 1.0,
+				 auto_window: str = "off",
+				 auto_window_factor: float = 1.5,
+				 auto_window_samples: int = 10,
+				 weighted_average: bool = False,
+				 weighted_average_decay: float = 0.98,
+				 weighted_average_floor_var_ms2: float = 0.25):
+		self._enabled = bool(enabled)
+		self._min_window = max(0.0, float(min_window_ms) / 1000.0)
+		self._base_max_window = max(0.0, float(max_window_ms) / 1000.0)
+		self._max_window = self._base_max_window
+		self._auto_window = (
+			auto_window if auto_window in ("off", "warmup", "rolling")
+			else "off"
+		)
+		self._auto_window_factor = max(1.0, float(auto_window_factor))
+		self._auto_window_samples = max(2, int(auto_window_samples))
+		self._sample_windows = deque(maxlen=self._auto_window_samples)
+		self._warmup_done = (self._auto_window != "warmup")
+
+		# weighted-average state
+		self._weighted_average = bool(weighted_average)
+		self._wv_decay = min(0.9999, max(0.0, float(weighted_average_decay)))
+		self._wv_floor_var = max(
+			0.0,
+			float(weighted_average_floor_var_ms2) * 1e-6,  # ms² → s²
+		)
+		self._phase_num = 0.0
+		self._phase_den = 0.0
+		self._phase_variance: Optional[float] = None
+
+		self._last_poll_time: Optional[float] = None
+		self._last_raw: Optional[float] = None
+		self._best_window: float = float('inf')
+		self._phase: Optional[float] = None
+		self._locked = False
+
+	@property
+	def locked(self) -> bool:
+		return self._locked
+
+	@property
+	def phase(self) -> Optional[float]:
+		return self._phase
+
+	@property
+	def phase_variance(self) -> Optional[float]:
+		"""Variance of the current phase estimate, in seconds². Only
+		populated when `weighted_average` is enabled; None otherwise."""
+		return self._phase_variance
+
+	@property
+	def max_window_ms(self) -> float:
+		"""Current effective threshold, in ms (learned if auto is on)."""
+		return self._max_window * 1000.0
+
+	def reset(self) -> None:
+		"""Forget the lock. Does NOT clear the auto-window learning —
+		the machine's floor RTT does not change when the lock is
+		reset. Does clear the weighted-average accumulators, because
+		the phase estimate itself is invalidated by whatever triggered
+		the reset (player change, jump, pause→play)."""
+		self._last_poll_time = None
+		self._last_raw = None
+		self._best_window = float('inf')
+		self._phase = None
+		self._locked = False
+		# Clear weighted-average accumulators
+		self._phase_num = 0.0
+		self._phase_den = 0.0
+		self._phase_variance = None
+
+	def _compute_p20(self) -> Optional[float]:
+		if not self._sample_windows:
+			return None
+		s = sorted(self._sample_windows)
+		idx = max(0, int(0.20 * (len(s) - 1)))
+		return s[idx]
+
+	def _update_max_window(self, logger=None) -> None:
+		p20 = self._compute_p20()
+		if p20 is None or p20 <= 0.0:
+			return
+		new_max = max(self._min_window, p20 * self._auto_window_factor)
+		if abs(new_max - self._max_window) < 1e-9:
+			return
+		old = self._max_window
+		self._max_window = new_max
+		if logger:
+			logger.log_debug_fmt(
+				"Auto window [%s]: p20=%.1fms factor=%.2f n=%d "
+				"max=%.1fms→%.1fms",
+				self._auto_window, p20 * 1000.0, self._auto_window_factor,
+				len(self._sample_windows), old * 1000.0, new_max * 1000.0,
+			)
+
+	def observe(self, poll_time: float, new_raw: float,
+				playing: bool, logger=None, sample: bool = False) -> None:
+		"""Feed one poll observation.
+
+		`sample=True` marks this observation as a valid auto-window
+		sample. The caller should pass `sample=True` only during the
+		fast-poll smart window, so that the learned threshold reflects
+		the machine's floor RTT and not the normal slow-poll cadence.
+		"""
+		if not self._enabled or not playing:
+			return
+
+		prev_time = self._last_poll_time
+		prev_raw = self._last_raw
+		self._last_poll_time = poll_time
+		self._last_raw = new_raw
+
+		if prev_time is None or prev_raw is None:
+			return
+
+		window = poll_time - prev_time
+
+		# Auto-window sampling: happens for every sample-marked
+		# observation, regardless of whether it straddles a tick. The
+		# tick check below is irrelevant for measuring the machine's
+		# floor poll-to-poll window.
+		if sample and self._auto_window != "off":
+			self._sample_windows.append(window)
+			if self._auto_window == "warmup":
+				if (not self._warmup_done
+						and len(self._sample_windows) >= self._auto_window_samples):
+					self._update_max_window(logger)
+					self._warmup_done = True
+			else:  # rolling
+				self._update_max_window(logger)
+
+		if new_raw != prev_raw + 1:
+			return
+
+		if window < self._min_window or window > self._max_window:
+			return
+
+		phase_estimate = (poll_time + prev_time) * 0.5 - new_raw
+
+		if self._weighted_average:
+			# Inverse-variance (Kalman) weighting.
+			# Each observation i has uncertainty sigma_i = window_i/2,
+			# so its information content is w_i = 1/sigma_i². The
+			# combined estimate is the weighted mean of all phase
+			# estimates seen so far. An exponential decay applied to
+			# the running sums bounds effective memory; a floor on
+			# the variance prevents a spuriously tiny window from
+			# contributing unbounded weight.
+			sigma2 = max((window * 0.5) ** 2, self._wv_floor_var)
+			w = 1.0 / sigma2
+
+			# Exponential forgetting before adding the new term.
+			self._phase_num *= self._wv_decay
+			self._phase_den *= self._wv_decay
+
+			self._phase_num += w * phase_estimate
+			self._phase_den += w
+
+			self._phase = self._phase_num / self._phase_den
+			self._phase_variance = 1.0 / self._phase_den
+			self._locked = True
+			# Track tightest input window as an informational metric.
+			if window < self._best_window:
+				self._best_window = window
+
+			if logger:
+				logger.log_debug_fmt(
+					"Phase lock [weighted]: window=%.1fms phase=%.6f "
+					"σ_est=%.3fms w_sum=%.1f n=%.1f max=%.1fms",
+					window * 1000.0, self._phase,
+					(self._phase_variance ** 0.5) * 1000.0,
+					self._phase_den, len(self._sample_windows),
+					self._max_window * 1000.0,
+				)
+		else:
+			# Classic ratchet: keep the tightest window ever seen.
+			if window < self._best_window:
+				self._best_window = window
+				self._phase = phase_estimate
+				self._locked = True
+				if logger:
+					logger.log_debug_fmt(
+						"Phase lock: window=%.1fms phase=%.6f max=%.1fms",
+						window * 1000.0, phase_estimate,
+						self._max_window * 1000.0,
+					)
+			elif (self._phase is not None
+				  and abs(window - self._best_window) < 1e-9):
+				self._phase = (self._phase + phase_estimate) * 0.5
+
+	def anchor_for(self, new_raw: float, fallback: float) -> float:
+		if self._locked and self._phase is not None:
+			return self._phase + new_raw
+		return fallback
+
+
 def get_lyrics_hash(lyrics) -> int:
 	if not lyrics:
 		return 0
@@ -2829,6 +3168,13 @@ async def main_async(stdscr, config_manager, logger):
 	base_offset = sync_config.get("sync_offset_sec", 0.0)
 	vrr_enabled = sync_config.get("VRR_bol", False)
 
+	subprocess_compensated_anchor = bool(
+		sync_config.get("subprocess_compensated_anchor", False)
+	)
+	fresh_position_clock = bool(
+		sync_config.get("fresh_position_clock", False)
+	)
+
 	curses.start_color()
 	curses.init_pair(1, resolve_color(color_config["error"]), curses.COLOR_BLACK)
 	curses.init_pair(2, resolve_color(color_config["lrc"]["active"]), curses.COLOR_BLACK)
@@ -2862,6 +3208,18 @@ async def main_async(stdscr, config_manager, logger):
 	ds = DisplayState()
 
 	live_lyrics = LiveLyricsState()
+
+	phase_lock = PhaseLock(
+		enabled=config_manager.PHASE_LOCK_ENABLED,
+		max_window_ms=config_manager.PHASE_LOCK_MAX_WINDOW_MS,
+		min_window_ms=config_manager.PHASE_LOCK_MIN_WINDOW_MS,
+		auto_window=config_manager.PHASE_LOCK_AUTO_WINDOW,
+		auto_window_factor=config_manager.PHASE_LOCK_AUTO_WINDOW_FACTOR,
+		auto_window_samples=config_manager.PHASE_LOCK_AUTO_WINDOW_SAMPLES,
+		weighted_average=config_manager.PHASE_LOCK_WEIGHTED_AVERAGE,
+		weighted_average_decay=config_manager.PHASE_LOCK_WEIGHTED_AVERAGE_DECAY,
+		weighted_average_floor_var_ms2=config_manager.PHASE_LOCK_WEIGHTED_AVERAGE_FLOOR_VAR_MS2,
+	)
 
 	def on_lyrics_ready(text, ext):
 		"""Invoked from the fetch task the moment a provider returns."""
@@ -2911,6 +3269,7 @@ async def main_async(stdscr, config_manager, logger):
 	estimated_position: float = 0.0
 	last_cmus_position: float = 0.0
 	last_pos_time: float = perf()
+	poll_time: float = last_pos_time
 	last_player_update: float = 0.0
 	manual_offset: int = 0
 	last_input: float = 0.0
@@ -2987,7 +3346,8 @@ async def main_async(stdscr, config_manager, logger):
 					if lyrics and old_h > 0 and new_h > 0:
 						manual_offset = int_func(manual_offset * (new_h / old_h))
 					window_size = new_size
-					max_wrapped_offset = max_func(0, max_wrapped_offset)
+					# max_wrapped_offset = max_func(0, max_wrapped_offset)
+					max_wrapped_offset = 0
 				needs_redraw = True
 				force_redraw = True
 			elif new_input:
@@ -3058,39 +3418,74 @@ async def main_async(stdscr, config_manager, logger):
 				# interval = max(refresh_interval, 0.05)
 
 			if current_time - last_player_update >= interval:
-				# Poll player (inlined)
+				# `subprocess_compensated_anchor`:
+				#
+				#   False (production): poll_time = current_time, the
+				#       loop-start timestamp. This matches file 1.
+				#
+				#   True (compensated): poll_time = perf() captured
+				#       right after the subprocess returns. This matches
+				#       file 2 and removes the round-trip bias from
+				#       the anchor.
+				#
+				# In both cases the value is passed to
+				# phase_lock.observe() and to
+				# phase_lock.anchor_for(..., fallback=poll_time), so
+				# the fallback (non-locked) path also follows the
+				# toggle.
 				try:
 					prev_status = p_status
 					new_player_type, new_player_data = await get_player_info(config_manager)
+					if subprocess_compensated_anchor:
+						poll_time = perf()
+					else:
+						poll_time = current_time
+
 					if new_player_type != player_type or new_player_data != player_data:
+						if new_player_type != player_type:
+							phase_lock.reset()
 						player_type = new_player_type
 						player_data = new_player_data
 
 					_, raw_val, _, _, _, _, status_val, _ = player_data
 					new_raw = float_func(raw_val or 0.0)
+					
+					# sample=True only inside the
+					# fast-poll smart window, so the learned threshold
+					# reflects the machine's floor RTT.
+					phase_lock.observe(
+						poll_time, new_raw,
+						playing=(status_val == status_playing),
+						logger=logger,
+						sample=in_smart_window,
+					)
+
 					drift = abs_func(new_raw - estimated_position)
 
 					if drift > jump_threshold and status_val == status_playing:
-						resume_trigger_time = current_time
+						resume_trigger_time = poll_time
 						log_debug_fmt("Jump detected: %.3fs", drift)
 						needs_redraw = True
 						set_timeout(refresh_interval_2)
+						phase_lock.reset()
 						if smart_tracking == 1:
 							last_idx = -1
 
 					if player_type and prev_status == status_paused and status_val == status_playing:
-						resume_trigger_time = current_time
+						resume_trigger_time = poll_time
 						log_debug("Pause→play refresh")
 						needs_redraw = True
+						phase_lock.reset()
 						set_timeout(refresh_interval_2)
 						if smart_tracking == 1:
 							last_idx = -1
 
 					if smart_tracking == 1 and status_val == status_paused and drift > jump_threshold:
-						resume_trigger_time = current_time
+						resume_trigger_time = poll_time
 						log_debug_fmt("Paused jump detected: %.3fs", drift)
 						needs_redraw = True
 						set_timeout(refresh_interval_2)
+						phase_lock.reset()
 						last_idx = -1
 
 				except Exception as e:
@@ -3113,7 +3508,8 @@ async def main_async(stdscr, config_manager, logger):
 				p_raw_albumartist = p_raw_albumartist or ""
 				p_album = p_album or ""
 				estimated_position = p_raw_pos
-				last_pos_time = current_time
+				# last_pos_time = current_time
+				last_pos_time = phase_lock.anchor_for(p_raw_pos, fallback=poll_time)
 
 				# Cache the basename for the status bar (was computed every frame).
 				p_file_basename = ''
@@ -3253,19 +3649,40 @@ async def main_async(stdscr, config_manager, logger):
 				force_redraw = True
 				lyrics_loaded_time = None
 
-			# Position estimation
+			# The two toggles position estimation
+			# control exactly the two differences between file 1
+			# (production) and file 2 (compensated).
+			#
+			#   fresh_position_clock = False (production):
+			#       position_time is just the loop-start current_time,
+			#       and last_pos_time is re-anchored to current_time on
+			#       every integer position change.
+			#
+			#   fresh_position_clock = True (compensated):
+			#       position_time is re-read with perf() right before
+			#       extrapolation, and the production re-anchor line
+			#       is suppressed so the anchor set above (from
+			#       poll_time / the phase lock) survives.
+			if fresh_position_clock:
+				position_time = perf()
+			else:
+				position_time = current_time
+
 			playback_paused = (p_status == status_paused)
 			if p_raw_pos != last_cmus_position and not playback_paused:
 				last_cmus_position = p_raw_pos
-				last_pos_time = current_time
+				if not fresh_position_clock:
+					last_pos_time = current_time
 				estimated_position = p_raw_pos
 
 			if player_type:
 				if not playback_paused:
-					pos = p_raw_pos + (current_time - last_pos_time)
+					pos = p_raw_pos + (position_time - last_pos_time)
 					estimated_position = min_func(pos, p_duration)
 				else:
 					estimated_position = p_raw_pos
+
+			current_time = position_time
 
 			continuous_position = max_func(
 				0.0,
@@ -3466,4 +3883,3 @@ if __name__ == "__main__":
 			)
 			Logger(temp_config).log_error(f"Fatal error: {str(exc)}")
 		print(f"Fatal error: {exc}", file=sys.stderr)
-		time.sleep(1)
