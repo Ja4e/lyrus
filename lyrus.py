@@ -3330,12 +3330,33 @@ async def main_async(stdscr, config_manager, logger):
 					manual_timeout_handled = False
 
 			manual_scroll = (last_input > 0.0)
-
-			# Input handling
+            
+            # Input handling
+			# First getch uses whatever timeout the previous iteration
+			# set — this preserves the CPU-saving blocking behavior
+			# during idle.
 			key = stdscr_getch()
 			new_input = key != -1
 
-			if key == curses.KEY_RESIZE:
+			if new_input:
+				# We have at least one key. Drain any additional pending
+				# keys *without blocking*, so a held key produces one
+				# redraw per iteration instead of one per key. Must
+				# force timeout=0 for the drain itself — otherwise the
+				# second getch blocks up to `timeout` ms waiting for a
+				# key that isn't coming.
+				keys = [key]
+				set_timeout(0)
+				while len(keys) < 32:
+					k = stdscr_getch()
+					if k == -1:
+						break
+					keys.append(k)
+			else:
+				keys = []
+
+			# Resize is handled once per batch, not per occurrence.
+			if curses.KEY_RESIZE in keys:
 				new_size = get_size()
 				if new_size != window_size:
 					old_h, old_w = window_size
@@ -3350,7 +3371,10 @@ async def main_async(stdscr, config_manager, logger):
 					max_wrapped_offset = 0
 				needs_redraw = True
 				force_redraw = True
-			elif new_input:
+
+			for key in keys:
+				if key == curses.KEY_RESIZE:
+					continue
 				if key in quit_keys:
 					try:
 						atexit.register(THREAD_POOL_EXECUTOR.shutdown, wait=False)
@@ -3397,8 +3421,12 @@ async def main_async(stdscr, config_manager, logger):
 					alignment = alignments_list[(alignment_index[alignment] - 1) % 3]
 					needs_redraw = True
 
-				if needs_redraw:
-					force_redraw = True
+			if needs_redraw:
+				force_redraw = True
+
+			# Recompute manual_scroll AFTER the batch so the smart-poll
+			# gate sees the user's latest input in the same iteration.
+			manual_scroll = (last_input > 0.0)
 
 			# Smart refresh timing
 			in_smart_window = (resume_trigger_time is not None and
@@ -3412,10 +3440,24 @@ async def main_async(stdscr, config_manager, logger):
 				poll = False
 
 			# Player poll interval
-			interval = 0.0 if in_smart_window else refresh_interval
+			#
+			# `in_smart_window` alone is not sufficient: it stays True
+			# for smart_refresh_duration seconds after any resume / jump,
+			# regardless of the current playback state. During that
+			# window, if the player is paused (or the user is scrolling),
+			# setting interval = 0.0 would fork a subprocess on every
+			# loop iteration — starving getch and making manual scroll
+			# feel laggy. Gate the burst on all three: playing, not
+			# scrolling, and lyrics loaded.
+			smart_poll_active = (
+				in_smart_window
+				and p_status == status_playing
+				and not manual_scroll
+				and lyrics
+			)
+			interval = 0.0 if smart_poll_active else refresh_interval
 			if proximity_active and p_status == status_playing:
 				interval = refresh_interval
-				# interval = max(refresh_interval, 0.05)
 
 			if current_time - last_player_update >= interval:
 				# `subprocess_compensated_anchor`:
@@ -3494,8 +3536,18 @@ async def main_async(stdscr, config_manager, logger):
 
 				last_player_update = current_time
 
-			# Update player data if changed
-			if player_data != prev_player_data:
+			# Update player data if changed.
+			#
+			# Only four fields can change during a session: audio_file
+			# (track change), raw position (every tick or seek), title
+			# (track change), and status (play / pause / stop). Artist,
+			# albumartist, duration, and album only change when the file
+			# changes, which is already covered by audio_file. Comparing
+			# 4 elements instead of 8 halves the tuple comparison cost.
+			if (player_data[0] != prev_player_data[0]
+					or player_data[1] != prev_player_data[1]
+					or player_data[4] != prev_player_data[4]
+					or player_data[6] != prev_player_data[6]):
 				prev_player_data = player_data
 				(p_audio_file, p_raw_pos, p_raw_artist, p_raw_albumartist,
 				 p_title, p_duration, p_status, p_album) = player_data
@@ -3648,6 +3700,13 @@ async def main_async(stdscr, config_manager, logger):
 			if lyrics_loaded_time and (current_time - lyrics_loaded_time >= 2.0):
 				force_redraw = True
 				lyrics_loaded_time = None
+
+			# Precompute hot-path comparisons once per iteration.
+			is_playing = (p_status == status_playing)
+			is_paused = (p_status == status_paused)
+			has_duration = p_duration > 0.0
+			has_timestamps = bool(timestamps)
+			has_player = player_type is not None
 
 			# The two toggles position estimation
 			# control exactly the two differences between file 1
