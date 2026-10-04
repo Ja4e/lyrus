@@ -3683,13 +3683,13 @@ async def main_async(stdscr, config_manager, logger):
 					new_poll_interval = refresh_interval
 
 				# Proximity override
-				if proximity_active and p_status == status_playing:
+				if (proximity_active and p_status == status_playing and not phase_lock.locked):
 					raw_prox = refresh_proximity_interval_ms / 1000.0
 					# new_poll_interval = refresh_proximity_interval_ms / 1000.0
 					if raw_prox <= 0.0:
 						new_poll_interval = 0.005
 					else:
-						new_poll_interval = max_func(0.005, raw_prox) # R?
+						new_poll_interval = max_func(0.005, raw_prox) # R
 
 				# Poke poller only on slow→fast
 				if new_poll_interval < _sh_poll_interval:
