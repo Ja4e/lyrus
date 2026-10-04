@@ -768,7 +768,7 @@ class Logger:
 # ================
 class FetchState:
 	"""Thread-safe fetch status tracker."""
-	__slots__ = ('_lock', 'current_step', 'start_time', 'lyric_count', 'done_time')
+	__slots__ = ('_lock', 'current_step', 'start_time', 'lyric_count', 'done_time', 'version')
 
 	def __init__(self):
 		self._lock = threading.Lock()
@@ -776,6 +776,7 @@ class FetchState:
 		self.start_time: Optional[float] = None
 		self.lyric_count: int = 0
 		self.done_time: Optional[float] = None
+		self.version = 0
 
 	def update(self, step: str, lyrics_found: int = 0, config_manager=None):
 		# Only stamp done_time on first entry into a terminal
@@ -787,6 +788,7 @@ class FetchState:
 			was_step = self.current_step
 			self.current_step = step
 			self.lyric_count = lyrics_found
+			self.version += 1
 			if step == 'start':
 				self.start_time = time.monotonic()
 			if config_manager and step in config_manager.TERMINAL_STATES:
@@ -2359,7 +2361,6 @@ class _BoundedLRU(OrderedDict):
 @dataclass(slots=True)
 class DisplayState:
 	"""Encapsulates display cache and curses window handles."""
-	lyrics_hash: int = -1
 	lyrics_ref: Any = None
 	window_width: int = -1
 	wrapped_lines: list = field(default_factory=list)
@@ -2377,18 +2378,19 @@ class DisplayState:
 	adjust_win: Any = None
 	status_win: Any = None
 	dims: Optional[tuple[int, int]] = None
+	cached_size: Optional[tuple[int, int]] = None
+	last_error_count: int = -1
+	last_adjust_state: tuple = ()
 
 	def invalidate(self):
-		# Called on terminal resize, NOT on song change. Only derived
-		# structures need rebuilding here; lyrics_ref / lyrics_hash are
-		# deliberately preserved so display_lyrics() doesn't mistake this
-		# for a song boundary and truncate the currently-growing cache.
 		self.window_width = -1
 		self.wrapped_lines = []
 		self.wrapped_widths = []
 		self.wrapped_index_map = {}
 		self.a2_groups = None
-
+		self.cached_size = None
+		self.last_error_count = -1
+		self.last_adjust_state = ()
 
 # ==========================
 #  LIVE LYRICS STREAMING
@@ -2704,11 +2706,6 @@ class PhaseLock:
 		return fallback
 
 
-def get_lyrics_hash(lyrics) -> int:
-	if not lyrics:
-		return 0
-	return hash(tuple((t, str(item)) for t, item in lyrics))
-
 
 def wrap_by_display_width(text, width, subsequent_indent=''):
 	if not text:
@@ -2765,22 +2762,17 @@ def display_lyrics(
 	# Caches
 	CP1, CP2, CP3, CP4, CP5 = _display_colors
 
-	height, width = stdscr.getmaxyx()
+	if ds.cached_size is None:
+		ds.cached_size = stdscr.getmaxyx()
+	height, width = ds.cached_size
 
 	n_lyrics = len(lyrics) if lyrics else 0
 
-	# Distinguish a true song boundary (lyrics list identity changed) from
-	# a terminal resize (same list, different width). Only the former
-	# enforces the cache bound; the latter just rebuilds derived structures.
+	# Song boundary (identity check) vs. terminal resize (width change).
 	song_changed = ds.lyrics_ref is not lyrics
-	if not song_changed:
-		lyrics_hash = ds.lyrics_hash
-		cache_invalid = ds.window_width != width
-	else:
-		lyrics_hash = get_lyrics_hash(lyrics)
+	if song_changed:
 		ds.lyrics_ref = lyrics
-		ds.lyrics_hash = lyrics_hash
-		cache_invalid = True
+	cache_invalid = song_changed or ds.window_width != width
 
 	status_lines = 2
 	main_status_line = height - 1
@@ -2798,14 +2790,9 @@ def display_lyrics(
 		ds.wrapped_index_map = {}
 		ds.a2_groups = None
 		if song_changed:
-			# Song boundary: cap the previous song's growing cache, then
-			# reopen growth for the new song so mid-song measurements
-			# don't evict. Cached widths are reusable across songs because
-			# wcswidth is pure.
+			# Cap the previous song's cache; reopen growth.
 			ds.widths_cache.enforce_bound()
 			ds.widths_cache.start_growable()
-			# a2_word_cache keys embed per-line timestamps and are
-			# song-specific, so drop them wholesale and reopen growth.
 			ds.a2_word_cache.clear()
 			ds.a2_word_cache.start_growable()
 
@@ -2816,6 +2803,8 @@ def display_lyrics(
 		ds.adjust_win = curses.newwin(1, width, time_adjust_line, 0)
 		ds.status_win = curses.newwin(1, width, main_status_line, 0)
 		ds.dims = (height, width)
+		ds.last_error_count = -1
+		ds.last_adjust_state = ()
 		cache_invalid = True
 
 	error_win = ds.error_win
@@ -2824,15 +2813,22 @@ def display_lyrics(
 	status_win = ds.status_win
 
 	if use_manual_offset and manual_offset != 0 and position is not None:
-		with contextlib.suppress(Exception):
+		try:
 			position += int(manual_offset * 1_000_000)
+		except Exception:
+			pass
 
 	# 1) Error line
-	error_win.erase()
-	if errors:
-		with contextlib.suppress(curses.error):
-			error_win.addstr(0, 0, f"Errors: {len(errors)}"[:width - 1], CP1)
-	error_win.noutrefresh()
+	n_errors = len(errors)
+	if ds.last_error_count != n_errors:
+		ds.last_error_count = n_errors
+		error_win.erase()
+		if n_errors:
+			try:
+				error_win.addstr(0, 0, f"Errors: {n_errors}"[:width - 1], CP1)
+			except curses.error:
+				pass
+		error_win.noutrefresh()
 
 	# 2) Lyrics area
 	lyrics_win.erase()
@@ -2865,8 +2861,7 @@ def display_lyrics(
 				break
 			line = a2_lines[idx]
 			line_key = tuple((t, str(text)) for t, (text, _) in line)
-			# Cache lookup: hit returns cached widths; miss recomputes and
-			# re-inserts (with eviction if the bound is currently enforced).
+			# Cache lookup: hit returns cached widths; miss recomputes.
 			if line_key not in ds.a2_word_cache:
 				word_widths = []
 				for _, (text, _) in line:
@@ -2891,8 +2886,10 @@ def display_lyrics(
 				space_left = width - x - cursor - 1
 				if space_left <= 0:
 					break
-				with contextlib.suppress(curses.error):
+				try:
 					lyrics_win.addstr(y, x + cursor, text[:space_left], color)
+				except curses.error:
+					pass
 				cursor += word_widths[word_idx] + 1
 			y += 1
 		start_screen_line = start_line
@@ -2909,7 +2906,6 @@ def display_lyrics(
 					if lines:
 						first = len(wrapped)
 						wrapped.append((orig_i, lines[0]))
-						# Cache lookup / miss recompute handled inline.
 						if lines[0] not in ds.widths_cache:
 							ds.widths_cache[lines[0]] = _wcswidth_cached(lines[0])
 						widths.append(ds.widths_cache[lines[0]])
@@ -2968,23 +2964,39 @@ def display_lyrics(
 			) if is_txt_format else (
 				CP2 if orig_i == current_idx else CP3
 			)
-			with contextlib.suppress(curses.error):
+			try:
 				lyrics_win.addstr(i, x, txt, color)
+			except curses.error:
+				pass
 
 		lyrics_win.noutrefresh()
 
 	# 3) Time-adjust / end-of-lyrics bar
-	adjust_win.erase()
-	if (current_idx is not None and current_idx == n_lyrics - 1
-			and not is_txt_format and n_lyrics > 1):
-		with contextlib.suppress(curses.error):
-			adjust_win.addstr(0, 0, " End of lyrics ", CP2 | curses.A_BOLD)
+	end_section = (current_idx is not None and current_idx == n_lyrics - 1
+				   and not is_txt_format and n_lyrics > 1)
+	if end_section:
+		adj_state = ('end', width)
 	elif time_adjust:
-		adj_str = f" Offset: {time_adjust:+.1f}s "[:width - 1]
-		with contextlib.suppress(curses.error):
-			adjust_win.addstr(0, max(0, width - len(adj_str) - 1),
-							  adj_str, CP2 | curses.A_BOLD)
-	adjust_win.noutrefresh()
+		adj_state = ('offset', f"{time_adjust:+.1f}", width)
+	else:
+		adj_state = ('none', width)
+
+	if ds.last_adjust_state != adj_state:
+		ds.last_adjust_state = adj_state
+		adjust_win.erase()
+		if end_section:
+			try:
+				adjust_win.addstr(0, 0, " End of lyrics ", CP2 | curses.A_BOLD)
+			except curses.error:
+				pass
+		elif time_adjust:
+			adj_str = f" Offset: {time_adjust:+.1f}s "[:width - 1]
+			try:
+				adjust_win.addstr(0, max(0, width - len(adj_str) - 1),
+								  adj_str, CP2 | curses.A_BOLD)
+			except curses.error:
+				pass
+		adjust_win.noutrefresh()
 
 	# 4) Status bar
 	status_win.erase()
@@ -3015,22 +3027,28 @@ def display_lyrics(
 				ps_t = ps_t[:trunc] + '...' if trunc > 0 else ''
 			display_line = f"{ps_t}{' ' * max(left_max - len(ps_t), 0)} {right} "
 
-		with contextlib.suppress(curses.error):
+		try:
 			status_win.addstr(0, 0, display_line[:max(0, width - 1)],
 							  CP5 | curses.A_BOLD)
+		except curses.error:
+			pass
 	else:
 		info = f"Line {min(current_idx + 1, n_lyrics)}/{n_lyrics}"
 		if time_adjust:
 			info += '[Adj]'
-		with contextlib.suppress(curses.error):
+		try:
 			status_win.addstr(0, 0, info[:width - 1], curses.A_BOLD)
+		except curses.error:
+			pass
 
 	status_msg = get_current_status(config_manager)
 	if status_msg:
 		msg = f"  [{status_msg}]  "[:width - 1]
-		with contextlib.suppress(curses.error):
+		try:
 			status_win.addstr(0, max(0, (width - len(msg)) // 2),
 							  msg, CP2 | curses.A_BOLD)
+		except curses.error:
+			pass
 	status_win.noutrefresh()
 
 	curses.doupdate()
@@ -3255,7 +3273,7 @@ async def main_async(stdscr, config_manager, logger):
 					break
 				_input_queue.append(ch)
 				count += 1
-		except Exception:
+		except curses.error:
 			pass
 		if _input_queue:
 			_wakeup_event.set()
@@ -3478,12 +3496,19 @@ async def main_async(stdscr, config_manager, logger):
 	poll: bool = False
 	next_frame_time: float = 0.0
 	frame_time: Optional[float] = None
+	
+	# Proximity threshold cache
+	_cached_prox_idx: int = -2
+	_cached_prox_line_duration: float = 0.0
+	_cached_prox_threshold: float = 0.0
 
 	prev_window_width = window_size[1]
 	# Track the last rendered status message so a change (e.g.
 	# "no_player" expiring after its 2-second terminal window) forces a
 	# redraw even when nothing else has changed.
 	last_status_msg: Optional[str] = None
+	last_fetch_version: int = -1
+	last_status_check: float = 0.0
 
 	# async def _warmup_imports():
 		# with contextlib.suppress(Exception):
@@ -3516,9 +3541,8 @@ async def main_async(stdscr, config_manager, logger):
 					if new_size != window_size:
 						old_h, old_w = window_size
 						new_h, new_w = new_size
-						if old_w != new_w:
-							ds.invalidate()
-							wrapped_lines = []
+						ds.invalidate()
+						wrapped_lines = []
 						if lyrics and old_h > 0 and new_h > 0:
 							manual_offset = int_func(manual_offset * (new_h / old_h))
 						window_size = new_size
@@ -3705,6 +3729,7 @@ async def main_async(stdscr, config_manager, logger):
 						or player_data[1] != prev_player_data[1]
 						or player_data[4] != prev_player_data[4]
 						or player_data[6] != prev_player_data[6]):
+					pos_changed = (player_data[1] != prev_player_data[1])
 					prev_player_data = player_data
 					(p_audio_file, p_raw_pos, p_raw_artist, p_raw_albumartist,
 					 p_title, p_duration, p_status, p_album) = player_data
@@ -3716,7 +3741,10 @@ async def main_async(stdscr, config_manager, logger):
 					p_raw_artist = p_raw_artist or ""
 					p_raw_albumartist = p_raw_albumartist or ""
 					p_album = p_album or ""
-					estimated_position = p_raw_pos
+					
+					# Re-anchor the extrapolation clock
+					if pos_changed:
+						estimated_position = p_raw_pos
 
 					last_pos_time = phase_lock.anchor_for(p_raw_pos, fallback=current_time)
 
@@ -3849,9 +3877,10 @@ async def main_async(stdscr, config_manager, logger):
 						if p_status == status_playing and player_type in streaming_players:
 							_sh_resume_trigger_time = current_time
 						estimated_position = p_raw_pos
-					except (asyncio.CancelledError, Exception) as e:
-						if not isinstance(e, asyncio.CancelledError):
-							log_debug_fmt("Lyric load error: %s", e)
+					except asyncio.CancelledError:
+						pass
+					except Exception as e:
+						log_debug_fmt("Lyric load error: %s", e)
 						errors = [f"Lyric load error: {e}"]
 						force_redraw = True
 						lyrics_loaded_time = current_time
@@ -3865,7 +3894,7 @@ async def main_async(stdscr, config_manager, logger):
 
 				# Cached lengths
 				n_ts = len_func(timestamps) if timestamps else 0
-				n_lyrics = len_func(lyrics) if lyrics else 0
+				# n_lyrics = len_func(lyrics) if lyrics else 0
 
 				# Position clock
 				if fresh_position_clock:
@@ -3886,8 +3915,8 @@ async def main_async(stdscr, config_manager, logger):
 					if not playback_paused:
 						pos = p_raw_pos + (position_time - last_pos_time)
 						estimated_position = min_func(pos, p_duration)
-					else:
-						estimated_position = p_raw_pos
+					# else:
+						# estimated_position = p_raw_pos
 
 				_sh_estimated_position = estimated_position
 
@@ -3919,16 +3948,26 @@ async def main_async(stdscr, config_manager, logger):
 
 					idx = last_idx
 					ts = timestamps
-					line_duration = ts[idx + 1] - ts[idx]
-					raw_thresh = max_func(
-						line_duration * (proximity_threshold_percent / 100),
-						proximity_threshold_sec
+
+					# Cache line_duration and threshold per last_idx
+					if idx != _cached_prox_idx:
+						_cached_prox_idx = idx
+						_cached_prox_line_duration = ts[idx + 1] - ts[idx]
+						raw_thresh = max_func(
+							_cached_prox_line_duration * (proximity_threshold_percent / 100),
+							proximity_threshold_sec
+						)
+						_cached_prox_threshold = min_func(
+							max_func(raw_thresh, proximity_min_threshold_sec),
+							min_func(proximity_max_threshold_sec, _cached_prox_line_duration)
+						)
+
+					line_duration = _cached_prox_line_duration
+					threshold = _cached_prox_threshold
+					time_to_next = min_func(
+						line_duration,
+						max_func(0.0, ts[idx + 1] - continuous_position)
 					)
-					threshold = min_func(
-						max_func(raw_thresh, proximity_min_threshold_sec),
-						min_func(proximity_max_threshold_sec, line_duration)
-					)
-					time_to_next = min_func(line_duration, max_func(0.0, ts[idx + 1] - continuous_position))
 
 					if proximity_min_threshold_sec <= time_to_next <= threshold:
 						proximity_trigger_time = current_time
@@ -4003,10 +4042,14 @@ async def main_async(stdscr, config_manager, logger):
 						skip_for_vrr = False
 
 				# Status message change
-				status_now = get_current_status(config_manager)
-				if status_now != last_status_msg:
-					last_status_msg = status_now
-					needs_redraw = True
+				if (current_time - last_status_check >= 0.100
+						or _fetch_state.version != last_fetch_version):
+					last_status_check = current_time
+					last_fetch_version = _fetch_state.version
+					status_now = get_current_status(config_manager)
+					if status_now != last_status_msg:
+						last_status_msg = status_now
+						needs_redraw = True
 
 				# Render decision
 				should_render = (needs_redraw or force_redraw or current_idx != last_idx) and not skip_for_vrr
@@ -4054,12 +4097,14 @@ async def main_async(stdscr, config_manager, logger):
 						sleep_time = 0.5
 
 				# Yield to event loop
-				_wakeup_event.clear()
+				# _wakeup_event.clear()
 				if sleep_time <= 0.0:
 					await asyncio.sleep(0)
 				else:
+					_wakeup_event.clear()
 					try:
-						await asyncio.wait_for(_wakeup_event.wait(), timeout=sleep_time)
+						async with asyncio.timeout(sleep_time):
+							await _wakeup_event.wait()
 					except asyncio.TimeoutError:
 						pass
 
