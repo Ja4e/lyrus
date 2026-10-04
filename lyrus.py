@@ -3318,7 +3318,6 @@ async def main_async(stdscr, config_manager, logger):
 	# Shared poller state
 	_sh_player_type: Optional[str] = None
 	_sh_player_data: tuple = (None, 0, "", "", None, 0, STATUS_STOPPED, "")
-	_sh_poll_time: float = 0.0
 	_sh_resume_trigger_time: Optional[float] = None
 	_sh_jump_detected: bool = False
 	_sh_pause_to_play: bool = False
@@ -3330,7 +3329,7 @@ async def main_async(stdscr, config_manager, logger):
 
 	async def _background_poller():
 		# Background poller loop
-		nonlocal _sh_player_type, _sh_player_data, _sh_poll_time
+		nonlocal _sh_player_type, _sh_player_data
 		nonlocal _sh_resume_trigger_time
 		nonlocal _sh_jump_detected, _sh_pause_to_play, _sh_pause_jump
 		nonlocal _sh_last_status
@@ -3362,7 +3361,6 @@ async def main_async(stdscr, config_manager, logger):
 				# Publish snapshot
 				_sh_player_type = new_type
 				_sh_player_data = new_data
-				_sh_poll_time = poll_t
 
 				# Wake main loop
 				if should_wake:
@@ -3475,7 +3473,6 @@ async def main_async(stdscr, config_manager, logger):
 	estimated_position: float = 0.0
 	last_cmus_position: float = 0.0
 	last_pos_time: float = perf()
-	poll_time: float = last_pos_time
 	manual_offset: int = 0
 	last_input: float = 0.0
 	time_adjust: float = 0.0
@@ -3649,7 +3646,6 @@ async def main_async(stdscr, config_manager, logger):
 				# Snapshot poller state
 				new_player_type = _sh_player_type
 				new_player_data = _sh_player_data
-				poll_time = _sh_poll_time
 
 				# Consume jump flag
 				if _sh_jump_detected:
@@ -4010,6 +4006,11 @@ async def main_async(stdscr, config_manager, logger):
 					idx = last_idx
 					n = n_ts
 					if idx < 0:
+						# Seek
+						idx = bisect_right(timestamps, continuous_position) - 1
+						idx = max_func(-1, min_func(idx, n - 1))
+					elif continuous_position < timestamps[idx] - proximity_threshold:
+						# Backward seek
 						idx = bisect_right(timestamps, continuous_position) - 1
 						idx = max_func(-1, min_func(idx, n - 1))
 					elif idx + 1 < n and continuous_position >= timestamps[idx + 1] - proximity_threshold:
