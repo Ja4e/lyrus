@@ -33,6 +33,7 @@ import json
 import sys
 import atexit
 import socket
+import signal
 
 try:
 	from mpd import MPDClient
@@ -85,6 +86,12 @@ _syncedlyrics_module: Any = None
 # mid-flight. Capped to avoid runaway accumulation on rapid track skips.
 _detached_tasks: set = set()
 _MAX_DETACHED_TASKS = 64
+
+# Color-pair values for display_lyrics(). Populated once, right after
+# curses.init_pair() runs in main_async(). Hoisting them out of
+# display_lyrics turns five curses.color_pair() calls per render into
+# a single tuple unpack.
+_display_colors: tuple = (0, 0, 0, 0, 0)
 
 
 def _on_detached_done(t):
@@ -2357,6 +2364,7 @@ class DisplayState:
 	window_width: int = -1
 	wrapped_lines: list = field(default_factory=list)
 	wrapped_widths: list = field(default_factory=list)
+	wrapped_index_map: dict = field(default_factory=dict)
 	widths_cache: _BoundedLRU = field(
 		default_factory=lambda: _BoundedLRU(_WIDTHS_CACHE_MAX)
 	)
@@ -2378,6 +2386,7 @@ class DisplayState:
 		self.window_width = -1
 		self.wrapped_lines = []
 		self.wrapped_widths = []
+		self.wrapped_index_map = {}
 		self.a2_groups = None
 
 
@@ -2753,10 +2762,12 @@ def display_lyrics(
 	window_size=None,
 ):
 	"""Render lyrics in curses interface."""
-	cp = curses.color_pair
-	CP1, CP2, CP3, CP4, CP5 = cp(1), cp(2), cp(3), cp(4), cp(5)
+	# Caches
+	CP1, CP2, CP3, CP4, CP5 = _display_colors
 
 	height, width = stdscr.getmaxyx()
+
+	n_lyrics = len(lyrics) if lyrics else 0
 
 	# Distinguish a true song boundary (lyrics list identity changed) from
 	# a terminal resize (same list, different width). Only the former
@@ -2784,6 +2795,7 @@ def display_lyrics(
 		ds.window_width = width
 		ds.wrapped_lines = []
 		ds.wrapped_widths = []
+		ds.wrapped_index_map = {}
 		ds.a2_groups = None
 		if song_changed:
 			# Song boundary: cap the previous song's growing cache, then
@@ -2842,12 +2854,13 @@ def display_lyrics(
 			a2_lines = ds.a2_groups
 
 		visible = lyrics_area_height
-		max_start = max(0, len(a2_lines) - visible)
+		n_a2 = len(a2_lines)
+		max_start = max(0, n_a2 - visible)
 		start_line = (min(max(manual_offset, 0), max_start)
 					  if use_manual_offset else max_start)
 		y = 0
 
-		for idx in range(start_line, min(start_line + visible, len(a2_lines))):
+		for idx in range(start_line, min(start_line + visible, n_a2)):
 			if y >= visible:
 				break
 			line = a2_lines[idx]
@@ -2873,7 +2886,7 @@ def display_lyrics(
 				x = 1
 
 			cursor = 0
-			color = CP2 if idx == len(a2_lines) - 1 else CP3
+			color = CP2 if idx == n_a2 - 1 else CP3
 			for word_idx, (_, (text, _)) in enumerate(line):
 				space_left = width - x - cursor - 1
 				if space_left <= 0:
@@ -2889,10 +2902,12 @@ def display_lyrics(
 
 		if cache_invalid or not ds.wrapped_lines:
 			wrapped, widths = [], []
+			index_map: dict = {}
 			for orig_i, (_, ly) in enumerate(lyrics):
 				if ly and ly.strip():
 					lines = wrap_by_display_width(ly, wrap_w, subsequent_indent=' ')
 					if lines:
+						first = len(wrapped)
 						wrapped.append((orig_i, lines[0]))
 						# Cache lookup / miss recompute handled inline.
 						if lines[0] not in ds.widths_cache:
@@ -2903,11 +2918,15 @@ def display_lyrics(
 							if cont not in ds.widths_cache:
 								ds.widths_cache[cont] = _wcswidth_cached(cont)
 							widths.append(ds.widths_cache[cont])
+						index_map[orig_i] = (first, len(wrapped) - 1)
 				else:
+					idx_screen = len(wrapped)
 					wrapped.append((orig_i, ''))
 					widths.append(0)
+					index_map[orig_i] = (idx_screen, idx_screen)
 			ds.wrapped_lines = wrapped
 			ds.wrapped_widths = widths
+			ds.wrapped_index_map = index_map
 		else:
 			wrapped, widths = ds.wrapped_lines, ds.wrapped_widths
 
@@ -2918,12 +2937,13 @@ def display_lyrics(
 		if use_manual_offset:
 			start_screen_line = min(max(manual_offset, 0), max_start)
 		else:
-			if current_idx >= len(lyrics) - 1:
+			if current_idx >= n_lyrics - 1:
 				start_screen_line = max_start
 			else:
-				idxs = [i for i, (o, _) in enumerate(wrapped) if o == current_idx]
-				if idxs:
-					center = (idxs[0] + idxs[-1]) // 2
+				rng = ds.wrapped_index_map.get(current_idx)
+				if rng is not None:
+					first, last = rng
+					center = (first + last) // 2
 					ideal = center - avail // 2
 					start_screen_line = min(max(ideal, 0), max_start)
 				else:
@@ -2955,8 +2975,8 @@ def display_lyrics(
 
 	# 3) Time-adjust / end-of-lyrics bar
 	adjust_win.erase()
-	if (current_idx is not None and current_idx == len(lyrics) - 1
-			and not is_txt_format and len(lyrics) > 1):
+	if (current_idx is not None and current_idx == n_lyrics - 1
+			and not is_txt_format and n_lyrics > 1):
 		with contextlib.suppress(curses.error):
 			adjust_win.addstr(0, 0, " End of lyrics ", CP2 | curses.A_BOLD)
 	elif time_adjust:
@@ -2978,11 +2998,11 @@ def display_lyrics(
 			title, artist, is_inst = 'No track', '', False
 
 		ps = f"{title} - {artist}"
-		cur_line = min(current_idx + 1, len(lyrics)) if lyrics else 0
+		cur_line = min(current_idx + 1, n_lyrics) if n_lyrics else 0
 		adj_flag = '' if is_inst else ('[Adj] ' if time_adjust else '')
 		icon = ' ⏳ ' if is_fetching else ' 🎵 '
-		right_full = f"Line {cur_line}/{len(lyrics)}{adj_flag}"
-		right_short = f" {cur_line}/{len(lyrics)}{adj_flag} "
+		right_full = f"Line {cur_line}/{n_lyrics}{adj_flag}"
+		right_short = f" {cur_line}/{n_lyrics}{adj_flag} "
 
 		if len(f"{icon}{ps} • {right_full}") <= width - 1:
 			display_line = f"{icon}{ps} • {right_full}"
@@ -2999,7 +3019,7 @@ def display_lyrics(
 			status_win.addstr(0, 0, display_line[:max(0, width - 1)],
 							  CP5 | curses.A_BOLD)
 	else:
-		info = f"Line {min(current_idx + 1, len(lyrics))}/{len(lyrics)}"
+		info = f"Line {min(current_idx + 1, n_lyrics)}/{n_lyrics}"
 		if time_adjust:
 			info += '[Adj]'
 		with contextlib.suppress(curses.error):
@@ -3109,6 +3129,8 @@ def get_monitor_refresh_rate():
 
 async def main_async(stdscr, config_manager, logger):
 	# pylint: disable=duplicate-code
+
+	# Hot cache
 	log_debug = logger.log_debug
 	log_debug_fmt = logger.log_debug_fmt
 	log_info = logger.log_info
@@ -3122,8 +3144,12 @@ async def main_async(stdscr, config_manager, logger):
 	float_func = float
 	abs_func = abs
 	bisect_right = bisect.bisect_right
+	len_func = len
+	bool_func = bool
+	str_func = str
+	sorted_func = sorted
 
-	# Precomputed constants (avoid repeated attribute/dict lookups in the hot loop)
+	# Constants
 	status_playing = STATUS_PLAYING
 	status_paused = STATUS_PAUSED
 	status_stopped = STATUS_STOPPED
@@ -3137,19 +3163,13 @@ async def main_async(stdscr, config_manager, logger):
 	stdscr_curs_set = curses.curs_set
 	get_size = stdscr.getmaxyx
 
-	_timeout_cache = [-1]
-
-	def set_timeout(ms):
-		if ms != _timeout_cache[0]:
-			stdscr_timeout(ms)
-			_timeout_cache[0] = ms
-
 	config = config_manager.config
 	ui_config = config["ui"]
 	sync_config = ui_config["sync"]
 	proximity_config = sync_config["proximity"]
 	color_config = ui_config["colors"]
 
+	# Config values
 	refresh_interval = sync_config["refresh_interval_ms"] / 1000.0
 	refresh_interval_2 = sync_config["coolcpu_ms"]
 	smart_refresh_interval = sync_config["smart_coolcpu_ms"]
@@ -3168,13 +3188,15 @@ async def main_async(stdscr, config_manager, logger):
 	base_offset = sync_config.get("sync_offset_sec", 0.0)
 	vrr_enabled = sync_config.get("VRR_bol", False)
 
-	subprocess_compensated_anchor = bool(
+	# Anchor toggles
+	subprocess_compensated_anchor = bool_func(
 		sync_config.get("subprocess_compensated_anchor", False)
 	)
-	fresh_position_clock = bool(
+	fresh_position_clock = bool_func(
 		sync_config.get("fresh_position_clock", False)
 	)
 
+	# Color pairs
 	curses.start_color()
 	curses.init_pair(1, resolve_color(color_config["error"]), curses.COLOR_BLACK)
 	curses.init_pair(2, resolve_color(color_config["lrc"]["active"]), curses.COLOR_BLACK)
@@ -3182,6 +3204,17 @@ async def main_async(stdscr, config_manager, logger):
 	curses.init_pair(4, resolve_color(color_config["txt"]["active"]), curses.COLOR_BLACK)
 	curses.init_pair(5, resolve_color(color_config["txt"]["inactive"]), curses.COLOR_BLACK)
 
+	# Cache resolved color pairs for render
+	global _display_colors
+	_display_colors = (
+		curses.color_pair(1),
+		curses.color_pair(2),
+		curses.color_pair(3),
+		curses.color_pair(4),
+		curses.color_pair(5),
+	)
+
+	# Key bindings
 	raw_bindings = load_key_bindings(config)
 	quit_keys = set(raw_bindings["quit"])
 	scroll_up_keys = set(raw_bindings["scroll_up"])
@@ -3200,15 +3233,58 @@ async def main_async(stdscr, config_manager, logger):
 	alignments_list = (ALIGN_LEFT, ALIGN_CENTER, ALIGN_RIGHT)
 	alignment_index = {ALIGN_LEFT: 0, ALIGN_CENTER: 1, ALIGN_RIGHT: 2}
 
+	# Curses modes
 	stdscr_curs_set(0)
 	stdscr_nodelay(True)
 	stdscr_keypad(True)
 	stdscr_timeout(0)
 
-	ds = DisplayState()
+	# Async wakeup primitives
+	_loop = asyncio.get_running_loop()
+	_input_queue: deque = deque()
+	_wakeup_event: asyncio.Event = asyncio.Event()
+	_resize_pending: bool = False
 
+	def _on_stdin_ready():
+		# Drain pending keys
+		try:
+			count = 0
+			while count < 64:
+				ch = stdscr_getch()
+				if ch == -1:
+					break
+				_input_queue.append(ch)
+				count += 1
+		except Exception:
+			pass
+		if _input_queue:
+			_wakeup_event.set()
+
+	def _on_sigwinch():
+		# Mark resize pending
+		nonlocal _resize_pending
+		_resize_pending = True
+		_wakeup_event.set()
+
+	# Register stdin reader
+	_stdin_fd = sys.stdin.fileno()
+	_loop.add_reader(_stdin_fd, _on_stdin_ready)
+
+	# Register SIGWINCH handler
+	_sigwinch_via_loop = True
+	try:
+		_loop.add_signal_handler(signal.SIGWINCH, _on_sigwinch)
+	except (NotImplementedError, RuntimeError):
+		_sigwinch_via_loop = False
+		_prev_sigwinch = signal.signal(
+			signal.SIGWINCH,
+			lambda signum, frame: _on_sigwinch(),
+		)
+
+	ds = DisplayState()
 	live_lyrics = LiveLyricsState()
 
+	# Phase lock
 	phase_lock = PhaseLock(
 		enabled=config_manager.PHASE_LOCK_ENABLED,
 		max_window_ms=config_manager.PHASE_LOCK_MAX_WINDOW_MS,
@@ -3221,8 +3297,120 @@ async def main_async(stdscr, config_manager, logger):
 		weighted_average_floor_var_ms2=config_manager.PHASE_LOCK_WEIGHTED_AVERAGE_FLOOR_VAR_MS2,
 	)
 
+	# Shared poller state
+	_sh_player_type: Optional[str] = None
+	_sh_player_data: tuple = (None, 0, "", "", None, 0, STATUS_STOPPED, "")
+	_sh_poll_time: float = 0.0
+	_sh_resume_trigger_time: Optional[float] = None
+	_sh_jump_detected: bool = False
+	_sh_pause_to_play: bool = False
+	_sh_pause_jump: bool = False
+	_sh_estimated_position: float = 0.0
+	_sh_poll_interval: float = refresh_interval
+	_sh_last_status: str = STATUS_STOPPED
+	_sh_poll_interval_event: asyncio.Event = asyncio.Event()
+
+	async def _background_poller():
+		# Background poller loop
+		nonlocal _sh_player_type, _sh_player_data, _sh_poll_time
+		nonlocal _sh_resume_trigger_time
+		nonlocal _sh_jump_detected, _sh_pause_to_play, _sh_pause_jump
+		nonlocal _sh_last_status
+
+		while True:
+			try:
+				# Poll player
+				t_start = perf()
+				new_type, new_data = await get_player_info(config_manager)
+				if subprocess_compensated_anchor:
+					poll_t = perf()
+				else:
+					poll_t = t_start
+
+				old_data = _sh_player_data
+				old_type = _sh_player_type
+
+				# Decide if main loop should wake
+				should_wake = False
+				if new_data != old_data or new_type != old_type:
+					should_wake = (
+						new_type != old_type
+						or new_data[0] != old_data[0]
+						or new_data[4] != old_data[4]
+						or (new_data[6] == status_paused
+							and new_data[1] != old_data[1])
+					)
+
+				# Publish snapshot
+				_sh_player_type = new_type
+				_sh_player_data = new_data
+				_sh_poll_time = poll_t
+
+				# Wake main loop
+				if should_wake:
+					_wakeup_event.set()
+
+				# Feed phase lock
+				_, raw_val, _, _, _, _, status_val, _ = new_data
+				new_raw = float_func(raw_val or 0.0)
+
+				in_smart = (
+					_sh_resume_trigger_time is not None
+					and (poll_t - _sh_resume_trigger_time <= temporary_refresh_sec)
+				)
+
+				phase_lock.observe(
+					poll_t, new_raw,
+					playing=(status_val == status_playing),
+					logger=logger,
+					sample=in_smart,
+				)
+
+				# Jump detect
+				drift = abs_func(new_raw - _sh_estimated_position)
+
+				if drift > jump_threshold and status_val == status_playing:
+					_sh_resume_trigger_time = poll_t
+					_sh_jump_detected = True
+					phase_lock.reset()
+					_wakeup_event.set()
+
+				# Resume detect
+				if _sh_last_status == status_paused and status_val == status_playing:
+					_sh_resume_trigger_time = poll_t
+					_sh_pause_to_play = True
+					phase_lock.reset()
+					_wakeup_event.set()
+
+				# Paused jump detect
+				if smart_tracking == 1 and status_val == status_paused and drift > jump_threshold:
+					_sh_resume_trigger_time = poll_t
+					_sh_pause_jump = True
+					phase_lock.reset()
+					_wakeup_event.set()
+
+				_sh_last_status = status_val
+
+			except Exception as e:
+				log_debug_fmt("Background poller: %s", e)
+
+			# Wait for next poll
+			try:
+				await asyncio.wait_for(
+					_sh_poll_interval_event.wait(),
+					timeout=_sh_poll_interval,
+				)
+				_sh_poll_interval_event.clear()
+			except asyncio.TimeoutError:
+				pass
+
+	# Start poller
+	_poller_task = asyncio.create_task(_background_poller(), name="lyrus_poller")
+	_detached_tasks.add(_poller_task)
+	_poller_task.add_done_callback(_on_detached_done)
+
 	def on_lyrics_ready(text, ext):
-		"""Invoked from the fetch task the moment a provider returns."""
+		# Parse streamed lyrics
 		try:
 			with tempfile.NamedTemporaryFile(
 				mode='w', suffix=f'.{ext}', delete=False, encoding='utf-8'
@@ -3242,7 +3430,9 @@ async def main_async(stdscr, config_manager, logger):
 		live_lyrics.is_txt = (ext == 'txt')
 		live_lyrics.is_a2 = (ext == 'a2')
 		live_lyrics.pending = True
+		_wakeup_event.set()
 
+	# Track state
 	current_title: Optional[str] = None
 	current_artist: Optional[str] = None
 	current_raw_artist: str = ""
@@ -3260,17 +3450,14 @@ async def main_async(stdscr, config_manager, logger):
 	p_audio_file: Optional[str] = None
 	p_file_basename: str = ''
 	p_raw_pos: float = 0.0
-	# p_artist: str = ""
 	p_title: Optional[str] = None
 	p_duration: float = 0.0
 	p_status: str = STATUS_STOPPED
-	# p_fallback_artists: list = []
 	p_album: str = ""
 	estimated_position: float = 0.0
 	last_cmus_position: float = 0.0
 	last_pos_time: float = perf()
 	poll_time: float = last_pos_time
-	last_player_update: float = 0.0
 	manual_offset: int = 0
 	last_input: float = 0.0
 	time_adjust: float = 0.0
@@ -3278,7 +3465,6 @@ async def main_async(stdscr, config_manager, logger):
 	last_idx: int = -1
 	current_idx: int = -1
 	force_redraw: bool = True
-	resume_trigger_time: Optional[float] = None
 	proximity_trigger_time: Optional[float] = None
 	proximity_active: bool = False
 	lyric_future: Any = None
@@ -3309,605 +3495,584 @@ async def main_async(stdscr, config_manager, logger):
 	# _detached_tasks.add(warmup_task)
 	# warmup_task.add_done_callback(_on_detached_done)
 
-	with open(os.devnull, 'w') as _devnull, \
-		 contextlib.redirect_stdout(_devnull), \
-		 contextlib.redirect_stderr(_devnull):
+	try:
+		with open(os.devnull, 'w') as _devnull, \
+			 contextlib.redirect_stdout(_devnull), \
+			 contextlib.redirect_stderr(_devnull):
 
-		while True:
-			current_time = perf()
-			needs_redraw = False
+			while True:
+				current_time = perf()
+				needs_redraw = False
 
-			# Manual scroll timeout
-			time_since_input = 0.0
-			if last_input > 0.0:
-				time_since_input = current_time - last_input
-				if time_since_input >= scroll_timeout:
-					if not manual_timeout_handled:
-						needs_redraw = True
-						manual_timeout_handled = True
-					last_input = 0.0
-				else:
-					manual_timeout_handled = False
-
-			manual_scroll = (last_input > 0.0)
-            
-            # Input handling
-			# First getch uses whatever timeout the previous iteration
-			# set — this preserves the CPU-saving blocking behavior
-			# during idle.
-			key = stdscr_getch()
-			new_input = key != -1
-
-			if new_input:
-				# We have at least one key. Drain any additional pending
-				# keys *without blocking*, so a held key produces one
-				# redraw per iteration instead of one per key. Must
-				# force timeout=0 for the drain itself — otherwise the
-				# second getch blocks up to `timeout` ms waiting for a
-				# key that isn't coming.
-				keys = [key]
-				set_timeout(0)
-				while len(keys) < 32:
-					k = stdscr_getch()
-					if k == -1:
-						break
-					keys.append(k)
-			else:
-				keys = []
-
-			# Resize is handled once per batch, not per occurrence.
-			if curses.KEY_RESIZE in keys:
-				new_size = get_size()
-				if new_size != window_size:
-					old_h, old_w = window_size
-					new_h, new_w = new_size
-					if old_w != new_w:
-						ds.invalidate()
-						wrapped_lines = []
-					if lyrics and old_h > 0 and new_h > 0:
-						manual_offset = int_func(manual_offset * (new_h / old_h))
-					window_size = new_size
-					# max_wrapped_offset = max_func(0, max_wrapped_offset)
-					max_wrapped_offset = 0
-				needs_redraw = True
-				force_redraw = True
-
-			for key in keys:
-				if key == curses.KEY_RESIZE:
-					continue
-				if key in quit_keys:
+				# Resize via SIGWINCH
+				if _resize_pending:
+					_resize_pending = False
 					try:
-						atexit.register(THREAD_POOL_EXECUTOR.shutdown, wait=False)
-					except NameError:
+						ts = os.get_terminal_size()
+						curses.resizeterm(ts.lines, ts.columns)
+					except OSError:
 						pass
-					sys.exit("Exiting")
+					new_size = get_size()
+					if new_size != window_size:
+						old_h, old_w = window_size
+						new_h, new_w = new_size
+						if old_w != new_w:
+							ds.invalidate()
+							wrapped_lines = []
+						if lyrics and old_h > 0 and new_h > 0:
+							manual_offset = int_func(manual_offset * (new_h / old_h))
+						window_size = new_size
+						max_wrapped_offset = 0
+					needs_redraw = True
+					force_redraw = True
 
-				if key in scroll_up_keys:
-					manual_offset = max_func(0, manual_offset - 1)
-					last_input = current_time
-					needs_redraw = True
-				elif key in scroll_down_keys:
-					manual_offset += 1
-					last_input = current_time
-					needs_redraw = True
-				elif key in time_decrease_keys:
-					time_adjust -= 0.1
-					needs_redraw = True
-				elif key in time_increase_keys:
-					time_adjust += 0.1
-					needs_redraw = True
-				elif key in time_reset_keys:
-					time_adjust = 0.0
-					needs_redraw = True
-				elif key in time_jump_increase_keys:
-					time_adjust += 5.0
-					needs_redraw = True
-				elif key in time_jump_decrease_keys:
-					time_adjust -= 5.0
-					needs_redraw = True
-				elif key in align_left_keys:
-					alignment = ALIGN_LEFT
-					needs_redraw = True
-				elif key in align_center_keys:
-					alignment = ALIGN_CENTER
-					needs_redraw = True
-				elif key in align_right_keys:
-					alignment = ALIGN_RIGHT
-					needs_redraw = True
-				elif key in align_cycle_forward_keys:
-					alignment = alignments_list[(alignment_index[alignment] + 1) % 3]
-					needs_redraw = True
-				elif key in align_cycle_backward_keys:
-					alignment = alignments_list[(alignment_index[alignment] - 1) % 3]
-					needs_redraw = True
-
-			if needs_redraw:
-				force_redraw = True
-
-			# Recompute manual_scroll AFTER the batch so the smart-poll
-			# gate sees the user's latest input in the same iteration.
-			manual_scroll = (last_input > 0.0)
-
-			# Smart refresh timing
-			in_smart_window = (resume_trigger_time is not None and
-							   (current_time - resume_trigger_time <= temporary_refresh_sec))
-			if (player_type in smart_players and
-					in_smart_window and p_status == status_playing and lyrics):
-				set_timeout(smart_refresh_interval)
-				poll = True
-			else:
-				set_timeout(refresh_interval_2)
-				poll = False
-
-			# Player poll interval
-			#
-			# `in_smart_window` alone is not sufficient: it stays True
-			# for smart_refresh_duration seconds after any resume / jump,
-			# regardless of the current playback state. During that
-			# window, if the player is paused (or the user is scrolling),
-			# setting interval = 0.0 would fork a subprocess on every
-			# loop iteration — starving getch and making manual scroll
-			# feel laggy. Gate the burst on all three: playing, not
-			# scrolling, and lyrics loaded.
-			smart_poll_active = (
-				in_smart_window
-				and p_status == status_playing
-				and not manual_scroll
-				and lyrics
-			)
-			interval = 0.0 if smart_poll_active else refresh_interval
-			if proximity_active and p_status == status_playing:
-				interval = refresh_interval
-
-			if current_time - last_player_update >= interval:
-				# `subprocess_compensated_anchor`:
-				#
-				#   False (production): poll_time = current_time, the
-				#       loop-start timestamp. This matches file 1.
-				#
-				#   True (compensated): poll_time = perf() captured
-				#       right after the subprocess returns. This matches
-				#       file 2 and removes the round-trip bias from
-				#       the anchor.
-				#
-				# In both cases the value is passed to
-				# phase_lock.observe() and to
-				# phase_lock.anchor_for(..., fallback=poll_time), so
-				# the fallback (non-locked) path also follows the
-				# toggle.
-				try:
-					prev_status = p_status
-					new_player_type, new_player_data = await get_player_info(config_manager)
-					if subprocess_compensated_anchor:
-						poll_time = perf()
+				# Manual scroll timeout
+				time_since_input = 0.0
+				if last_input > 0.0:
+					time_since_input = current_time - last_input
+					if time_since_input >= scroll_timeout:
+						if not manual_timeout_handled:
+							needs_redraw = True
+							manual_timeout_handled = True
+						last_input = 0.0
 					else:
-						poll_time = current_time
+						manual_timeout_handled = False
 
-					if new_player_type != player_type or new_player_data != player_data:
-						if new_player_type != player_type:
-							phase_lock.reset()
-						player_type = new_player_type
-						player_data = new_player_data
+				manual_scroll = (last_input > 0.0)
 
-					_, raw_val, _, _, _, _, status_val, _ = player_data
-					new_raw = float_func(raw_val or 0.0)
-					
-					# sample=True only inside the
-					# fast-poll smart window, so the learned threshold
-					# reflects the machine's floor RTT.
-					phase_lock.observe(
-						poll_time, new_raw,
-						playing=(status_val == status_playing),
-						logger=logger,
-						sample=in_smart_window,
-					)
+				# Drain queued keys
+				keys = []
+				while _input_queue and len_func(keys) < 32:
+					keys.append(_input_queue.popleft())
+				new_input = bool_func(keys)
 
-					drift = abs_func(new_raw - estimated_position)
+				# Resize via KEY_RESIZE
+				if curses.KEY_RESIZE in keys:
+					try:
+						ts = os.get_terminal_size()
+						curses.resizeterm(ts.lines, ts.columns)
+					except OSError:
+						pass
+					new_size = get_size()
+					if new_size != window_size:
+						old_h, old_w = window_size
+						new_h, new_w = new_size
+						if old_w != new_w:
+							ds.invalidate()
+							wrapped_lines = []
+						if lyrics and old_h > 0 and new_h > 0:
+							manual_offset = int_func(manual_offset * (new_h / old_h))
+						window_size = new_size
+						max_wrapped_offset = 0
+					needs_redraw = True
+					force_redraw = True
 
-					if drift > jump_threshold and status_val == status_playing:
-						resume_trigger_time = poll_time
-						log_debug_fmt("Jump detected: %.3fs", drift)
+				# Key dispatch
+				for key in keys:
+					if key == curses.KEY_RESIZE:
+						continue
+					if key in quit_keys:
+						try:
+							atexit.register(THREAD_POOL_EXECUTOR.shutdown, wait=False)
+						except NameError:
+							pass
+						sys.exit("Exiting")
+
+					if key in scroll_up_keys:
+						manual_offset = max_func(0, manual_offset - 1)
+						last_input = current_time
 						needs_redraw = True
-						set_timeout(refresh_interval_2)
-						phase_lock.reset()
-						if smart_tracking == 1:
-							last_idx = -1
-
-					if player_type and prev_status == status_paused and status_val == status_playing:
-						resume_trigger_time = poll_time
-						log_debug("Pause→play refresh")
+					elif key in scroll_down_keys:
+						manual_offset += 1
+						last_input = current_time
 						needs_redraw = True
-						phase_lock.reset()
-						set_timeout(refresh_interval_2)
-						if smart_tracking == 1:
-							last_idx = -1
-
-					if smart_tracking == 1 and status_val == status_paused and drift > jump_threshold:
-						resume_trigger_time = poll_time
-						log_debug_fmt("Paused jump detected: %.3fs", drift)
+					elif key in time_decrease_keys:
+						time_adjust -= 0.1
 						needs_redraw = True
-						set_timeout(refresh_interval_2)
-						phase_lock.reset()
+					elif key in time_increase_keys:
+						time_adjust += 0.1
+						needs_redraw = True
+					elif key in time_reset_keys:
+						time_adjust = 0.0
+						needs_redraw = True
+					elif key in time_jump_increase_keys:
+						time_adjust += 5.0
+						needs_redraw = True
+					elif key in time_jump_decrease_keys:
+						time_adjust -= 5.0
+						needs_redraw = True
+					elif key in align_left_keys:
+						alignment = ALIGN_LEFT
+						needs_redraw = True
+					elif key in align_center_keys:
+						alignment = ALIGN_CENTER
+						needs_redraw = True
+					elif key in align_right_keys:
+						alignment = ALIGN_RIGHT
+						needs_redraw = True
+					elif key in align_cycle_forward_keys:
+						alignment = alignments_list[(alignment_index[alignment] + 1) % 3]
+						needs_redraw = True
+					elif key in align_cycle_backward_keys:
+						alignment = alignments_list[(alignment_index[alignment] - 1) % 3]
+						needs_redraw = True
+
+				if needs_redraw:
+					force_redraw = True
+
+				manual_scroll = (last_input > 0.0)
+
+				# Snapshot poller state
+				new_player_type = _sh_player_type
+				new_player_data = _sh_player_data
+				poll_time = _sh_poll_time
+
+				# Consume jump flag
+				if _sh_jump_detected:
+					_sh_jump_detected = False
+					log_debug_fmt("Jump detected (from poller)")
+					needs_redraw = True
+					if smart_tracking == 1:
 						last_idx = -1
 
-				except Exception as e:
-					log_debug_fmt("Error polling player: %s", e)
-					last_player_update = 0.0
+				# Consume resume flag
+				if _sh_pause_to_play:
+					_sh_pause_to_play = False
+					log_debug("Pause→play refresh (from poller)")
+					needs_redraw = True
+					if smart_tracking == 1:
+						last_idx = -1
 
-				last_player_update = current_time
-
-			# Update player data if changed.
-			#
-			# Only four fields can change during a session: audio_file
-			# (track change), raw position (every tick or seek), title
-			# (track change), and status (play / pause / stop). Artist,
-			# albumartist, duration, and album only change when the file
-			# changes, which is already covered by audio_file. Comparing
-			# 4 elements instead of 8 halves the tuple comparison cost.
-			if (player_data[0] != prev_player_data[0]
-					or player_data[1] != prev_player_data[1]
-					or player_data[4] != prev_player_data[4]
-					or player_data[6] != prev_player_data[6]):
-				prev_player_data = player_data
-				(p_audio_file, p_raw_pos, p_raw_artist, p_raw_albumartist,
-				 p_title, p_duration, p_status, p_album) = player_data
-
-				if p_audio_file in ("None", ""):
-					p_audio_file = None
-				p_raw_pos = float_func(p_raw_pos or 0.0)
-				p_duration = float_func(p_duration or 0.0)
-				p_raw_artist = p_raw_artist or ""
-				p_raw_albumartist = p_raw_albumartist or ""
-				p_album = p_album or ""
-				estimated_position = p_raw_pos
-				# last_pos_time = current_time
-				last_pos_time = phase_lock.anchor_for(p_raw_pos, fallback=poll_time)
-
-				# Cache the basename for the status bar (was computed every frame).
-				p_file_basename = ''
-				if p_audio_file:
-					with contextlib.suppress(TypeError, AttributeError):
-						p_file_basename = path_basename(p_audio_file)
-
-				track_changed = (
-					(p_title, p_raw_artist, p_raw_albumartist, p_audio_file) !=
-					(current_title, current_raw_artist, current_raw_albumartist, current_file)
-					and p_status != status_stopped
-				)
-				if track_changed:
-					current_title = p_title or ""
-					current_raw_artist = p_raw_artist
-					current_raw_albumartist = p_raw_albumartist
-					current_file = p_audio_file
-
-					artist_str, artist_fallbacks = _pick_artist_candidates(
-						current_raw_artist, current_raw_albumartist,
-					)
-					current_artist = artist_str
-					current_fallback_artists = list(artist_fallbacks)
-
-					log_info(f"New track: {current_title or 'Unknown'} – {current_artist or 'Unknown'}")
-
-					# Cancel previous lyric fetch
-					if lyric_future and not lyric_future.done():
-						lyric_future.cancel()
-						with contextlib.suppress(asyncio.CancelledError, Exception):
-							await lyric_future
-						lyric_future = None
-						log_debug("Previous lyric task cancelled")
-
-					# Drop any streamed partial from the previous track.
-					live_lyrics.reset()
-
-					lyrics = []
-					errors = []
+				# Consume paused-jump flag
+				if _sh_pause_jump:
+					_sh_pause_jump = False
+					log_debug_fmt("Paused jump detected (from poller)")
+					needs_redraw = True
 					last_idx = -1
-					force_redraw = True
-					is_txt = False
-					is_a2 = False
-					lyrics_loaded_time = None
-					wrapped_lines = []
-					max_wrapped_offset = 0
-					end_triggered = False
 
-					search_directory = None
-					if (p_audio_file and path_exists(p_audio_file) and
-							player_type in streaming_players):
-						search_directory = path_dirname(p_audio_file)
+				# Player type changed
+				if new_player_type != player_type:
+					phase_lock.reset()
+					player_type = new_player_type
 
-					if current_title and current_artist:
-						lyric_future = asyncio.create_task(
-							fetch_lyrics_async(
-								audio_file=p_audio_file,
-								directory=search_directory,
-								artist=current_artist or "",
-								title=current_title or "",
-								duration=p_duration,
-								config_manager=config_manager,
-								logger=logger,
-								on_lyrics_ready=on_lyrics_ready,
-								fallback_artists=current_fallback_artists or None,
-								album=p_album or "",
-							)
+				# Player data changed
+				if new_player_data != player_data:
+					player_data = new_player_data
+
+				# Smart window check
+				in_smart_window = (_sh_resume_trigger_time is not None and
+								   (current_time - _sh_resume_trigger_time <= temporary_refresh_sec))
+				if (player_type in smart_players and
+						in_smart_window and p_status == status_playing and lyrics):
+					poll = True
+				else:
+					poll = False
+
+				# Smart poll active
+				smart_poll_active = (
+					in_smart_window
+					and p_status == status_playing
+					and lyrics
+				)
+				# and not manual_scroll
+
+				# Poll interval selection
+				if smart_poll_active:
+					new_poll_interval = smart_refresh_interval / 1000.0
+				else:
+					new_poll_interval = refresh_interval
+
+				# Proximity override
+				if proximity_active and p_status == status_playing:
+					raw_prox = refresh_proximity_interval_ms / 1000.0
+					# new_poll_interval = refresh_proximity_interval_ms / 1000.0
+					if raw_prox <= 0.0:
+						new_poll_interval = 0.005
+					else:
+						new_poll_interval = max_func(0.005, raw_prox) # R?
+
+				# Poke poller only on slow→fast
+				if new_poll_interval < _sh_poll_interval:
+					was_slow = _sh_poll_interval > 0.5
+					_sh_poll_interval = new_poll_interval
+					if was_slow:
+						_sh_poll_interval_event.set()
+				elif new_poll_interval > _sh_poll_interval:
+					_sh_poll_interval = new_poll_interval
+
+				# Player data merge
+				if (player_data[0] != prev_player_data[0]
+						or player_data[1] != prev_player_data[1]
+						or player_data[4] != prev_player_data[4]
+						or player_data[6] != prev_player_data[6]):
+					prev_player_data = player_data
+					(p_audio_file, p_raw_pos, p_raw_artist, p_raw_albumartist,
+					 p_title, p_duration, p_status, p_album) = player_data
+
+					if p_audio_file in ("None", ""):
+						p_audio_file = None
+					p_raw_pos = float_func(p_raw_pos or 0.0)
+					p_duration = float_func(p_duration or 0.0)
+					p_raw_artist = p_raw_artist or ""
+					p_raw_albumartist = p_raw_albumartist or ""
+					p_album = p_album or ""
+					estimated_position = p_raw_pos
+
+					last_pos_time = phase_lock.anchor_for(p_raw_pos, fallback=current_time)
+
+					# Cache basename
+					p_file_basename = ''
+					if p_audio_file:
+						with contextlib.suppress(TypeError, AttributeError):
+							p_file_basename = path_basename(p_audio_file)
+
+					# Track change detect
+					track_changed = (
+						(p_title, p_raw_artist, p_raw_albumartist, p_audio_file) !=
+						(current_title, current_raw_artist, current_raw_albumartist, current_file)
+						and p_status != status_stopped
+					)
+					if track_changed:
+						current_title = p_title or ""
+						current_raw_artist = p_raw_artist
+						current_raw_albumartist = p_raw_albumartist
+						current_file = p_audio_file
+
+						artist_str, artist_fallbacks = _pick_artist_candidates(
+							current_raw_artist, current_raw_albumartist,
 						)
-						log_debug_fmt("Lyric task started: %s - %s", current_artist, current_title)
+						current_artist = artist_str
+						current_fallback_artists = list(artist_fallbacks)
 
+						log_info(f"New track: {current_title or 'Unknown'} – {current_artist or 'Unknown'}")
+
+						# Cancel prior fetch
+						if lyric_future and not lyric_future.done():
+							lyric_future.cancel()
+							with contextlib.suppress(asyncio.CancelledError, Exception):
+								await lyric_future
+							lyric_future = None
+							log_debug("Previous lyric task cancelled")
+
+						live_lyrics.reset()
+
+						lyrics = []
+						errors = []
+						timestamps = []
+						last_idx = -1
+						force_redraw = True
+						is_txt = False
+						is_a2 = False
+						lyrics_loaded_time = None
+						wrapped_lines = []
+						max_wrapped_offset = 0
+						end_triggered = False
+
+						# Compute local dir
+						search_directory = None
+						if (p_audio_file and path_exists(p_audio_file) and
+								player_type in streaming_players):
+							search_directory = path_dirname(p_audio_file)
+
+						# Kick off fetch
+						if current_title and current_artist:
+							lyric_future = asyncio.create_task(
+								fetch_lyrics_async(
+									audio_file=p_audio_file,
+									directory=search_directory,
+									artist=current_artist or "",
+									title=current_title or "",
+									duration=p_duration,
+									config_manager=config_manager,
+									logger=logger,
+									on_lyrics_ready=on_lyrics_ready,
+									fallback_artists=current_fallback_artists or None,
+									album=p_album or "",
+								)
+							)
+							lyric_future.add_done_callback(
+								lambda _f: _wakeup_event.set()
+							)
+							log_debug_fmt("Lyric task started: %s - %s", current_artist, current_title)
+
+						last_cmus_position = p_raw_pos
+						estimated_position = p_raw_pos
+
+				# Live lyrics partial
+				if live_lyrics.pending:
+					live_lyrics.pending = False
+					if live_lyrics.lyrics is not None:
+						lyrics = live_lyrics.lyrics
+						errors = live_lyrics.errors or []
+						is_txt = live_lyrics.is_txt
+						is_a2 = live_lyrics.is_a2
+						live_lyrics.drop_payload()
+						last_idx = -1
+						force_redraw = True
+						lyrics_loaded_time = current_time
+						wrapped_lines = []
+						max_wrapped_offset = 0
+						if not (is_txt or is_a2):
+							timestamps = sorted_func(t for t, _ in lyrics if t is not None)
+						else:
+							timestamps = []
+						if p_status == status_playing and player_type in streaming_players:
+							_sh_resume_trigger_time = current_time
+							_sh_poll_interval_event.set()
+						fmt_label = 'a2' if is_a2 else ('txt' if is_txt else 'lrc')
+						log_debug_fmt(
+							"Live lyrics applied: fmt=%s lines=%d",
+							fmt_label, len_func(lyrics),
+						)
+					else:
+						live_lyrics.drop_payload()
+
+				# Lyric future done
+				if lyric_future and lyric_future.done():
+					try:
+						(new_lyrics, new_errors), new_is_txt, new_is_a2 = lyric_future.result()
+						if new_errors:
+							log_debug(str_func(new_errors))
+						lyrics = new_lyrics
+						errors = new_errors
+						is_txt = new_is_txt
+						is_a2 = new_is_a2
+						last_idx = -1
+						force_redraw = True
+						lyrics_loaded_time = current_time
+						wrapped_lines = []
+						max_wrapped_offset = 0
+						if not (is_txt or is_a2):
+							timestamps = sorted_func(t for t, _ in lyrics if t is not None)
+						else:
+							timestamps = []
+						if p_status == status_playing and player_type in streaming_players:
+							_sh_resume_trigger_time = current_time
+						estimated_position = p_raw_pos
+					except (asyncio.CancelledError, Exception) as e:
+						if not isinstance(e, asyncio.CancelledError):
+							log_debug_fmt("Lyric load error: %s", e)
+						errors = [f"Lyric load error: {e}"]
+						force_redraw = True
+						lyrics_loaded_time = current_time
+					finally:
+						lyric_future = None
+
+				# One-shot post-load redraw
+				if lyrics_loaded_time and (current_time - lyrics_loaded_time >= 2.0):
+					force_redraw = True
+					lyrics_loaded_time = None
+
+				# Cached lengths
+				n_ts = len_func(timestamps) if timestamps else 0
+				n_lyrics = len_func(lyrics) if lyrics else 0
+
+				# Position clock
+				if fresh_position_clock:
+					position_time = perf()
+				else:
+					position_time = current_time
+
+				# Re-anchor on raw change
+				playback_paused = (p_status == status_paused)
+				if p_raw_pos != last_cmus_position and not playback_paused:
 					last_cmus_position = p_raw_pos
+					if not fresh_position_clock:
+						last_pos_time = current_time
 					estimated_position = p_raw_pos
 
-			# Streamed partial: show whichever provider answered first.
-			# When the future completes below, the chosen best replaces this.
-			if live_lyrics.pending:
-				live_lyrics.pending = False
-				if live_lyrics.lyrics is not None:
-					lyrics = live_lyrics.lyrics
-					errors = live_lyrics.errors or []
-					is_txt = live_lyrics.is_txt
-					is_a2 = live_lyrics.is_a2
-					live_lyrics.drop_payload()
-					last_idx = -1
-					force_redraw = True
-					lyrics_loaded_time = current_time
-					wrapped_lines = []
-					max_wrapped_offset = 0
-					if not (is_txt or is_a2):
-						timestamps = sorted(t for t, _ in lyrics if t is not None)
+				# Extrapolate
+				if player_type:
+					if not playback_paused:
+						pos = p_raw_pos + (position_time - last_pos_time)
+						estimated_position = min_func(pos, p_duration)
 					else:
-						timestamps = []
-					if p_status == status_playing and player_type in streaming_players:
-						resume_trigger_time = current_time
-						last_player_update = 0.0
-					fmt_label = 'a2' if is_a2 else ('txt' if is_txt else 'lrc')
-					log_debug_fmt(
-						"Live lyrics applied: fmt=%s lines=%d",
-						fmt_label, len(lyrics),
-					)
-				else:
-					live_lyrics.drop_payload()
+						estimated_position = p_raw_pos
 
-			# Collect finished lyric task
-			if lyric_future and lyric_future.done():
-				try:
-					(new_lyrics, new_errors), new_is_txt, new_is_a2 = lyric_future.result()
-					if new_errors:
-						log_debug(str(new_errors))
-					lyrics = new_lyrics
-					errors = new_errors
-					is_txt = new_is_txt
-					is_a2 = new_is_a2
-					last_idx = -1
-					force_redraw = True
-					lyrics_loaded_time = current_time
-					wrapped_lines = []
-					max_wrapped_offset = 0
-					if not (is_txt or is_a2):
-						timestamps = sorted(t for t, _ in lyrics if t is not None)
-					else:
-						timestamps = []
-					if p_status == status_playing and player_type in streaming_players:
-						resume_trigger_time = current_time
-						last_player_update = 0.0
-					estimated_position = p_raw_pos
-				except (asyncio.CancelledError, Exception) as e:
-					if not isinstance(e, asyncio.CancelledError):
-						log_debug_fmt("Lyric load error: %s", e)
-					errors = [f"Lyric load error: {e}"]
-					force_redraw = True
-					lyrics_loaded_time = current_time
-				finally:
-					lyric_future = None
+				_sh_estimated_position = estimated_position
 
-			if lyrics_loaded_time and (current_time - lyrics_loaded_time >= 2.0):
-				force_redraw = True
-				lyrics_loaded_time = None
+				current_time = position_time
 
-			# Precompute hot-path comparisons once per iteration.
-			is_playing = (p_status == status_playing)
-			is_paused = (p_status == status_paused)
-			has_duration = p_duration > 0.0
-			has_timestamps = bool(timestamps)
-			has_player = player_type is not None
-
-			# The two toggles position estimation
-			# control exactly the two differences between file 1
-			# (production) and file 2 (compensated).
-			#
-			#   fresh_position_clock = False (production):
-			#       position_time is just the loop-start current_time,
-			#       and last_pos_time is re-anchored to current_time on
-			#       every integer position change.
-			#
-			#   fresh_position_clock = True (compensated):
-			#       position_time is re-read with perf() right before
-			#       extrapolation, and the production re-anchor line
-			#       is suppressed so the anchor set above (from
-			#       poll_time / the phase lock) survives.
-			if fresh_position_clock:
-				position_time = perf()
-			else:
-				position_time = current_time
-
-			playback_paused = (p_status == status_paused)
-			if p_raw_pos != last_cmus_position and not playback_paused:
-				last_cmus_position = p_raw_pos
-				if not fresh_position_clock:
-					last_pos_time = current_time
-				estimated_position = p_raw_pos
-
-			if player_type:
-				if not playback_paused:
-					pos = p_raw_pos + (position_time - last_pos_time)
-					estimated_position = min_func(pos, p_duration)
-				else:
-					estimated_position = p_raw_pos
-
-			current_time = position_time
-
-			continuous_position = max_func(
-				0.0,
-				min_func(estimated_position + time_adjust + base_offset, p_duration)
-			)
-
-			# End‑of‑track trigger
-			if (p_duration > 0.0 and
-					(p_duration - continuous_position) <= end_trigger_sec and
-					not end_triggered):
-				end_triggered = True
-				force_redraw = True
-				log_debug_fmt("End-of-track (pos=%.3fs)", continuous_position)
-
-			# Proximity smart refresh
-			if p_status != status_playing:
-				proximity_active = False
-				proximity_trigger_time = None
-
-			if (smart_proximity and timestamps and not is_txt and
-					last_idx >= 0 and last_idx + 1 < len(timestamps) and
-					p_status == status_playing and not poll and not playback_paused):
-
-				idx = last_idx
-				ts = timestamps
-				line_duration = ts[idx + 1] - ts[idx]
-				raw_thresh = max_func(
-					line_duration * (proximity_threshold_percent / 100),
-					proximity_threshold_sec
+				# Continuous position
+				continuous_position = max_func(
+					0.0,
+					min_func(estimated_position + time_adjust + base_offset, p_duration)
 				)
-				threshold = min_func(
-					max_func(raw_thresh, proximity_min_threshold_sec),
-					min_func(proximity_max_threshold_sec, line_duration)
-				)
-				time_to_next = min_func(line_duration, max_func(0.0, ts[idx + 1] - continuous_position))
 
-				if proximity_min_threshold_sec <= time_to_next <= threshold:
-					proximity_trigger_time = current_time
-					proximity_active = True
-					set_timeout(refresh_proximity_interval_ms)
-					last_player_update = 0.0
-				elif (proximity_trigger_time is not None and
-					  (time_to_next < proximity_min_threshold_sec or
-					   time_to_next > threshold or
-					   current_time - proximity_trigger_time > threshold)):
-					set_timeout(refresh_interval_2)
+				# End-of-track trigger
+				if (p_duration > 0.0 and
+						(p_duration - continuous_position) <= end_trigger_sec and
+						not end_triggered):
+					end_triggered = True
+					force_redraw = True
+					log_debug_fmt("End-of-track (pos=%.3fs)", continuous_position)
+
+				# Reset proximity on non-playing
+				if p_status != status_playing:
+					proximity_active = False
 					proximity_trigger_time = None
-					proximity_active = False
-				else:
-					proximity_active = False
-			else:
-				proximity_active = False
 
-			# Wrapped‑line computation for .txt
-			if is_txt and (not wrapped_lines or prev_window_width != window_size[1]):
-				wrap_width = max_func(10, window_size[1] - 2)
-				wrapped = []
-				for orig_idx, (_, lyric) in enumerate(lyrics):
-					if lyric and lyric.strip():
-						for ln in wrap_by_display_width(lyric, wrap_width, subsequent_indent=' '):
-							wrapped.append((orig_idx, ln))
+				# Proximity detect
+				if (smart_proximity and n_ts and not is_txt and
+						last_idx >= 0 and last_idx + 1 < n_ts and
+						p_status == status_playing and not poll and not playback_paused):
+
+					idx = last_idx
+					ts = timestamps
+					line_duration = ts[idx + 1] - ts[idx]
+					raw_thresh = max_func(
+						line_duration * (proximity_threshold_percent / 100),
+						proximity_threshold_sec
+					)
+					threshold = min_func(
+						max_func(raw_thresh, proximity_min_threshold_sec),
+						min_func(proximity_max_threshold_sec, line_duration)
+					)
+					time_to_next = min_func(line_duration, max_func(0.0, ts[idx + 1] - continuous_position))
+
+					if proximity_min_threshold_sec <= time_to_next <= threshold:
+						proximity_trigger_time = current_time
+						proximity_active = True
+					elif (proximity_trigger_time is not None and
+						  (time_to_next < proximity_min_threshold_sec or
+						   time_to_next > threshold or
+						   current_time - proximity_trigger_time > threshold)):
+						proximity_trigger_time = None
+						proximity_active = False
 					else:
-						wrapped.append((orig_idx, ""))
-				wrapped_lines = wrapped
-				max_wrapped_offset = max_func(0, len(wrapped_lines) - (window_size[0] - 3))
-				prev_window_width = window_size[1]
+						proximity_active = False
+				else:
+					proximity_active = False
 
-			# Lyric index
-			if is_txt and wrapped_lines and p_duration > 0.0:
-				num_wrapped = len(wrapped_lines)
-				target = int_func((continuous_position / p_duration) * num_wrapped)
-				current_idx = max_func(0, min_func(target, num_wrapped - 1))
-			elif not timestamps or is_txt:
-				current_idx = -1
-			elif smart_tracking == 1:
-				idx = last_idx
-				n = len(timestamps)
-				if idx < 0:
+				# Rebuild wrapped lines for txt
+				if is_txt and (not wrapped_lines or prev_window_width != window_size[1]):
+					wrap_width = max_func(10, window_size[1] - 2)
+					wrapped = []
+					for orig_idx, (_, lyric) in enumerate(lyrics):
+						if lyric and lyric.strip():
+							for ln in wrap_by_display_width(lyric, wrap_width, subsequent_indent=' '):
+								wrapped.append((orig_idx, ln))
+						else:
+							wrapped.append((orig_idx, ""))
+					wrapped_lines = wrapped
+					max_wrapped_offset = max_func(0, len_func(wrapped_lines) - (window_size[0] - 3))
+					prev_window_width = window_size[1]
+
+				n_wrapped = len_func(wrapped_lines) if wrapped_lines else 0
+
+				# Lyric index selection
+				if is_txt and n_wrapped and p_duration > 0.0:
+					num_wrapped = n_wrapped
+					target = int_func((continuous_position / p_duration) * num_wrapped)
+					current_idx = max_func(0, min_func(target, num_wrapped - 1))
+				elif not timestamps or is_txt:
+					current_idx = -1
+				elif smart_tracking == 1:
+					idx = last_idx
+					n = n_ts
+					if idx < 0:
+						idx = bisect_right(timestamps, continuous_position) - 1
+						idx = max_func(-1, min_func(idx, n - 1))
+					elif idx + 1 < n and continuous_position >= timestamps[idx + 1] - proximity_threshold:
+						idx += 1
+					current_idx = max_func(-1, min_func(idx, n - 1))
+				else:
 					idx = bisect_right(timestamps, continuous_position) - 1
-					idx = max_func(-1, min_func(idx, n - 1))
-				elif idx + 1 < n and continuous_position >= timestamps[idx + 1] - proximity_threshold:
-					idx += 1
-				current_idx = max_func(-1, min_func(idx, n - 1))
-			else:
-				idx = bisect_right(timestamps, continuous_position) - 1
-				current_idx = idx if idx >= 0 else -1
+					current_idx = idx if idx >= 0 else -1
 
-			# Auto‑scroll for txt
-			if last_input == 0 and not manual_scroll:
-				if is_txt and wrapped_lines:
-					ideal = current_idx - ((window_size[0] - 3) // 2)
-					target = max_func(0, min_func(ideal, max_wrapped_offset))
-					if target != manual_offset:
-						manual_offset = target
-						needs_redraw = True
+				# Auto-scroll for txt
+				if last_input == 0 and not manual_scroll:
+					if is_txt and wrapped_lines:
+						ideal = current_idx - ((window_size[0] - 3) // 2)
+						target = max_func(0, min_func(ideal, max_wrapped_offset))
+						if target != manual_offset:
+							manual_offset = target
+							needs_redraw = True
 
-			# VRR frame gate
-			skip_for_vrr = False
-			if vrr_enabled and frame_time is not None:
-				if current_time < next_frame_time:
-					skip_for_vrr = True
-				else:
-					skip_for_vrr = False
-					next_frame_time += frame_time
-					while next_frame_time < current_time:
+				# VRR frame gate
+				skip_for_vrr = False
+				if vrr_enabled and frame_time is not None:
+					if current_time < next_frame_time:
+						skip_for_vrr = True
+					else:
+						skip_for_vrr = False
 						next_frame_time += frame_time
-				if current_idx != last_idx or force_redraw:
-					skip_for_vrr = False
+						while next_frame_time < current_time:
+							next_frame_time += frame_time
+					if current_idx != last_idx or force_redraw:
+						skip_for_vrr = False
 
-			# Status refresh
-			status_now = get_current_status(config_manager)
-			if status_now != last_status_msg:
-				last_status_msg = status_now
-				needs_redraw = True
+				# Status message change
+				status_now = get_current_status(config_manager)
+				if status_now != last_status_msg:
+					last_status_msg = status_now
+					needs_redraw = True
 
-			# Render
-			should_render = (needs_redraw or force_redraw or current_idx != last_idx) and not skip_for_vrr
-			if should_render:
-				log_debug_fmt(
-					"Render: new_input=%s needs=%s force=%s idx=%s→%s",
-					new_input, needs_redraw, force_redraw, last_idx, current_idx,
-				)
-				display_data = wrapped_lines if is_txt else lyrics
-				start_screen_line = update_display(
-					stdscr, ds,
-					display_data, errors,
-					continuous_position,
-					manual_offset,
-					is_txt, is_a2,
-					current_idx,
-					manual_scroll,
-					time_adjust,
-					lyric_future is not None,
-					alignment=alignment,
-					player_info=(player_type, player_data),
-					player_basename=p_file_basename,
-					config_manager=config_manager,
-					window_size=window_size,
-				)
-				manual_offset = start_screen_line
-				last_idx = current_idx
-				force_redraw = False
+				# Render decision
+				should_render = (needs_redraw or force_redraw or current_idx != last_idx) and not skip_for_vrr
+				if should_render:
+					log_debug_fmt(
+						"Render: new_input=%s needs=%s force=%s idx=%s→%s",
+						new_input, needs_redraw, force_redraw, last_idx, current_idx,
+					)
+					display_data = wrapped_lines if is_txt else lyrics
+					start_screen_line = update_display(
+						stdscr, ds,
+						display_data, errors,
+						continuous_position,
+						manual_offset,
+						is_txt, is_a2,
+						current_idx,
+						manual_scroll,
+						time_adjust,
+						lyric_future is not None,
+						alignment=alignment,
+						player_info=(player_type, player_data),
+						player_basename=p_file_basename,
+						config_manager=config_manager,
+						window_size=window_size,
+					)
+					manual_offset = start_screen_line
+					last_idx = current_idx
+					force_redraw = False
 
-			# Sleep timeout
-			if playback_paused and not manual_scroll:
-				if time_since_input > 5.0:
-					set_timeout(400)
-					sleep_time = 0.004
-				elif time_since_input > 2.0:
-					set_timeout(300)
-					sleep_time = 0.003
+				# Sleep budget
+				sleep_time = refresh_interval_2 / 1000.0
+
+				if manual_scroll:
+					sleep_time = refresh_interval_2 / 1000.0
+				elif smart_poll_active:
+					sleep_time = smart_refresh_interval / 1000.0
+				elif proximity_active:
+					sleep_time = 0.005
+				elif playback_paused:
+					if time_since_input > 5.0:
+						sleep_time = 2.0
+					elif time_since_input > 2.0:
+						sleep_time = 1.0
+					else:
+						sleep_time = 0.5
+
+				# Yield to event loop
+				_wakeup_event.clear()
+				if sleep_time <= 0.0:
+					await asyncio.sleep(0)
 				else:
-					set_timeout(250)
-					sleep_time = 0.002
-			elif not (poll or proximity_active or manual_scroll):
-				set_timeout(refresh_interval_2)
-				sleep_time = 0.0
+					try:
+						await asyncio.wait_for(_wakeup_event.wait(), timeout=sleep_time)
+					except asyncio.TimeoutError:
+						pass
+
+	finally:
+		# Detach signal handler
+		with contextlib.suppress(Exception):
+			if _sigwinch_via_loop:
+				_loop.remove_signal_handler(signal.SIGWINCH)
 			else:
-				# set_timeout(refresh_interval_2)
-				sleep_time = 0.0
-
-			# if poll or proximity_active or manual_scroll:
-				# sleep_time = 0.0
-
-			await asyncio.sleep(sleep_time)
-
+				signal.signal(signal.SIGWINCH, _prev_sigwinch)
+		# Detach stdin reader
+		with contextlib.suppress(Exception):
+			_loop.remove_reader(_stdin_fd)
 
 def main(stdscr, cli_args, *_: Any) -> None:
 	config_manager = ConfigManager(
