@@ -2640,6 +2640,9 @@ class PhaseLock:
 					self._warmup_done = True
 			else:  # rolling
 				self._update_max_window(logger)
+		
+		if self._auto_window == "warmup" and not self._warmup_done:
+			return
 
 		if new_raw != prev_raw + 1:
 			return
@@ -3726,6 +3729,7 @@ async def main_async(stdscr, config_manager, logger):
 						or player_data[4] != prev_player_data[4]
 						or player_data[6] != prev_player_data[6]):
 					pos_changed = (player_data[1] != prev_player_data[1])
+					# prev_status = prev_player_data[6] # updated
 					prev_player_data = player_data
 					(p_audio_file, p_raw_pos, p_raw_artist, p_raw_albumartist,
 					 p_title, p_duration, p_status, p_album) = player_data
@@ -3743,7 +3747,14 @@ async def main_async(stdscr, config_manager, logger):
 						estimated_position = p_raw_pos
 
 					last_pos_time = phase_lock.anchor_for(p_raw_pos, fallback=current_time)
-
+					
+					# if prev_status == status_paused and p_status == status_playing:
+						# frozen_offset = estimated_position - p_raw_pos
+						# last_pos_time = current_time - frozen_offset
+						# log_debug_fmt("Resume anchor: offset=%.3fs", frozen_offset)
+					# else:
+						# last_pos_time = phase_lock.anchor_for(p_raw_pos, fallback=current_time)
+					
 					# Cache basename
 					p_file_basename = ''
 					if p_audio_file:
