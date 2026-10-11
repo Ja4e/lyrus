@@ -221,6 +221,7 @@ class ConfigManager:
 		"PHASE_LOCK_WEIGHTED_AVERAGE",
 		"PHASE_LOCK_WEIGHTED_AVERAGE_DECAY",
 		"PHASE_LOCK_WEIGHTED_AVERAGE_FLOOR_VAR_MS2",
+		"PHASE_LOCK_SEEK_HARD_REANCHOR",
 
 		# Config storage
 		"config",
@@ -290,6 +291,7 @@ class ConfigManager:
 		self.PHASE_LOCK_WEIGHTED_AVERAGE: bool = False
 		self.PHASE_LOCK_WEIGHTED_AVERAGE_DECAY: float = 0.98
 		self.PHASE_LOCK_WEIGHTED_AVERAGE_FLOOR_VAR_MS2: float = 0.25
+		self.PHASE_LOCK_SEEK_HARD_REANCHOR: bool = True
 
 		self.config: dict = self.load_config()
 		self.setup_logging()
@@ -410,6 +412,13 @@ class ConfigManager:
 					#   weighted_average:  inverse-variance averaging over
 					#                 all observations instead of the
 					#                 tightest-window ratchet.
+					#   seek_hard_reanchor: a detected seek becomes a hard
+					#                 position re-anchor. The poll timestamp
+					#                 of the seek observation is used
+					#                 verbatim as last_pos_time, and the seek
+					#                 sample is excluded from phase-lock
+					#                 learning. Set to false to fall back to
+					#                 the previous behaviour.
 					"position_phase_lock": {
 						"enabled": True,
 						"max_window_ms": 80.0,
@@ -419,7 +428,8 @@ class ConfigManager:
 						"auto_window_samples": 10,
 						"weighted_average": True,
 						"weighted_average_decay": 0.98,
-						"weighted_average_floor_var_ms2": 0.25
+						"weighted_average_floor_var_ms2": 0.25,
+						"seek_hard_reanchor": True
 					},
 					# Position-loop toggles. Both must
 					# be true for the phase lock to take effect starts with
@@ -555,6 +565,7 @@ class ConfigManager:
 		self.PHASE_LOCK_WEIGHTED_AVERAGE = bool(pl.get("weighted_average", False))
 		self.PHASE_LOCK_WEIGHTED_AVERAGE_DECAY = float(pl.get("weighted_average_decay", 0.98))
 		self.PHASE_LOCK_WEIGHTED_AVERAGE_FLOOR_VAR_MS2 = float(pl.get("weighted_average_floor_var_ms2", 0.25))
+		self.PHASE_LOCK_SEEK_HARD_REANCHOR = bool(pl.get("seek_hard_reanchor", True))
 
 # ================
 #  LOGGING SYSTEM
@@ -3216,6 +3227,9 @@ async def main_async(stdscr, config_manager, logger):
 	fresh_position_clock = bool_func(
 		sync_config.get("fresh_position_clock", False)
 	)
+	seek_hard_reanchor = bool_func(
+		config_manager.PHASE_LOCK_SEEK_HARD_REANCHOR
+	)
 
 	# Color pairs
 	curses.start_color()
@@ -3329,13 +3343,14 @@ async def main_async(stdscr, config_manager, logger):
 	_sh_poll_interval: float = refresh_interval
 	_sh_last_status: str = STATUS_STOPPED
 	_sh_poll_interval_event: asyncio.Event = asyncio.Event()
+	_sh_hard_reanchor_time: Optional[float] = None
 
 	async def _background_poller():
 		# Background poller loop
 		nonlocal _sh_player_type, _sh_player_data
 		nonlocal _sh_resume_trigger_time
 		nonlocal _sh_jump_detected, _sh_pause_to_play, _sh_pause_jump
-		nonlocal _sh_last_status
+		nonlocal _sh_last_status, _sh_hard_reanchor_time
 
 		while True:
 			try:
@@ -3378,21 +3393,30 @@ async def main_async(stdscr, config_manager, logger):
 					and (poll_t - _sh_resume_trigger_time <= temporary_refresh_sec)
 				)
 
-				phase_lock.observe(
-					poll_t, new_raw,
-					playing=(status_val == status_playing),
-					logger=logger,
-					sample=in_smart,
-				)
-
-				# Jump detect
+				# Jump / seek detection
 				drift = abs_func(new_raw - _sh_estimated_position)
+				is_seek = drift > jump_threshold and status_val == status_playing
 
-				if drift > jump_threshold and status_val == status_playing:
+				if is_seek and seek_hard_reanchor:
 					_sh_resume_trigger_time = poll_t
 					_sh_jump_detected = True
+					_sh_hard_reanchor_time = poll_t
 					phase_lock.reset()
 					_wakeup_event.set()
+				else:
+					phase_lock.observe(
+						poll_t, new_raw,
+						playing=(status_val == status_playing),
+						logger=logger,
+						sample=in_smart,
+					)
+					if is_seek:
+						# Legacy path (toggle off): observe first, then
+						# reset. Same behaviour as before.
+						_sh_resume_trigger_time = poll_t
+						_sh_jump_detected = True
+						phase_lock.reset()
+						_wakeup_event.set()
 
 				# Resume detect
 				if _sh_last_status == status_paused and status_val == status_playing:
@@ -3746,7 +3770,17 @@ async def main_async(stdscr, config_manager, logger):
 					if pos_changed:
 						estimated_position = p_raw_pos
 
-					last_pos_time = phase_lock.anchor_for(p_raw_pos, fallback=current_time)
+					if seek_hard_reanchor and _sh_hard_reanchor_time is not None:
+						last_pos_time = _sh_hard_reanchor_time
+						_sh_hard_reanchor_time = None
+						log_debug_fmt(
+							"Hard reanchor: anchor=%.6f raw=%.3fs",
+							last_pos_time, p_raw_pos,
+						)
+					else:
+						last_pos_time = phase_lock.anchor_for(
+							p_raw_pos, fallback=current_time,
+						)
 					
 					# if prev_status == status_paused and p_status == status_playing:
 						# frozen_offset = estimated_position - p_raw_pos
@@ -3790,6 +3824,7 @@ async def main_async(stdscr, config_manager, logger):
 							log_debug("Previous lyric task cancelled")
 
 						live_lyrics.reset()
+						_sh_hard_reanchor_time = None
 
 						lyrics = []
 						errors = []
