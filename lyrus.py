@@ -835,6 +835,33 @@ def get_current_status(config_manager) -> Optional[str]:
 
 
 # ================
+#  RACE STATE
+# ================
+class _RaceState:
+	"""Shared state across the concurrent candidate tasks in one
+	`fetch_lyrics_async` race.
+
+	Individual candidates run `find_lyrics_file_async` with
+	`suppress_terminal_writes=True`, so they never write `'failed'` or a
+	timeout log entry on their own — the coordinator does, only after
+	the race resolves. But a candidate can still discover a real
+	finding mid-race (e.g. the online provider reports the track as
+	instrumental). `_RaceState` is the channel used to signal that
+	finding back to the coordinator without letting the candidate
+	commit terminal state itself.
+
+	The coordinator checks `instrumental` before deciding whether to
+	write `'failed'` + a timeout log, so an instrumental classification
+	made by a secondary artist candidate is preserved instead of being
+	clobbered by the coordinator's failure path.
+	"""
+	__slots__ = ('instrumental',)
+
+	def __init__(self):
+		self.instrumental: bool = False
+
+
+# ================
 #  NETWORK UTILS
 # ================
 _internet_cache: dict = {'result': None, 'ts': 0.0, 'ttl': 30.0}
@@ -1505,8 +1532,26 @@ async def find_lyrics_file_async(
 	skip_online=False,
 	is_primary_artist=True,
 	album_name=None,
+	suppress_terminal_writes: bool = False,
+	race_state: Optional[_RaceState] = None,
 ):
-	"""Locate lyrics for a track, with optional phase skipping."""
+	"""Locate lyrics for a track, with optional phase skipping.
+
+	`suggest_terminal_writes` is True when this call is one candidate in
+	a multi-candidate race (see `fetch_lyrics_async`). In that case the
+	candidate MUST NOT write terminal state on its own: a single
+	candidate failing to find lyrics does not mean the track has none,
+	and writing `'failed'` + a timeout log entry from here would (a)
+	flicker the status bar, and (b) poison `_precheck_track` on the
+	next play so the embedded / local scan is skipped entirely. The
+	coordinator in `fetch_lyrics_async` writes the terminal state only
+	after the race resolves.
+
+	`race_state` is the shared signal object used to report non-terminal
+	findings (currently: "this track is instrumental") back to the
+	coordinator so it can distinguish "no candidate produced anything"
+	from "a candidate classified the track as instrumental".
+	"""
 	update_fetch_status('local', config_manager=config_manager)
 	logger.log_info(f"Starting lyric search for: {artist_name or 'Unknown'} - {track_name}")
 
@@ -1532,6 +1577,8 @@ async def find_lyrics_file_async(
 				if is_primary_artist:
 					logger.log_instrumental(artist_name, track_name, album_name)
 				update_fetch_status('instrumental', config_manager=config_manager)
+				if race_state is not None:
+					race_state.instrumental = True
 				path, err = save_lyrics("[Instrumental]", track_name, artist_name,
 										'txt', config_manager, logger)
 				return path
@@ -1678,11 +1725,24 @@ async def find_lyrics_file_async(
 				if is_primary_artist:
 					logger.log_instrumental(artist_name, track_name, album_name)
 				update_fetch_status('instrumental', config_manager=config_manager)
+				if race_state is not None:
+					race_state.instrumental = True
 				return None
 			logger.log_debug("No lyrics found from any source")
-			update_fetch_status("failed", config_manager=config_manager)
-			if is_primary_artist and await has_internet_global_async():
-				logger.log_timeout(artist_name, track_name, album_name)
+			# When this call is one candidate in a multi-artist race,
+			# the coordinator in `fetch_lyrics_async` makes the final
+			# terminal decision. Writing 'failed' or a timeout log
+			# entry from an individual candidate would (a) flicker the
+			# status bar between candidates, and (b) poison
+			# `_precheck_track` on the next play so the embedded /
+			# local scan is skipped entirely — which is exactly the
+			# bug that produced timeout entries for tracks whose
+			# lyrics came from an embedded tag. Gate both on
+			# `suppress_terminal_writes`.
+			if not suppress_terminal_writes:
+				update_fetch_status("failed", config_manager=config_manager)
+				if is_primary_artist and await has_internet_global_async():
+					logger.log_timeout(artist_name, track_name, album_name)
 			return None
 
 		priority = config_manager.FORMAT_PRIORITY_TUPLE
@@ -1725,10 +1785,24 @@ async def fetch_lyrics_async(
 	audio_file, directory, artist, title, duration, config_manager, logger,
 	on_lyrics_ready=None, fallback_artists=None, album=None,
 ):
-	"""Concurrent fetch with synchronous pre-check, race, and detach."""
+	"""Concurrent fetch with synchronous pre-check, race, and detach.
+
+	Every candidate (the pre-flight local/embedded scan and each
+	per-artist online search) runs with `suppress_terminal_writes=True`.
+	Only this coordinator writes the terminal `'failed'` status and the
+	timeout log entry, and only after the race has fully resolved. That
+	guarantees an embedded / local hit is never contradicted by a
+	late-finishing online-only candidate, and a track whose lyrics came
+	from an embedded tag is never added to the timeout log (which would
+	poison `_precheck_track` on the next play).
+	"""
 	tasks: dict = {}
 	preflight_task: Optional[asyncio.Task] = None
 	leave_running: bool = False
+	# Shared across every candidate task in this race. Lets a candidate
+	# that classifies the track as instrumental signal that finding
+	# back to the coordinator without committing terminal state.
+	race_state = _RaceState()
 	try:
 		artists_to_try: list = []
 		seen: set = set()
@@ -1777,6 +1851,8 @@ async def fetch_lyrics_async(
 				skip_online=True,
 				is_primary_artist=True,
 				album_name=album,
+				suppress_terminal_writes=True,
+				race_state=race_state,
 			),
 			name="lyrus_preflight",
 		)
@@ -1790,6 +1866,8 @@ async def fetch_lyrics_async(
 					skip_local_scan=True,
 					is_primary_artist=(a == artist),
 					album_name=album,
+					suppress_terminal_writes=True,
+					race_state=race_state,
 				),
 				name=f"lyrus_artist_{a}",
 			)
@@ -1888,12 +1966,32 @@ async def fetch_lyrics_async(
 		leave_running = result is not None
 
 		if result is None:
+			# Every candidate ran to completion and none produced
+			# lyrics. Only NOW is it safe to write the terminal
+			# 'failed' status and a timeout log entry. If a candidate
+			# classified the track as instrumental mid-race, that
+			# classification must be preserved instead — the
+			# coordinator logs the instrumental marker under the
+			# canonical (primary) artist name so it is not lost when
+			# the candidate that detected it was not the primary.
+			if race_state.instrumental:
+				logger.log_instrumental(artists_to_try[0], title, album)
+			else:
+				update_fetch_status("failed", config_manager=config_manager)
+				if await has_internet_global_async():
+					logger.log_timeout(artists_to_try[0], title, album)
 			return ([], []), False, False
 
 		# Persist the race winner exactly once, under the
 		# canonical (first) artist name — regardless of which candidate
 		# actually produced the content.
-		if isinstance(result, dict) and result.get('type') == 'network':
+		#
+		# Embedded results are cached too, not just network results.
+		# `_precheck_track` consults the cache before the timeout log,
+		# so caching an embedded hit on the first successful fetch is
+		# what lets a stale timeout-log entry (from a previous buggy
+		# run) stop poisoning future plays of that track.
+		if isinstance(result, dict) and result.get('type') in ('network', 'embedded'):
 			canonical_artist = artists_to_try[0]
 			saved_path, err = save_lyrics(
 				result['content'], title, canonical_artist,
@@ -1904,7 +2002,7 @@ async def fetch_lyrics_async(
 			else:
 				logger.log_debug_fmt(
 					"Saved race winner (%s from %r) as %r",
-					result['format'], result.get('origin_artist'),
+					result['format'], result.get('origin_artist', 'embedded'),
 					canonical_artist,
 				)
 
