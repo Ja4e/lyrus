@@ -2146,8 +2146,11 @@ def load_lyrics(file_path, logger):
 						pending_ts = None
 					else:
 						lyrics.append((None, raw_line))
-			if pending_ts is not None:
-				lyrics.append((pending_ts, ''))
+			# if pending_ts is not None:
+				# logger.log_debug_fmt(
+				# 	"Dropping trailing empty timestamp %s", pending_ts,
+				# )
+				# lyrics.append((pending_ts, ''))
 
 		if errors:
 			logger.log_warn(f"Found {len(errors)} parsing errors in {file_path}")
@@ -2491,6 +2494,10 @@ class DisplayState:
 	last_error_count: int = -1
 	last_adjust_state: tuple = ()
 
+	sung_count: Optional[int] = None
+	sung_line_of: list = field(default_factory=list)
+	last_sung_idx: Optional[int] = None
+
 	def invalidate(self):
 		self.window_width = -1
 		self.wrapped_lines = []
@@ -2500,6 +2507,9 @@ class DisplayState:
 		self.cached_size = None
 		self.last_error_count = -1
 		self.last_adjust_state = ()
+		self.sung_count = None
+		self.sung_line_of = []
+		self.last_sung_idx = None
 
 # ==========================
 #  LIVE LYRICS STREAMING
@@ -2884,6 +2894,28 @@ def display_lyrics(
 	song_changed = ds.lyrics_ref is not lyrics
 	if song_changed:
 		ds.lyrics_ref = lyrics
+		# per-song sung-line caches
+		
+		sung_line_of = [0] * len(lyrics)
+		running = 0
+		last_sung = None
+		for i, (_, ly) in enumerate(lyrics):
+			if isinstance(ly, tuple):
+				# a2 word / remaining-text entry
+				is_sung = (
+					len(ly) > 0
+					and isinstance(ly[0], str)
+					and bool(ly[0].strip())
+				)
+			else:
+				is_sung = isinstance(ly, str) and bool(ly.strip())
+			if is_sung:
+				running += 1
+				last_sung = i
+			sung_line_of[i] = running
+		ds.sung_count = running
+		ds.sung_line_of = sung_line_of
+		ds.last_sung_idx = last_sung
 	cache_invalid = song_changed or ds.window_width != width
 
 	status_lines = 2
@@ -3071,10 +3103,11 @@ def display_lyrics(
 			else:
 				x = 1
 
+			is_current = (orig_i == current_idx and bool(line.strip())) # "and bool(line.strip()"
 			color = (
-				CP4 if orig_i == current_idx else CP5
+				CP4 if is_current else CP5
 			) if is_txt_format else (
-				CP2 if orig_i == current_idx else CP3
+				CP2 if is_current else CP3
 			)
 			try:
 				lyrics_win.addstr(i, x, txt, color)
@@ -3084,8 +3117,12 @@ def display_lyrics(
 		lyrics_win.noutrefresh()
 
 	# 3) Time-adjust / end-of-lyrics bar
-	end_section = (current_idx is not None and current_idx == n_lyrics - 1
-				   and not is_txt_format and n_lyrics > 1)
+	end_section = (current_idx is not None
+				   and ds.last_sung_idx is not None
+				   and current_idx == ds.last_sung_idx
+				   and not is_txt_format
+				   and ds.sung_count is not None
+				   and ds.sung_count > 1)
 	if end_section:
 		adj_state = ('end', width)
 	elif time_adjust:
@@ -3110,6 +3147,17 @@ def display_lyrics(
 				pass
 		adjust_win.noutrefresh()
 
+	if is_a2_format:
+		total_display = len(ds.a2_groups) if ds.a2_groups else 0
+		cur_display = (current_idx + 1) if current_idx is not None else 0
+	else:
+		total_display = ds.sung_count if ds.sung_count is not None else 0
+		if (current_idx is not None
+				and 0 <= current_idx < len(ds.sung_line_of)):
+			cur_display = ds.sung_line_of[current_idx]
+		else:
+			cur_display = 0
+
 	# 4) Status bar
 	status_win.erase()
 	if config_manager.DISPLAY_NAME:
@@ -3122,11 +3170,11 @@ def display_lyrics(
 			title, artist, is_inst = 'No track', '', False
 
 		ps = f"{title} - {artist}"
-		cur_line = min(current_idx + 1, n_lyrics) if n_lyrics else 0
+		cur_line = cur_display
 		adj_flag = '' if is_inst else ('[Adj] ' if time_adjust else '')
 		icon = ' ⏳ ' if is_fetching else ' 🎵 '
-		right_full = f"Line {cur_line}/{n_lyrics}{adj_flag}"
-		right_short = f" {cur_line}/{n_lyrics}{adj_flag} "
+		right_full = f"Line {cur_line}/{total_display}{adj_flag}"
+		right_short = f" {cur_line}/{total_display}{adj_flag} "
 
 		if len(f"{icon}{ps} • {right_full}") <= width - 1:
 			display_line = f"{icon}{ps} • {right_full}"
@@ -3145,7 +3193,7 @@ def display_lyrics(
 		except curses.error:
 			pass
 	else:
-		info = f"Line {min(current_idx + 1, n_lyrics)}/{n_lyrics}"
+		info = f"Line {cur_display}/{total_display}"
 		if time_adjust:
 			info += '[Adj]'
 		try:
@@ -3623,6 +3671,7 @@ async def main_async(stdscr, config_manager, logger):
 	_cached_prox_idx: int = -2
 	_cached_prox_line_duration: float = 0.0
 	_cached_prox_threshold: float = 0.0
+	_cached_prox_next_idx: int = -1
 
 	prev_window_width = window_size[1]
 	# Track the last rendered status message so a change (e.g.
@@ -3631,6 +3680,13 @@ async def main_async(stdscr, config_manager, logger):
 	last_status_msg: Optional[str] = None
 	last_fetch_version: int = -1
 	last_status_check: float = 0.0
+
+	def _is_sung_entry(ly_entry) -> bool:
+		if isinstance(ly_entry, str):
+			return bool(ly_entry.strip())
+		if isinstance(ly_entry, tuple) and len(ly_entry) > 0:
+			return isinstance(ly_entry[0], str) and bool(ly_entry[0].strip())
+		return False
 
 	# async def _warmup_imports():
 		# with contextlib.suppress(Exception):
@@ -3981,7 +4037,12 @@ async def main_async(stdscr, config_manager, logger):
 						wrapped_lines = []
 						max_wrapped_offset = 0
 						if not (is_txt or is_a2):
-							timestamps = sorted_func(t for t, _ in lyrics if t is not None)
+							timestamps = []
+							_prev_t = 0.0
+							for _t, _ in lyrics:
+								if _t is not None:
+									_prev_t = _t
+								timestamps.append(_prev_t)
 						else:
 							timestamps = []
 						if p_status == status_playing and player_type in streaming_players:
@@ -4011,7 +4072,12 @@ async def main_async(stdscr, config_manager, logger):
 						wrapped_lines = []
 						max_wrapped_offset = 0
 						if not (is_txt or is_a2):
-							timestamps = sorted_func(t for t, _ in lyrics if t is not None)
+							timestamps = []
+							_prev_t = 0.0
+							for _t, _ in lyrics:
+								if _t is not None:
+									_prev_t = _t
+								timestamps.append(_prev_t)
 						else:
 							timestamps = []
 						if p_status == status_playing and player_type in streaming_players:
@@ -4082,17 +4148,25 @@ async def main_async(stdscr, config_manager, logger):
 					proximity_trigger_time = None
 
 				# Proximity detect
+				_prox_next_idx = -1
 				if (smart_proximity and n_ts and not is_txt and
-						last_idx >= 0 and last_idx + 1 < n_ts and
+						last_idx >= 0 and
 						p_status == status_playing and not poll and not playback_paused):
+					_nxt = last_idx + 1
+					while _nxt < n_ts and not _is_sung_entry(lyrics[_nxt][1]):
+						_nxt += 1
+					if _nxt < n_ts:
+						_prox_next_idx = _nxt
 
+				if _prox_next_idx >= 0:
 					idx = last_idx
 					ts = timestamps
 
-					# Cache line_duration and threshold per last_idx
-					if idx != _cached_prox_idx:
+					# Cache line_duration and threshold per last_idx.
+					if idx != _cached_prox_idx or _prox_next_idx != _cached_prox_next_idx:
 						_cached_prox_idx = idx
-						_cached_prox_line_duration = ts[idx + 1] - ts[idx]
+						_cached_prox_next_idx = _prox_next_idx
+						_cached_prox_line_duration = ts[_prox_next_idx] - ts[idx]
 						raw_thresh = max_func(
 							_cached_prox_line_duration * (proximity_threshold_percent / 100),
 							proximity_threshold_sec
@@ -4106,7 +4180,7 @@ async def main_async(stdscr, config_manager, logger):
 					threshold = _cached_prox_threshold
 					time_to_next = min_func(
 						line_duration,
-						max_func(0.0, ts[idx + 1] - continuous_position)
+						max_func(0.0, ts[_prox_next_idx] - continuous_position)
 					)
 
 					if proximity_min_threshold_sec <= time_to_next <= threshold:
@@ -4153,16 +4227,26 @@ async def main_async(stdscr, config_manager, logger):
 						# Seek
 						idx = bisect_right(timestamps, continuous_position) - 1
 						idx = max_func(-1, min_func(idx, n - 1))
+						while idx >= 0 and not _is_sung_entry(lyrics[idx][1]):
+							idx -= 1
 					elif continuous_position < timestamps[idx] - proximity_threshold:
 						# Backward seek
 						idx = bisect_right(timestamps, continuous_position) - 1
 						idx = max_func(-1, min_func(idx, n - 1))
-					elif idx + 1 < n and continuous_position >= timestamps[idx + 1] - proximity_threshold:
-						idx += 1
+						while idx >= 0 and not _is_sung_entry(lyrics[idx][1]):
+							idx -= 1
+					else:
+						nxt = idx + 1
+						while nxt < n and not _is_sung_entry(lyrics[nxt][1]):
+							nxt += 1
+						if nxt < n and continuous_position >= timestamps[nxt] - proximity_threshold:
+							idx = nxt
 					current_idx = max_func(-1, min_func(idx, n - 1))
 				else:
 					idx = bisect_right(timestamps, continuous_position) - 1
-					current_idx = idx if idx >= 0 else -1
+					while idx >= 0 and not _is_sung_entry(lyrics[idx][1]):
+						idx -= 1
+					current_idx = idx
 
 				# Auto-scroll for txt
 				if last_input == 0 and not manual_scroll:
