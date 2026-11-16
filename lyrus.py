@@ -2128,6 +2128,9 @@ def load_lyrics(file_path, logger):
 				raw_line = line.rstrip('\n')
 				line_match = _LRC_PATTERN.match(raw_line)
 				if line_match:
+					if pending_ts is not None:
+						lyrics.append((pending_ts, ""))
+						pending_ts = None
 					try:
 						line_time = parse_time_to_seconds(line_match.group(1))
 					except ValueError as e:
@@ -2146,11 +2149,11 @@ def load_lyrics(file_path, logger):
 						pending_ts = None
 					else:
 						lyrics.append((None, raw_line))
-			# if pending_ts is not None:
+			if pending_ts is not None:
 				# logger.log_debug_fmt(
 				# 	"Dropping trailing empty timestamp %s", pending_ts,
 				# )
-				# lyrics.append((pending_ts, ''))
+				lyrics.append((pending_ts, ""))
 
 		if errors:
 			logger.log_warn(f"Found {len(errors)} parsing errors in {file_path}")
@@ -2499,6 +2502,7 @@ class DisplayState:
 	last_sung_idx: Optional[int] = None
 
 	def invalidate(self):
+		self.lyrics_ref = None
 		self.window_width = -1
 		self.wrapped_lines = []
 		self.wrapped_widths = []
@@ -4162,7 +4166,7 @@ async def main_async(stdscr, config_manager, logger):
 					idx = last_idx
 					ts = timestamps
 
-					# Cache line_duration and threshold per last_idx.
+					# Cache line_duration and threshold per last_idx
 					if idx != _cached_prox_idx or _prox_next_idx != _cached_prox_next_idx:
 						_cached_prox_idx = idx
 						_cached_prox_next_idx = _prox_next_idx
