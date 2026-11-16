@@ -4231,24 +4231,40 @@ async def main_async(stdscr, config_manager, logger):
 						# Seek
 						idx = bisect_right(timestamps, continuous_position) - 1
 						idx = max_func(-1, min_func(idx, n - 1))
-						while idx >= 0 and not _is_sung_entry(lyrics[idx][1]):
+						while (
+							idx >= 0
+							and not _is_sung_entry(lyrics[idx][1])
+							and lyrics[idx][0] is None
+						):
 							idx -= 1
 					elif continuous_position < timestamps[idx] - proximity_threshold:
 						# Backward seek
 						idx = bisect_right(timestamps, continuous_position) - 1
 						idx = max_func(-1, min_func(idx, n - 1))
-						while idx >= 0 and not _is_sung_entry(lyrics[idx][1]):
+						while (
+							idx >= 0
+							and not _is_sung_entry(lyrics[idx][1])
+							and lyrics[idx][0] is None
+						):
 							idx -= 1
 					else:
 						nxt = idx + 1
-						while nxt < n and not _is_sung_entry(lyrics[nxt][1]):
+						while (
+							nxt < n
+							and not _is_sung_entry(lyrics[nxt][1])
+							and lyrics[nxt][0] is None
+						):
 							nxt += 1
 						if nxt < n and continuous_position >= timestamps[nxt] - proximity_threshold:
 							idx = nxt
 					current_idx = max_func(-1, min_func(idx, n - 1))
 				else:
 					idx = bisect_right(timestamps, continuous_position) - 1
-					while idx >= 0 and not _is_sung_entry(lyrics[idx][1]):
+					while (
+						idx >= 0
+						and not _is_sung_entry(lyrics[idx][1])
+						and lyrics[idx][0] is None
+					):
 						idx -= 1
 					current_idx = idx
 
