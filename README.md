@@ -35,12 +35,12 @@ best cmus simple lyrics player out there
 
 Scrollable lyrics btw 
 
-very customizeable
+very customizable
 
-run this script with these requirement  installable through pip if doownloaded directly through the source code
+run this script with these requirement  installable through pip if downloaded directly through the source code
 
-It detects your custon config.json (monfiable btw) make sure you backup this json configurations
+It detects your custon config.json (modifiable btw) make sure you backup this json configurations
 
-will attempt to get a2 working
+will attempt to get a2 working and double translation
 
 hmm i wanted to add option to allow tab like functionality to be able to edit the setting in curses interface
